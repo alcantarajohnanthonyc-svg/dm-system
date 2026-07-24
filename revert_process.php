@@ -9,7 +9,7 @@ if (isset($_GET['action']) && $_GET['action'] == 'revert' && isset($_GET['batch_
     
     try {
         // 0. Fetch batch history info beforehand so we have access to filename and mode for the summary page
-        $historyStmt = $conn->prepare("SELECT filename, import_mode FROM import_history WHERE batch_id = ?");
+$historyStmt = $conn->prepare("SELECT filename, import_mode FROM import_history WHERE batch_id = ?");
         $historyStmt->execute([$batch_id]);
         $batchInfo = $historyStmt->fetch(PDO::FETCH_ASSOC);
         
@@ -19,9 +19,17 @@ if (isset($_GET['action']) && $_GET['action'] == 'revert' && isset($_GET['batch_
         $conn->beginTransaction();
         
         // 1. Count records for the log
-        $countStmt = $conn->prepare("SELECT COUNT(*) FROM import_backups WHERE batch_id = ?");
-        $countStmt->execute([$batch_id]);
-        $restoreCount = $countStmt->fetchColumn();
+      if ($importMode === 'add_new') {
+    // If it was 'add_new', count how many items were created by this batch
+    $countStmt = $conn->prepare("SELECT COUNT(*) FROM debit_memo_items WHERE batch_id = ?");
+    $countStmt->execute([$batch_id]);
+    $restoreCount = $countStmt->fetchColumn();
+} else {
+    // If it was an update, count from import_backups as before
+    $countStmt = $conn->prepare("SELECT COUNT(*) FROM import_backups WHERE batch_id = ?");
+    $countStmt->execute([$batch_id]);
+    $restoreCount = $countStmt->fetchColumn();
+}
 
         // 2. Fetch backups
         $stmt = $conn->prepare("SELECT * FROM import_backups WHERE batch_id = ?");
