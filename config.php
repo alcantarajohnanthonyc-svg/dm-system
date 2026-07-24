@@ -17,7 +17,7 @@ if (session_status() === PHP_SESSION_NONE) {
 $current_page = basename($_SERVER['PHP_SELF']);
 if ($current_page !== 'login.php' && isset($_SESSION['user_id'])) {
     
-    $inactive_timeout = 3600; // 1hr in seconds
+    $inactive_timeout = 3600; // 1hr in seconds //
 
     if (isset($_SESSION['last_activity']) && (time() - $_SESSION['last_activity'] > $inactive_timeout)) {
         // Clear session data and destroy session
