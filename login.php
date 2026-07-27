@@ -130,7 +130,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             <div class="flex items-center justify-between text-sm">
                 <label class="flex items-center text-gray-600 cursor-pointer">
                     <input type="checkbox" name="remember_me" <?php echo $isRemembered ? 'checked' : ''; ?> class="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded">
-                    <span class="ml-2">Save username</span>
+                    <span class="ml-2">Remember Me</span>
                 </label>
             </div>
 
