@@ -870,8 +870,17 @@ function deleteSelectedItems() {
         headers: {'Content-Type': 'application/x-www-form-urlencoded'},
         body: 'item_ids=' + ids.join(',') + '&dm_id=' + activeDmId
     })
-    .then(response => response.json())
-    .then(data => {
+    .then(response => response.text()) // Basahin muna bilang text para maiwasan ang silent JSON crash
+    .then(rawText => {
+        let data;
+        try {
+            data = JSON.parse(rawText);
+        } catch (e) {
+            console.error("Invalid JSON response:", rawText);
+            alert("Server Error: Response is not valid JSON. Check console.");
+            return;
+        }
+
         if (data.status === 'success') {
             if (data.account_deleted) {
                 alert("Notification: Account " + accountNum + " has been removed.");
@@ -890,7 +899,7 @@ function deleteSelectedItems() {
             alert('Error: ' + data.message);
         }
     })
-    .catch(error => console.error('Error:', error));
+    .catch(error => console.error('Fetch Error:', error));
 }
 // 3. EXPORT SELECTED
 

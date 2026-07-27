@@ -2,9 +2,11 @@
 // delete_bulk_accounts.php
 require_once 'config.php';
 session_start();
+ob_start(); // Start output buffering to prevent stray characters/notices
 
 // 1. Security Check
 if (!isset($_SESSION['role']) || $_SESSION['role'] !== 'superadmin') {
+    if (ob_get_length()) ob_clean();
     http_response_code(403);
     echo json_encode(['status' => 'error', 'message' => 'Unauthorized']);
     exit;
@@ -12,6 +14,7 @@ if (!isset($_SESSION['role']) || $_SESSION['role'] !== 'superadmin') {
 
 // 2. Security Check: Method
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+    if (ob_get_length()) ob_clean();
     http_response_code(405);
     echo json_encode(['status' => 'error', 'message' => 'Method not allowed']);
     exit;
@@ -23,6 +26,7 @@ $id_array = explode(',', $ids_string);
 $clean_ids = array_map('intval', array_filter($id_array));
 
 if (empty($clean_ids)) {
+    if (ob_get_length()) ob_clean();
     echo json_encode(['status' => 'error', 'message' => 'No valid IDs provided']);
     exit;
 }
@@ -42,12 +46,17 @@ try {
 
     $conn->commit();
     
+    if (ob_get_length()) ob_clean();
     echo json_encode(['status' => 'success', 'message' => 'Accounts deleted']);
+    exit;
 
 } catch (PDOException $e) {
     if (isset($conn) && method_exists($conn, 'inTransaction') && $conn->inTransaction()) {
         $conn->rollBack();
     }
     error_log("Bulk Delete Error: " . $e->getMessage());
+    
+    if (ob_get_length()) ob_clean();
     echo json_encode(['status' => 'error', 'message' => 'Database error.']);
+    exit;
 }

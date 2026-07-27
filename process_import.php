@@ -163,6 +163,11 @@ if ($total_rows > 0) {
                         }
                     }
                 }
+
+                if ($oldAcc && (trim($oldAcc['company']) !== trim($company) || trim($oldAcc['assignee_name']) !== trim($row[2]))) {
+                    $hasChanged = true;
+                }
+
                 if (!$hasChanged) throw new Exception("No changes detected; record is identical.");
 
                 // Queue for bulk update execution parameters

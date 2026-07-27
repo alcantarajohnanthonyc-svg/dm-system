@@ -1,4 +1,8 @@
 <?php
+
+ini_set('display_errors', 0);
+error_reporting(E_ALL & ~E_NOTICE & ~E_DEPRECATED);
+
 // 1. SECURE SESSION CONFIGURATION
 if (session_status() === PHP_SESSION_NONE) {
     session_set_cookie_params([

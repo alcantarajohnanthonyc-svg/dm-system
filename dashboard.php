@@ -84,34 +84,52 @@ ob_start();
 </div>
 
 <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
+    <!-- Breakdown per Telco -->
     <div class="bg-white p-8 rounded-3xl shadow-sm border border-gray-100">
         <h3 class="text-2xl font-bold text-gray-800 mb-6 border-b pb-4">Breakdown per Telco</h3>
         <div class="space-y-6">
-            <?php foreach ($carrierStats as $s): ?>
-            <div class="flex justify-between items-center bg-blue-50 p-6 rounded-2xl">
-                <p class="text-xl font-bold text-blue-900"><?= htmlspecialchars(isset($s['carrier_name']) ? $s['carrier_name'] : 'N/A') ?></p>
+            <?php foreach ($carrierStats as $s): 
+                $carrierName = isset($s['carrier_name']) ? $s['carrier_name'] : 'N/A';
+                // Build query parameters for list_dm.php
+                $queryString = http_build_query([
+                    'carrier' => $carrierName,
+                    'start_date' => $start_date,
+                    'end_date' => $end_date
+                ]);
+            ?>
+            <a href="list_dm.php?<?= $queryString ?>" class="flex justify-between items-center bg-blue-50 p-6 rounded-2xl transition hover:bg-blue-100 block">
+                <p class="text-xl font-bold text-blue-900"><?= htmlspecialchars($carrierName) ?></p>
                 <div class="text-right">
                     <p class="text-sm text-blue-600 font-bold"><?= number_format($s['memo_count']) ?> Memos</p>
                     <p class="text-2xl font-black text-blue-900">₱<?= number_format($s['total_amt'], 2) ?></p>
                 </div>
-            </div>
+            </a>
             <?php endforeach; ?>
         </div>
     </div>
 
+    <!-- Breakdown per Company -->
     <div class="bg-white p-8 rounded-3xl shadow-sm border border-gray-100">
         <h3 class="text-2xl font-bold text-gray-800 mb-6 border-b pb-4">Breakdown per Company</h3>
         <div class="space-y-6">
-            <?php foreach ($companyStats as $s): ?>
-            <div class="flex justify-between items-center bg-rose-50 p-6 rounded-2xl">
+            <?php foreach ($companyStats as $s): 
+                $companyName = isset($s['company']) ? $s['company'] : 'N/A';
+                // Build query parameters for list_dm.php
+                $queryString = http_build_query([
+                    'company' => $companyName,
+                    'start_date' => $start_date,
+                    'end_date' => $end_date
+                ]);
+            ?>
+            <a href="list_dm.php?<?= $queryString ?>" class="flex justify-between items-center bg-rose-50 p-6 rounded-2xl transition hover:bg-rose-100 block">
                 <div class="truncate w-1/2">
-                    <p class="text-xl font-bold text-rose-900"><?= htmlspecialchars(isset($s['company']) ? $s['company'] : 'N/A') ?></p>
+                    <p class="text-xl font-bold text-rose-900"><?= htmlspecialchars($companyName) ?></p>
                     <p class="text-sm text-rose-600 font-bold"><?= number_format($s['memo_count']) ?> Memos</p>
                 </div>
                 <div class="text-right">
                     <p class="text-2xl font-black text-rose-900">₱<?= number_format($s['total_amt'], 2) ?></p>
                 </div>
-            </div>
+            </a>
             <?php endforeach; ?>
         </div>
     </div>
