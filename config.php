@@ -16,28 +16,7 @@ if (session_status() === PHP_SESSION_NONE) {
     session_start();
 }
 
-// 2. GLOBAL INACTIVITY TIMEOUT CHECK (Runs on every page that includes config.php)
-// Skip check if the user is currently on the login page to avoid redirect loops
-$current_page = basename($_SERVER['PHP_SELF']);
-if ($current_page !== 'login.php' && isset($_SESSION['user_id'])) {
-    
-    $inactive_timeout = 3600; // 1hr in seconds //
-
-    if (isset($_SESSION['last_activity']) && (time() - $_SESSION['last_activity'] > $inactive_timeout)) {
-        // Clear session data and destroy session
-        session_unset();
-        session_destroy();
-        
-        // Redirect to login with a timeout notice
-        header("Location: login.php?timeout=1");
-        exit;
-    }
-    
-    // Refresh the last activity timestamp on every active page load
-    $_SESSION['last_activity'] = time();
-}
-
-// 3. DATABASE CONFIGURATION SETTINGS
+// 2. DATABASE CONFIGURATION SETTINGS (Moved up so $conn is ready)
 $server_name   = 'localhost';
 $server_user   = 'root';
 $server_pass   = ''; 
@@ -49,5 +28,30 @@ try {
     $conn->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
 } catch (PDOException $e) {
     die("Database Connection Failed: " . $e->getMessage());
+}
+
+// 3. GLOBAL INACTIVITY TIMEOUT & LIVE STATUS CHECK
+$current_page = basename($_SERVER['PHP_SELF']);
+if ($current_page !== 'login.php' && isset($_SESSION['user_id'])) {
+    
+    $inactive_timeout = 3600; // 1hr in seconds
+
+    if (isset($_SESSION['last_activity']) && (time() - $_SESSION['last_activity'] > $inactive_timeout)) {
+        session_unset();
+        session_destroy();
+        header("Location: login.php?timeout=1");
+        exit;
+    }
+    
+    // Refresh session timestamp
+    $_SESSION['last_activity'] = time();
+
+    // Update database last_activity timestamp for live status
+    try {
+        $stmt = $conn->prepare("UPDATE users SET last_activity = NOW() WHERE id = ?");
+        $stmt->execute([$_SESSION['user_id']]);
+    } catch (PDOException $e) {
+        // Silently catch error
+    }
 }
 ?>

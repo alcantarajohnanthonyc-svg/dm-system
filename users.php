@@ -19,19 +19,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['ajax'])) {
     $is_active = isset($_POST['is_active']) ? (int)$_POST['is_active'] : 0;
     $password = isset($_POST['password']) ? $_POST['password'] : '';
 
-    // Handle AJAX Status Poll Request
+    // Handle AJAX Status Poll Request (5-minute window check)
     if ($action === 'get_statuses') {
         try {
             $all_users = $conn->query("
-                SELECT u.user_id, 
-                       (SELECT l.status FROM login_logs l WHERE l.username = u.username ORDER BY l.log_id DESC LIMIT 1) as last_status
-                FROM users u
+                SELECT user_id, 
+                       CASE 
+                           WHEN last_activity >= (NOW() - INTERVAL 5 MINUTE) THEN 1 
+                           ELSE 0 
+                       END as is_online
+                FROM users
             ")->fetchAll(PDO::FETCH_ASSOC);
             
             $statuses = array();
             foreach ($all_users as $u) {
-                $isOnline = (isset($u['last_status']) && strtoupper($u['last_status']) === 'SUCCESS');
-                $statuses[$u['user_id']] = $isOnline;
+                $statuses[$u['user_id']] = (bool)$u['is_online'];
             }
             echo json_encode(array('status' => 'success', 'data' => $statuses));
         } catch (PDOException $e) {
@@ -83,13 +85,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['ajax'])) {
     exit;
 }
 
-// Fetch users with their live login log status
+// Fetch users with their live activity status (5-minute window)
 try {
     $all_users = $conn->query("
-        SELECT u.*, 
-               (SELECT l.status FROM login_logs l WHERE l.username = u.username ORDER BY l.log_id DESC LIMIT 1) as last_status
-        FROM users u 
-        ORDER BY u.user_id DESC
+        SELECT *, 
+               CASE 
+                   WHEN last_activity >= (NOW() - INTERVAL 5 MINUTE) THEN 1 
+                   ELSE 0 
+               END as is_online
+        FROM users 
+        ORDER BY user_id DESC
     ")->fetchAll();
 } catch (PDOException $e) {
     $all_users = $conn->query("SELECT * FROM users ORDER BY user_id DESC")->fetchAll();
@@ -118,7 +123,7 @@ ob_start();
             </thead>
             <tbody class="text-sm divide-y">
                 <?php foreach ($all_users as $u): 
-                    $isOnline = (isset($u['last_status']) && strtoupper($u['last_status']) === 'SUCCESS');
+                    $isOnline = isset($u['is_online']) ? (bool)$u['is_online'] : false;
                 ?>
                     <tr data-user-id="<?php echo $u['user_id']; ?>">
                         <td class="px-6 py-4 uppercase"><?php echo htmlspecialchars($u['full_name']); ?></td>

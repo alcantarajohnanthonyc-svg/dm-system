@@ -1,12 +1,23 @@
     <?php
     // THIS FILE IS THE CORE TEMPLATE LAYOUT WRAPPER
     function render_layout($page_title, $content) {
+
+    global $conn;
+
         // Safely check authorization sessions
         if (!isset($_SESSION['user_id'])) {
             header("Location: login.php");
             exit;
         }
     
+       try {
+    $stmt = $conn->prepare("UPDATE users SET last_activity = NOW() WHERE user_id = ?");
+    $stmt->execute([$_SESSION['user_id']]);
+} catch (PDOException $e) {
+    // Silently catch error
+}
+
+
         $current_user_fullname = $_SESSION['full_name'];
         $current_user_username = $_SESSION['username'];
     

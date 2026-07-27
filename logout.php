@@ -14,6 +14,12 @@ if (isset($_SESSION['user_id'])) {
     try {
         $stmt = $conn->prepare("INSERT INTO login_logs (user_id, username, ip_address, status) VALUES (?, ?, ?, 'LOGOUT')");
         $stmt->execute([$_SESSION['user_id'], $_SESSION['username'], $ip]);
+
+
+        $stmt_offline = $conn->prepare("UPDATE users SET last_activity = NULL WHERE user_id = ?");
+        $stmt_offline->execute([$_SESSION['user_id']]);
+
+
     } catch (PDOException $e) {
         // Silently catch or handle error if logging fails, so logout still completes
     }

@@ -62,6 +62,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         $_SESSION['username']  = $user['username'];
                         $_SESSION['role']      = $user['role'];
 
+                        try {
+    $stmt = $conn->prepare("UPDATE users SET last_activity = NOW() WHERE user_id = ?");
+    $stmt->execute([$user['user_id']]);
+} catch (PDOException $e) {
+    // Handle error if needed
+}
+
                         header("Location: dashboard.php");
                         exit;
                     } else {
