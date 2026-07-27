@@ -106,16 +106,19 @@ ob_start();
             $userId = $_SESSION['user_id'];
             $isSuperAdmin = ($_SESSION['role'] === 'superadmin');
 
-            if ($isSuperAdmin) {
+           if ($isSuperAdmin) {
+                // Added WHERE h.status = 1 here
                 $stmt = $conn->query("SELECT h.batch_id, h.filename, h.import_mode, h.total_rows, h.success_count, h.error_count, h.created_at, h.user_id, u.username 
-                                   FROM import_history h 
-                                   LEFT JOIN users u ON h.user_id = u.user_id 
-                                   ORDER BY h.created_at DESC");
+                                     FROM import_history h 
+                                     LEFT JOIN users u ON h.user_id = u.user_id 
+                                     WHERE h.status = 1 
+                                     ORDER BY h.created_at DESC");
             } else {
+                // Added AND h.status = 1 to the existing conditions
                 $stmt = $conn->prepare("SELECT h.batch_id, h.filename, h.import_mode, h.total_rows, h.success_count, h.error_count, h.created_at, h.user_id, u.username 
                                         FROM import_history h 
                                         LEFT JOIN users u ON h.user_id = u.user_id 
-                                        WHERE h.user_id = ? AND DATE(h.created_at) = ? 
+                                        WHERE h.user_id = ? AND DATE(h.created_at) = ? AND h.status = 1 
                                         ORDER BY h.created_at DESC");
                 $stmt->execute([$userId, $today]);
             }

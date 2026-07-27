@@ -148,6 +148,8 @@ foreach ($temp_files as $file) {
 }
 
 if (file_exists($zip_path)) {
+    setcookie("fileDownloadToken", "success", time() + 60, "/");
+
     header('Content-Type: application/zip');
     header('Content-Disposition: attachment; filename="'.$zip_filename.'"');
     header('Content-Length: ' . filesize($zip_path));

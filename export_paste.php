@@ -205,6 +205,10 @@ $zip->close();
 
 // FINAL CLEANUP AND DOWNLOAD
 if (file_exists($zip_path) && filesize($zip_path) > 0) {
+
+setcookie("fileDownloadToken", "success", time() + 60, "/");
+
+
     header('Content-Type: application/zip');
     header('Content-Disposition: attachment; filename="Export_' . strtoupper($export_type) . '_' . date('Ymd_His') . '.zip"');
     header('Content-Length: ' . filesize($zip_path));

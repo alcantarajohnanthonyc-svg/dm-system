@@ -10,14 +10,22 @@ if (!isset($_SESSION['role']) || $_SESSION['role'] !== 'superadmin') {
 }
 
 /**
- * Function to fetch logs with LEFT JOIN 
+ * Function to fetch logs with LEFT JOIN and optional status filter
  */
-function getLogs($conn, $table) {
+function getLogs($conn, $table, $filterStatus = null) {
     try {
         $sql = "SELECT l.*, u.full_name 
                 FROM $table l 
-                LEFT JOIN users u ON l.user_id = u.user_id 
-                ORDER BY 1 DESC";
+                LEFT JOIN users u ON l.user_id = u.user_id";
+        
+        if ($filterStatus !== null && $table === 'import_history') {
+            $sql .= " WHERE l.status = ?";
+            $stmt = $conn->prepare($sql . " ORDER BY 1 DESC");
+            $stmt->execute([$filterStatus]);
+            return $stmt->fetchAll();
+        }
+
+        $sql .= " ORDER BY 1 DESC";
         return $conn->query($sql)->fetchAll();
     } catch (PDOException $e) {
         return []; 
@@ -25,7 +33,7 @@ function getLogs($conn, $table) {
 }
 
 $login_logs = getLogs($conn, 'login_logs');
-$import_logs = getLogs($conn, 'import_logs');
+$import_logs = getLogs($conn, 'import_history', 1);
 $revert_logs = getLogs($conn, 'revert_logs');
 
 ob_start();
@@ -36,14 +44,14 @@ ob_start();
     
     <div class="flex border-b border-gray-300">
         <button class="tab-btn px-6 py-2 border-b-2 border-blue-600 text-blue-600 font-medium" onclick="showTab(event, 'login')">Login Logs</button>
-        <button class="tab-btn px-6 py-2 text-gray-600 font-medium" onclick="showTab(event, 'import')">Import Logs</button>
+        <button class="tab-btn px-6 py-2 text-gray-600 font-medium" onclick="showTab(event, 'import')">Import History</button>
         <button class="tab-btn px-6 py-2 text-gray-600 font-medium" onclick="showTab(event, 'revert')">Revert Logs</button>
     </div>
 
     <div class="bg-white shadow rounded-lg overflow-hidden">
         <!-- Login Logs -->
         <div id="login" class="tab-content">
-            <table class="w-full text-left">
+            <table class="w-full text-center">
                 <thead class="bg-gray-50 border-b text-xs uppercase text-gray-500">
                     <tr><th class="p-4">User</th><th class="p-4">IP Address</th><th class="p-4">Status</th><th class="p-4">Time</th></tr>
                 </thead>
@@ -62,21 +70,30 @@ ob_start();
 
         <!-- Import Logs -->
         <div id="import" class="tab-content hidden">
-            <table class="w-full text-left">
+            <table class="w-full text-center">
                 <thead class="bg-gray-50 border-b text-xs uppercase text-gray-500">
-                    <tr><th class="p-4">User</th><th class="p-4">Batch ID</th><th class="p-4">Status</th><th class="p-4">Raw Data</th><th class="p-4">Remarks</th></tr>
+                    <tr>
+                        <th class="p-4">User</th>
+                        <th class="p-4">Batch ID</th>
+                        <th class="p-4">Filename</th>
+                        <th class="p-4">Mode</th>
+                        <th class="p-4">Total Rows</th>
+                        <th class="p-4">Success</th>
+                        <th class="p-4">Errors</th>
+                        <th class="p-4">Date / Time</th>
+                    </tr>
                 </thead>
-                <tbody class="divide-y">
+                <tbody class="divide-y text-sm">
                     <?php foreach($import_logs as $row): ?>
                     <tr class="hover:bg-gray-50">
                         <td class="p-4"><?php echo htmlspecialchars(isset($row['full_name']) ? $row['full_name'] : 'System'); ?></td>
-                        <td class="p-4"><?php echo htmlspecialchars($row['batch_id']); ?></td>
-                        <td class="p-4"><?php echo htmlspecialchars($row['status']); ?></td>
-                        <td class="p-4 text-xs font-mono text-gray-600 max-w-xs truncate cursor-pointer hover:text-blue-600" 
-                            onclick="openModal('<?php echo htmlspecialchars(addslashes($row['raw_row_data'])); ?>')">
-                            <?php echo htmlspecialchars($row['raw_row_data']); ?>
-                        </td>
-                        <td class="p-4"><?php echo htmlspecialchars($row['remarks']); ?></td>
+                        <td class="p-4 font-mono text-xs"><?php echo htmlspecialchars($row['batch_id']); ?></td>
+                        <td class="p-4 font-medium text-blue-600"><?php echo htmlspecialchars($row['filename']); ?></td>
+                        <td class="p-4 capitalize"><?php echo htmlspecialchars(str_replace('_', ' ', $row['import_mode'])); ?></td>
+                        <td class="p-4"><?php echo htmlspecialchars($row['total_rows']); ?></td>
+                        <td class="p-4 text-green-600 font-semibold"><?php echo htmlspecialchars($row['success_count']); ?></td>
+                        <td class="p-4 text-red-600 font-semibold"><?php echo htmlspecialchars($row['error_count']); ?></td>
+                        <td class="p-4 text-gray-500 text-xs"><?php echo htmlspecialchars($row['created_at']); ?></td>
                     </tr>
                     <?php endforeach; ?>
                 </tbody>
@@ -85,32 +102,28 @@ ob_start();
 
         <!-- Revert Logs -->
         <div id="revert" class="tab-content hidden">
-            <table class="w-full text-left">
+            <table class="w-full text-center">
                 <thead class="bg-gray-50 border-b text-xs uppercase text-gray-500">
-                    <tr><th class="p-4">User</th><th class="p-4">Batch ID</th><th class="p-4">Restored</th><th class="p-4">Remarks</th></tr>
+                    <tr>
+                        <th class="p-4">User</th>
+                        <th class="p-4">Batch ID</th>
+                        <th class="p-4">Restored</th>
+                        <th class="p-4">Total Imported</th>
+                        <th class="p-4">Remarks</th>
+                    </tr>
                 </thead>
                 <tbody class="divide-y">
                     <?php foreach($revert_logs as $row): ?>
                     <tr class="hover:bg-gray-50">
                         <td class="p-4"><?php echo htmlspecialchars(isset($row['full_name']) ? $row['full_name'] : 'Unknown'); ?></td>
-                        <td class="p-4"><?php echo htmlspecialchars($row['batch_id']); ?></td>
-                        <td class="p-4"><?php echo htmlspecialchars(isset($row['records_restored']) ? $row['records_restored'] : '0'); ?></td>
+                        <td class="p-4 font-mono text-xs"><?php echo htmlspecialchars($row['batch_id']); ?></td>
+                        <td class="p-4 font-semibold text-blue-600"><?php echo htmlspecialchars(isset($row['records_restored']) ? $row['records_restored'] : '0'); ?></td>
+                        <td class="p-4 font-semibold text-gray-700"><?php echo htmlspecialchars(isset($row['total_imported']) ? $row['total_imported'] : '0'); ?></td>
                         <td class="p-4"><?php echo htmlspecialchars($row['remarks']); ?></td>
                     </tr>
                     <?php endforeach; ?>
                 </tbody>
             </table>
-        </div>
-    </div>
-</div>
-
-<!-- Modal for Raw Data -->
-<div id="rawModal" class="hidden fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full z-50">
-    <div class="relative top-20 mx-auto p-5 border w-3/4 shadow-lg rounded-md bg-white">
-        <h3 class="text-lg font-bold mb-4">Full Raw Data</h3>
-        <pre id="modalContent" class="bg-gray-100 p-4 rounded text-sm overflow-x-auto whitespace-pre-wrap font-mono"></pre>
-        <div class="mt-4 text-right">
-            <button onclick="closeModal()" class="px-4 py-2 bg-blue-600 text-white rounded">Close</button>
         </div>
     </div>
 </div>
@@ -124,15 +137,6 @@ function showTab(evt, id) {
     });
     document.getElementById(id).classList.remove('hidden');
     evt.currentTarget.classList.add('border-b-2', 'border-blue-600', 'text-blue-600');
-}
-
-function openModal(data) {
-    document.getElementById('modalContent').textContent = data;
-    document.getElementById('rawModal').classList.remove('hidden');
-}
-
-function closeModal() {
-    document.getElementById('rawModal').classList.add('hidden');
 }
 </script>
 

@@ -397,68 +397,62 @@ function getCarrierBadge($carrierName) {
 
 
 <div id="breakdownModal" class="hidden fixed inset-0 bg-gray-600 bg-opacity-50 flex items-center justify-center z-50">
-<div class="bg-white rounded-lg shadow-xl w-[98%] max-w-[1600px] max-h-[90vh] flex flex-col p-6">
-<div class="flex justify-between items-start mb-4">
+    <div class="bg-white rounded-lg shadow-xl w-[98%] max-w-[1600px] max-h-[90vh] flex flex-col p-6">
+        <div class="flex justify-between items-start mb-4">
             <div>
                 <h3 id="modalAccountNumber" class="font-bold text-xl"></h3>
                 <p id="modalCompany" class="text-sm text-gray-500"></p>
             </div>
             
-          <div class="flex gap-2">
-    <?php if ($_SESSION['role'] === 'superadmin' || $_SESSION['role'] === 'admin'): ?>
-        <button type="button" onclick="deleteSelectedItems()" class="px-4 py-2 bg-rose-50 text-rose-700 border border-rose-200 rounded-md text-xs font-bold hover:bg-rose-100">
-            <i class="las la-trash mr-1"></i> DELETE SELECTED
-        </button>
-    <?php endif; ?>
-    
-   <button type="button" onclick="exportSelectedItems()" class="bg-green-600 text-white px-4 py-2 rounded text-xs font-bold hover:bg-green-700">EXPORT SELECTED</button>
-    <button onclick="closeAndRefresh()" class="bg-red-500 hover:bg-red-600 text-white px-4 py-2 rounded text-xs font-bold">
-        CLOSE
-    </button>
-</div>
+            <div class="flex gap-2">
+                <?php if ($_SESSION['role'] === 'superadmin' || $_SESSION['role'] === 'admin'): ?>
+                    <button type="button" onclick="deleteSelectedItems()" class="px-4 py-2 bg-rose-50 text-rose-700 border border-rose-200 rounded-md text-xs font-bold hover:bg-rose-100">
+                        <i class="las la-trash mr-1"></i> DELETE SELECTED
+                    </button>
+                <?php endif; ?>
+                
+                <button type="button" onclick="exportSelectedItems()" class="bg-green-600 text-white px-4 py-2 rounded text-xs font-bold hover:bg-green-700">
+                    EXPORT SELECTED
+                </button>
+                <button onclick="closeAndRefresh()" class="bg-red-500 hover:bg-red-600 text-white px-4 py-2 rounded text-xs font-bold">
+                    CLOSE
+                </button>
+            </div>
         </div>
 
-      <div class="overflow-x-auto border rounded-lg flex-grow">
-    <table class="w-full text-left border-collapse text-[9px] table-auto">
-     <div class="overflow-x-auto border rounded-lg flex-grow">
-    <table class="w-full text-left border-collapse text-[10px]">
-        <thead class="bg-blue-300 text-black uppercase font-bold">
-            <tr>
-                <th class="p-2 border border-gray-400 text-center"><input type="checkbox" id="modalSelectAll" onclick="toggleModalCheckboxes(this)"></th>
-                <th class="p-2 border border-gray-400 whitespace-normal text-center bg-yellow-300">Coverage Date</th>
-                <th class="p-2 border border-gray-400 whitespace-normal text-center bg-green-400">Mobile Number</th>
-                <th class="p-2 border border-gray-400 whitespace-normal text-center bg-blue-300">Approved Plan</th>
-                <th class="p-2 border border-gray-400 whitespace-normal text-center bg-blue-300">Phone Amortization</th>
-                <th class="p-2 border border-gray-400 whitespace-normal text-center bg-blue-300">Debit Adj</th>
-                <th class="p-2 border border-gray-400 whitespace-normal text-center bg-blue-300">Credit Adj</th>
-                <th class="p-2 border border-gray-400 whitespace-normal text-center bg-blue-300">Other Charges (Pre termination fee)</th>
-                <th class="p-2 border border-gray-400 whitespace-normal text-center bg-blue-300">Local (Call/Text to other networks)</th>
-                <th class="p-2 border border-gray-400 whitespace-normal text-center bg-blue-300">NDD (National)</th>
-                <th class="p-2 border border-gray-400 whitespace-normal text-center bg-blue-300">IDD (International)</th>
-                <th class="p-2 border border-gray-400 whitespace-normal text-center bg-blue-300">Roam</th>
-                <th class="p-2 border border-gray-400 whitespace-normal text-center bg-blue-300">SMS</th>
-                <th class="p-2 border border-gray-400 whitespace-normal text-center bg-blue-300">GPRS</th>
-                <th class="p-2 border border-gray-400 whitespace-normal text-center bg-blue-300">Wiz Usage</th>
-                <th class="p-2 border border-gray-400 whitespace-normal text-center bg-blue-300">Loading Charges</th>
-                <th class="p-2 border border-gray-400 whitespace-normal text-center bg-blue-300">VAT</th>
-                <th class="p-2 border border-gray-400 whitespace-normal text-center bg-blue-300">OCT</th>
-                <th class="p-2 border border-gray-400 whitespace-normal text-center bg-blue-300">Current Charges</th>
-                <th class="p-2 border border-gray-400 whitespace-normal text-center bg-blue-300">Total Amount Due</th>
-                <th class="p-2 border border-gray-400 whitespace-normal text-center bg-green-400">Debit Memo</th>
-                <th class="p-2 border border-gray-400 text-center">ACTION</th> </tr>
-            </tr>
-        </thead>
-
-
-        <tbody id="modalContentBody">
-
-            </tbody>
-    </table>
-</div>
-        <tbody id="modalContentBody" class="text-[9px]">
-            </tbody>
-    </table>
-</div>
+        <div class="overflow-x-auto border rounded-lg flex-grow">
+            <table class="w-full text-left border-collapse text-[10px]">
+                <thead class="bg-blue-300 text-black uppercase font-bold sticky top-0 z-10">
+                    <tr>
+                        <th class="p-2 border border-gray-400 text-center"><input type="checkbox" id="modalSelectAll" onclick="toggleModalCheckboxes(this)"></th>
+                        <th class="p-2 border border-gray-400 whitespace-normal text-center bg-yellow-300">Coverage Date</th>
+                        <th class="p-2 border border-gray-400 whitespace-normal text-center bg-green-400">Mobile Number</th>
+                        <th class="p-2 border border-gray-400 whitespace-normal text-center bg-blue-300">Approved Plan</th>
+                        <th class="p-2 border border-gray-400 whitespace-normal text-center bg-blue-300">Phone Amortization</th>
+                        <th class="p-2 border border-gray-400 whitespace-normal text-center bg-blue-300">Debit Adj</th>
+                        <th class="p-2 border border-gray-400 whitespace-normal text-center bg-blue-300">Credit Adj</th>
+                        <th class="p-2 border border-gray-400 whitespace-normal text-center bg-blue-300">Other Charges</th>
+                        <th class="p-2 border border-gray-400 whitespace-normal text-center bg-blue-300">Local (Call/Text)</th>
+                        <th class="p-2 border border-gray-400 whitespace-normal text-center bg-blue-300">NDD (National)</th>
+                        <th class="p-2 border border-gray-400 whitespace-normal text-center bg-blue-300">IDD (International)</th>
+                        <th class="p-2 border border-gray-400 whitespace-normal text-center bg-blue-300">Roam</th>
+                        <th class="p-2 border border-gray-400 whitespace-normal text-center bg-blue-300">SMS</th>
+                        <th class="p-2 border border-gray-400 whitespace-normal text-center bg-blue-300">GPRS</th>
+                        <th class="p-2 border border-gray-400 whitespace-normal text-center bg-blue-300">Wiz Usage</th>
+                        <th class="p-2 border border-gray-400 whitespace-normal text-center bg-blue-300">Loading Charges</th>
+                        <th class="p-2 border border-gray-400 whitespace-normal text-center bg-blue-300">VAT</th>
+                        <th class="p-2 border border-gray-400 whitespace-normal text-center bg-blue-300">OCT</th>
+                        <th class="p-2 border border-gray-400 whitespace-normal text-center bg-blue-300">Current Charges</th>
+                        <th class="p-2 border border-gray-400 whitespace-normal text-center bg-blue-300">Total Amount Due</th>
+                        <th class="p-2 border border-gray-400 whitespace-normal text-center bg-green-400">Debit Memo</th>
+                        <th class="p-2 border border-gray-400 text-center">ACTION</th>
+                    </tr>
+                </thead>
+                <tbody id="modalContentBody">
+                    <!-- Dynamic rows loaded via get_breakdown.php -->
+                </tbody>
+            </table>
+        </div>
     </div>
 </div>
 
@@ -985,11 +979,10 @@ function loadBreakdown(dm_id) {
 document.getElementById('addEditForm').addEventListener('submit', function(e) {
     e.preventDefault(); 
     
-    // 1. Prepare button element for "Saving" state
     const submitBtn = this.querySelector('button[type="submit"]');
     const originalText = submitBtn.innerText;
     
-    // 2. Validate Text Fields
+    // Validate Text Fields
     const requiredFields = ['account_number', 'company', 'mobile_number', 'carrier', 'coverage_start', 'coverage_end'];
     let allFieldsFilled = true;
 
@@ -1005,7 +998,7 @@ document.getElementById('addEditForm').addEventListener('submit', function(e) {
         return;
     }
 
-    // 3. Validate Amount Fields (Check for at least one > 0)
+    // Validate Amount Fields
     const amountInputs = this.querySelectorAll('input[type="number"]');
     let hasAmount = false;
     amountInputs.forEach(input => {
@@ -1019,7 +1012,6 @@ document.getElementById('addEditForm').addEventListener('submit', function(e) {
         return;
     }
 
-    // 4. Proceed with Saving
     submitBtn.innerText = "SAVING...";
     submitBtn.disabled = true;
 
@@ -1031,15 +1023,14 @@ document.getElementById('addEditForm').addEventListener('submit', function(e) {
     .then(data => {
         if (data.status === 'success') {
             closeModal();
-            // Reload logic
+            // Refresh modal contents or fallback to page reload
             if (typeof activeDmId !== 'undefined' && activeDmId > 0) {
-                loadBreakdown(activeDmId);
+                openBreakdownModal(activeDmId, document.getElementById('modalAccountNumber').innerText.replace("Account Number: ", ""), document.getElementById('modalCompany').innerText.replace("Company: ", ""), '');
             } else {
                 window.location.reload();
             }
         } else {
             alert("Error: " + data.message);
-            // Reset button if error
             submitBtn.innerText = originalText;
             submitBtn.disabled = false;
         }
@@ -1051,6 +1042,9 @@ document.getElementById('addEditForm').addEventListener('submit', function(e) {
         submitBtn.disabled = false;
     });
 });
+
+
+
 function openAddEditModal(dm_id = '') {
     const form = document.getElementById('addEditForm');
     form.reset();
@@ -1069,13 +1063,20 @@ function openAddEditModal(dm_id = '') {
 // FUNCTION 2: FOR EDITING (Ensures it is populated THEN locked)
 function editBreakdownItem(itemId) {
     fetch('get_item_data.php?id=' + itemId)
-    .then(res => res.json())
-    .then(data => {
+    .then(res => res.text()) // First read as text to debug what is actually returning
+    .then(text => {
+        let data;
+        try {
+            data = JSON.parse(text);
+        } catch (e) {
+            console.error("Server returned invalid JSON:", text);
+            alert("Error: get_item_data.php did not return valid JSON. Check console for details.");
+            return;
+        }
+
         if (!data) return;
 
         const form = document.getElementById('addEditForm');
-        
-        // Ensure we can write to the field before setting the value
         const accInput = form.querySelector('input[name="account_number"]');
         accInput.readOnly = false;
 
@@ -1107,7 +1108,6 @@ function editBreakdownItem(itemId) {
             'debit_memo_details': data.debit_memo_details
         };
 
-        // Populate fields
         for (const [name, value] of Object.entries(mappings)) {
             const input = form.querySelector(`input[name="${name}"]`);
             if (input) {
@@ -1117,13 +1117,11 @@ function editBreakdownItem(itemId) {
 
         document.getElementById('form_dm_id').value = data.id;
         document.getElementById('modalFormTitle').innerText = "Edit Debit Memo Item";
-        
-        // NOW lock the field so it cannot be modified during edit
         accInput.readOnly = true;
 
         document.getElementById('addEditModal').classList.remove('hidden');
     })
-    .catch(err => console.error("Error:", err));
+    .catch(err => console.error("Fetch Error:", err));
 }
 
 function deleteSelected() {
@@ -1158,6 +1156,45 @@ function deleteSelected() {
         }
     });
 }
+
+
+
+let downloadTimer;
+
+function checkDownloadCookie() {
+    if (document.cookie.indexOf('fileDownloadToken=success') !== -1) {
+        // Clear the cookie
+        document.cookie = 'fileDownloadToken=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;';
+
+        // 1. Uncheck main table row checkboxes
+        document.querySelectorAll('.dm-checkbox').forEach(chk => {
+            chk.checked = false;
+        });
+        const selectAllChk = document.getElementById('selectAll');
+        if (selectAllChk) selectAllChk.checked = false;
+
+        // 2. Uncheck breakdown modal row checkboxes and master checkbox
+        document.querySelectorAll('.item-checkbox').forEach(chk => {
+            chk.checked = false;
+        });
+        const modalSelectAllChk = document.getElementById('modalSelectAll');
+        if (modalSelectAllChk) modalSelectAllChk.checked = false;
+
+        // Stop polling
+        clearInterval(downloadTimer);
+    }
+}
+
+// Modify your executeUnifiedExport function or trigger it when export starts
+const originalExecuteUnifiedExport = window.executeUnifiedExport;
+if (typeof executeUnifiedExport === 'function') {
+    window.executeUnifiedExport = function(format) {
+        originalExecuteUnifiedExport(format);
+        // Start polling every 500ms for the download cookie response
+        downloadTimer = setInterval(checkDownloadCookie, 500);
+    };
+}
+
 
 </script>
 

@@ -20,6 +20,7 @@ $item_ids = !empty($item_ids_str) ? explode(',', $item_ids_str) : array();
 if ($dm_id <= 0) {
     die("Invalid request.");
 }
+setcookie("fileDownloadToken", "success", time() + 60, "/");
 
 if ($type === 'excel') {
     // --- EXCEL GENERATION LOGIC ---

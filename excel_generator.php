@@ -1,6 +1,6 @@
 <?php
 /**
- * Generates and downloads a Debit Memo Excel spreadsheet.
+ * Generates and downloads a Debit Memo Excel spreadsheet with yearly tabs, custom widths, and design formatting.
  * @param int $dm_id The ID of the debit memo
  * @param PDO $conn The database connection
  * @param array|null $item_ids Optional array of specific item IDs
@@ -35,85 +35,127 @@ function createDebitMemoExcel($dm_id, $conn, $item_ids = null, $startDate = null
         $params[':end_date']   = $effective_end;
     }
 
+    $sql .= " ORDER BY coverage_start ASC";
+
     $stmtItems = $conn->prepare($sql);
     $stmtItems->execute($params);
     $items = $stmtItems->fetchAll(PDO::FETCH_ASSOC);
 
-    // 3. Set Headers for Excel Download
-   // $filename = 'Account_' . $acc_num . '_' . date('Ymd_His') . '.xls';
-   $filename = 'Account_' . $acc_num . '.xls'; 
-   header('Content-Type: application/vnd.ms-excel');
+    // Group items by year
+    $grouped_by_year = array();
+    foreach ($items as $row) {
+        $year = 'Unknown';
+        if (!empty($row['coverage_start'])) {
+            $year = date('Y', strtotime($row['coverage_start']));
+        }
+        $grouped_by_year[$year][] = $row;
+    }
+
+    if (empty($grouped_by_year)) {
+        $grouped_by_year[date('Y')] = array();
+    }
+
+    // 3. Set Headers for Excel XML Download
+    $filename = 'Account_' . $acc_num . '.xls'; 
+    header('Content-Type: application/vnd.ms-excel');
     header('Content-Disposition: attachment; filename="' . $filename . '"');
     header('Pragma: no-cache');
     header('Expires: 0');
 
-    // 4. Output Spreadsheet HTML Structure
-    echo '<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns="http://www.w3.org/TR/REC-html40">';
-    echo '<head><meta charset="UTF-8"></head>';
-    echo '<body>';
+    // 4. Output Office XML Spreadsheet with Styling Definitions
+    echo '<?xml version="1.0" encoding="UTF-8"?>';
+    echo '<?mso-application progid="Excel.Sheet"?>';
+    echo '<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"';
+    echo ' xmlns:o="urn:schemas-microsoft-com:office:office"';
+    echo ' xmlns:x="urn:schemas-microsoft-com:office:excel"';
+    echo ' xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"';
+    echo ' xmlns:html="http://www.w3.org/TR/REC-html40">';
 
-    // Metadata Section
-    echo '<table border="0">';
-    echo '<tr><td colspan="3" style="font-weight: bold; font-size: 14pt;">ACCOUNT NUMBER: ' . htmlspecialchars($acc_num) . '</td></tr>';
-    echo '<tr><td colspan="3" style="font-weight: bold; font-size: 12pt;">COMPANY: ' . htmlspecialchars($company) . '</td></tr>';
-    echo '<tr><td colspan="3"></td></tr>';
-    echo '</table>';
+    // Define Styles
+    echo '<Styles>';
+    echo '<Style ss:ID="HeaderYellow"><Alignment ss:Horizontal="Center" ss:Vertical="Center"/><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1"/></Borders><Interior ss:Color="#fde047" ss:Pattern="Solid"/><Font ss:Bold="1"/></Style>';
+    echo '<Style ss:ID="HeaderGreen"><Alignment ss:Horizontal="Center" ss:Vertical="Center"/><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1"/></Borders><Interior ss:Color="#4ade80" ss:Pattern="Solid"/><Font ss:Bold="1"/></Style>';
+    echo '<Style ss:ID="HeaderBlue"><Alignment ss:Horizontal="Center" ss:Vertical="Center"/><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1"/></Borders><Interior ss:Color="#93c5fd" ss:Pattern="Solid"/><Font ss:Bold="1"/></Style>';
+    echo '<Style ss:ID="DataCell"><Alignment ss:Horizontal="Center" ss:Vertical="Center"/><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1"/></Borders></Style>';
+    echo '<Style ss:ID="RedCell"><Alignment ss:Horizontal="Center" ss:Vertical="Center"/><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1"/></Borders><Font ss:Bold="1" ss:Color="#dc2626"/></Style>';
+    echo '</Styles>';
 
-    // Data Table
-    echo '<table border="1" style="border-collapse: collapse; font-size: 10pt; font-family: Arial, sans-serif;">';
-    
-    $headers = array(
-        "COVERAGE DATE", "MOBILE NUMBER", "APPROVED PLAN", "PHONE AMORTIZATION", 
-        "DEBIT ADJ", "CREDIT ADJ", "OTHER CHARGES (PRE-TERM)", "LOCAL (CALL/TEXT)", 
-        "NDD (NATIONAL)", "IDD (INTERNATIONAL)", "ROAM", "SMS", "GPRS", 
-        "WIZ USAGE", "LOADING CHARGES", "VAT", "OCT", "CURRENT CHARGES", 
-        "TOTAL AMOUNT DUE", "DEBIT MEMO"
-    );
+    // Loop through each year to create a separate sheet tab
+    foreach ($grouped_by_year as $year => $year_items) {
+        echo '<Worksheet ss:Name="Year ' . htmlspecialchars($year) . '">';
+        echo '<Table>';
 
-    echo '<tr style="font-weight: bold; text-align: center;">';
-    foreach($headers as $index => $col) {
-        $bgColor = '#93c5fd'; 
-        if ($index == 0) $bgColor = '#fde047'; 
-        elseif ($index == 1 || $index == 19) $bgColor = '#4ade80'; 
+        // Explicit column widths to ensure long headers fit completely without truncation
+        $colWidths = [150, 130, 110, 130, 100, 100, 180, 130, 130, 140, 90, 80, 80, 90, 120, 80, 80, 130, 130, 100];
+        foreach ($colWidths as $w) {
+            echo '<Column ss:Width="' . $w . '"/>';
+        }
 
-        echo '<th style="background-color: ' . $bgColor . '; border: 1px solid #000000; padding: 6px; text-align: center;">' . htmlspecialchars($col) . '</th>';
-    }
-    echo '</tr>';
+        // Account Number Row
+        echo '<Row>';
+        echo '<Cell ss:Index="1" ss:MergeAcross="3"><Data ss:Type="String">ACCOUNT NUMBER: ' . htmlspecialchars($acc_num) . '</Data></Cell>';
+        echo '</Row>';
 
-    // Data Rows Loop
-    foreach ($items as $row) {
-        $start = isset($row['coverage_start']) ? date('M d, Y', strtotime($row['coverage_start'])) : '';
-        $end = isset($row['coverage_end']) ? date('M d, Y', strtotime($row['coverage_end'])) : '';
-        $dateText = $start . ' to ' . $end;
+        // Company Row
+        echo '<Row>';
+        echo '<Cell ss:Index="1" ss:MergeAcross="3"><Data ss:Type="String">COMPANY: ' . htmlspecialchars($company) . '</Data></Cell>';
+        echo '</Row>';
 
-        echo '<tr>';
-        echo '<td align="center" style="text-align: center; border: 1px solid #000000; mso-number-format:\@;">' . htmlspecialchars($dateText) . '</td>';
-        echo '<td align="center" style="text-align: center; border: 1px solid #000000; mso-number-format:\@;">' . htmlspecialchars($row['mobile_number']) . '</td>';
-        
-        $numericFields = array(
-            'approved_plan', 'phone_amortization', 'debit_adj', 'credit_adj', 
-            'other_charges', 'local_call_text', 'ndd_charges', 'idd_charges', 
-            'roaming_charges', 'sms_charges', 'gprs_charges', 'wiz_usage', 
-            'loading_charges', 'vat', 'oct', 'current_charges', 'total_amount_due', 
-            'debit_memo_details'
+        // Empty Spacer Row
+        echo '<Row></Row>';
+
+        // Headers Row
+        $headers = array(
+            "COVERAGE DATE", "MOBILE NUMBER", "APPROVED PLAN", "PHONE AMORTIZATION", 
+            "DEBIT ADJ", "CREDIT ADJ", "OTHER CHARGES (PRE-TERM)", "LOCAL (CALL/TEXT)", 
+            "NDD (NATIONAL)", "IDD (INTERNATIONAL)", "ROAM", "SMS", "GPRS", 
+            "WIZ USAGE", "LOADING CHARGES", "VAT", "OCT", "CURRENT CHARGES", 
+            "TOTAL AMOUNT DUE", "DEBIT MEMO"
         );
 
-       foreach ($numericFields as $field) {
-            $val = isset($row[$field]) ? (float)$row[$field] : 0.00;
-            // Removed mso-number-format:\@ so Excel recognizes them as actual numbers
-            $style = 'text-align: center; border: 1px solid #000000;';
-            if ($field === 'debit_memo_details') {
-                $style .= ' color: #dc2626; font-weight: bold;';
+        echo '<Row>';
+        foreach($headers as $index => $col) {
+            $styleID = 'HeaderBlue';
+            if ($index == 0) {
+                $styleID = 'HeaderYellow';
+            } elseif ($index == 1 || $index == 19) {
+                $styleID = 'HeaderGreen';
             }
-            $formattedVal = number_format($val, 2, '.', '');
-            echo '<td align="center" style="' . $style . '">' . htmlspecialchars($formattedVal) . '</td>';
+            echo '<Cell ss:StyleID="' . $styleID . '"><Data ss:Type="String">' . htmlspecialchars($col) . '</Data></Cell>';
         }
-        echo '</tr>';
+        echo '</Row>';
+
+        // Data Rows
+        foreach ($year_items as $row) {
+            $start = isset($row['coverage_start']) ? date('M d, Y', strtotime($row['coverage_start'])) : '';
+            $end = isset($row['coverage_end']) ? date('M d, Y', strtotime($row['coverage_end'])) : '';
+            $dateText = $start . ' to ' . $end;
+
+            echo '<Row>';
+            echo '<Cell ss:StyleID="DataCell"><Data ss:Type="String">' . htmlspecialchars($dateText) . '</Data></Cell>';
+            echo '<Cell ss:StyleID="DataCell"><Data ss:Type="String">' . htmlspecialchars($row['mobile_number']) . '</Data></Cell>';
+
+            $numericFields = array(
+                'approved_plan', 'phone_amortization', 'debit_adj', 'credit_adj', 
+                'other_charges', 'local_call_text', 'ndd_charges', 'idd_charges', 
+                'roaming_charges', 'sms_charges', 'gprs_charges', 'wiz_usage', 
+                'loading_charges', 'vat', 'oct', 'current_charges', 'total_amount_due', 
+                'debit_memo_details'
+            );
+
+            foreach ($numericFields as $field) {
+                $val = isset($row[$field]) ? (float)$row[$field] : 0.00;
+                $cellStyle = ($field === 'debit_memo_details') ? 'RedCell' : 'DataCell';
+                echo '<Cell ss:StyleID="' . $cellStyle . '"><Data ss:Type="Number">' . number_format($val, 2, '.', '') . '</Data></Cell>';
+            }
+            echo '</Row>';
+        }
+
+        echo '</Table>';
+        echo '</Worksheet>';
     }
 
-    echo '</table>';
-    echo '</body>';
-    echo '</html>';
+    echo '</Workbook>';
     exit;
 }
 ?>

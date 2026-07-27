@@ -16,6 +16,11 @@ $historyStmt = $conn->prepare("SELECT filename, import_mode FROM import_history 
         $filename = $batchInfo ? $batchInfo['filename'] : 'Unknown File';
         $importMode = $batchInfo ? $batchInfo['import_mode'] : 'add_new';
 
+
+        $totalImportedStmt = $conn->prepare("SELECT COUNT(*) FROM debit_memo_items WHERE batch_id = ?");
+        $totalImportedStmt->execute([$batch_id]);
+        $totalImportedCount = $totalImportedStmt->fetchColumn();
+
         $conn->beginTransaction();
         
         // 1. Count records for the log
@@ -66,9 +71,10 @@ $historyStmt = $conn->prepare("SELECT filename, import_mode FROM import_history 
             }
         }
         
-        // 3. Log the revert action
-        $conn->prepare("INSERT INTO revert_logs (batch_id, user_id, reverted_at, records_restored, remarks) VALUES (?, ?, NOW(), ?, ?)")
-             ->execute([$batch_id, $user_id, $restoreCount, 'Batch successfully reverted to previous state.']);
+
+     // 3. Log the revert action (updated to include total_imported)
+        $conn->prepare("INSERT INTO revert_logs (batch_id, user_id, reverted_at, total_imported, records_restored, remarks) VALUES (?, ?, NOW(), ?, ?, ?)")
+             ->execute([$batch_id, $user_id, $totalImportedCount, $restoreCount, 'Batch successfully reverted to previous state.']);
         
         // 4. Cleanup: Remove only records strictly created by this batch that weren't backed up
         $conn->prepare("DELETE FROM debit_memo_items WHERE batch_id = ? AND id NOT IN (SELECT record_id FROM import_backups WHERE batch_id = ? AND table_name = 'debit_memo_items')")
@@ -79,8 +85,7 @@ $historyStmt = $conn->prepare("SELECT filename, import_mode FROM import_history 
         
         // 5. Finalize Cleanup
         $conn->prepare("DELETE FROM import_backups WHERE batch_id = ?")->execute([$batch_id]);
-        $conn->prepare("DELETE FROM import_history WHERE batch_id = ?")->execute([$batch_id]);
-        
+        $conn->prepare("UPDATE import_history SET status = 0 WHERE batch_id = ?")->execute([$batch_id]);            
         $conn->commit();
         
         // Save revert result data for the dedicated revert summary view page
@@ -89,6 +94,7 @@ $historyStmt = $conn->prepare("SELECT filename, import_mode FROM import_history 
             'batch_id' => $batch_id,
             'filename' => $filename,
             'mode' => $importMode,
+            'total_imported' => $totalImportedCount,
             'total_reverted' => $restoreCount,
             'reverted_at' => date('Y-m-d H:i:s')
         ];

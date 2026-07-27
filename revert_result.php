@@ -9,21 +9,25 @@ if (!isset($_SESSION['revert_result'])) {
 $res = $_SESSION['revert_result'];
 $modeText = (isset($res['mode']) && $res['mode'] === 'update') ? 'UPDATE' : 'ADD NEW';
 $totalReverted = isset($res['total_reverted']) ? $res['total_reverted'] : 0;
+$totalImported = isset($res['total_imported']) ? $res['total_imported'] : $totalReverted;
 $filename = isset($res['filename']) ? $res['filename'] : 'Unknown File';
 ?>
 <!DOCTYPE html>
 <html>
 <head>
     <title>Revert Summary</title>
-    <style>
-        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f8fafc; padding: 40px; }
-        .container { max-width: 900px; margin: 0 auto; padding: 40px; background: white; border-radius: 16px; border: 1px solid #e5e7eb; box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1); }
-        .stats-grid { display: grid; grid-template-columns: repeat(1, 1fr); gap: 20px; margin: 30px 0; }
-        .stat-card { padding: 25px; border-radius: 12px; background: #f8fafc; border: 1px solid #e2e8f0; text-align: center; border-top: 4px solid #e11d48; }
-        .stat-value { font-size: 38px; font-weight: 800; margin-top: 10px; color: #e11d48; }
-        .btn { display: inline-block; padding: 12px 24px; border-radius: 8px; text-decoration: none; font-weight: 600; margin: 5px; border: none; cursor: pointer; font-size: 14px; }
-        .btn-primary { background: #2563eb; color: white; }
-    </style>
+   <style>
+    body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f8fafc; padding: 40px; }
+    .container { max-width: 900px; margin: 0 auto; padding: 40px; background: white; border-radius: 16px; border: 1px solid #e5e7eb; box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1); }
+    /* Changed grid-template-columns to repeat(2, 1fr) for two side-by-side cards */
+    .stats-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 20px; margin: 30px 0; }
+    .stat-card { padding: 25px; border-radius: 12px; background: #f8fafc; border: 1px solid #e2e8f0; text-align: center; border-top: 4px solid #e11d48; }
+    .stat-card.blue { border-top-color: #2563eb; }
+    .stat-card.blue .stat-value { color: #2563eb; }
+    .stat-value { font-size: 38px; font-weight: 800; margin-top: 10px; color: #e11d48; }
+    .btn { display: inline-block; padding: 12px 24px; border-radius: 8px; text-decoration: none; font-weight: 600; margin: 5px; border: none; cursor: pointer; font-size: 14px; }
+    .btn-primary { background: #2563eb; color: white; }
+</style>
 </head>
 <body>
 
@@ -35,9 +39,16 @@ $filename = isset($res['filename']) ? $res['filename'] : 'Unknown File';
 
     <hr style="border: 0; border-top: 1px solid #e5e7eb; margin: 20px 0;">
 
-    <div class="stats-grid">
+   <div class="stats-grid">
+        <!-- Total Imported Data Card -->
+        <div class="stat-card blue">
+            <div style="color: #475569; font-size: 16px; font-weight: 600;">Total Import Data</div>
+            <div class="stat-value"><?php echo htmlspecialchars($totalImported); ?></div>
+        </div>
+
+        <!-- Total Reverted Card -->
         <div class="stat-card">
-            <div style="color: #475569; font-size: 16px; font-weight: 600;">Total Rows Reverted / Rolled Back</div>
+            <div style="color: #475569; font-size: 16px; font-weight: 600;">Total Rows Reverted</div>
             <div class="stat-value"><?php echo htmlspecialchars($totalReverted); ?></div>
         </div>
     </div>

@@ -9,10 +9,15 @@ require_once 'config.php';
 
 $errorMessage = "";
 
+// Check if a remembered cookie exists to pre-fill the username
+$rememberedUsername = isset($_COOKIE['remembered_username']) ? $_COOKIE['remembered_username'] : '';
+$isRemembered = !empty($rememberedUsername);
+
 // 3. PROCESS THE FORM SUBMISSION
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $usernameInput = isset($_POST['username']) ? trim($_POST['username']) : '';
     $passwordInput = isset($_POST['password']) ? trim($_POST['password']) : '';
+    $rememberMe    = isset($_POST['remember_me']) ? true : false;
 
     if (!empty($usernameInput) && !empty($passwordInput)) {
         try {
@@ -39,6 +44,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             $logStmt->execute([$user['user_id'], $user['username'], $ip]);
                         } catch (PDOException $logEx) {
                             die("Database Logging Error: " . $logEx->getMessage());
+                        }
+
+                        // Handle Remember Me Cookie (stores username securely for 30 days)
+                        if ($rememberMe) {
+                            setcookie('remembered_username', $user['username'], time() + (86400 * 30), "/", "", false, true);
+                        } else {
+                            // Clear cookie if unchecked
+                            if (isset($_COOKIE['remembered_username'])) {
+                                setcookie('remembered_username', '', time() - 3600, "/");
+                            }
                         }
 
                         // Set Session
@@ -100,7 +115,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             <div>
                 <label for="username" class="block text-sm font-medium text-gray-700 mb-1">Username or Email</label>
                 <input type="text" id="username" name="username" required 
-                    value="<?php echo isset($_POST['username']) ? htmlspecialchars($_POST['username']) : ''; ?>"
+                    value="<?php echo isset($_POST['username']) ? htmlspecialchars($_POST['username']) : htmlspecialchars($rememberedUsername); ?>"
                     class="w-full px-4 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 outline-none transition"
                     placeholder="Enter admin or email">
             </div>
@@ -110,6 +125,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 <input type="password" id="password" name="password" required 
                     class="w-full px-4 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 outline-none transition"
                     placeholder="••••••••">
+            </div>
+
+            <div class="flex items-center justify-between text-sm">
+                <label class="flex items-center text-gray-600 cursor-pointer">
+                    <input type="checkbox" name="remember_me" <?php echo $isRemembered ? 'checked' : ''; ?> class="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded">
+                    <span class="ml-2">Save username</span>
+                </label>
             </div>
 
             <div>

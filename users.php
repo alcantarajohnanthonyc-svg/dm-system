@@ -10,15 +10,35 @@ if (!isset($_SESSION['role']) || $_SESSION['role'] !== 'superadmin') {
 
 // Handle AJAX Request
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['ajax'])) {
-    // Compatible syntax for older PHP versions
     $action = isset($_POST['action']) ? $_POST['action'] : '';
     $uid = isset($_POST['user_id']) ? (int)$_POST['user_id'] : 0;
-    $fn = isset($_POST['full_name']) ? trim($_POST['full_name']) : '';
+    $fn = isset($_POST['full_name']) ? strtoupper(trim($_POST['full_name'])) : '';
     $user = isset($_POST['username']) ? trim($_POST['username']) : '';
     $email = isset($_POST['email']) ? trim($_POST['email']) : '';
     $role = isset($_POST['role']) ? $_POST['role'] : 'user';
     $is_active = isset($_POST['is_active']) ? (int)$_POST['is_active'] : 0;
     $password = isset($_POST['password']) ? $_POST['password'] : '';
+
+    // Handle AJAX Status Poll Request
+    if ($action === 'get_statuses') {
+        try {
+            $all_users = $conn->query("
+                SELECT u.user_id, 
+                       (SELECT l.status FROM login_logs l WHERE l.username = u.username ORDER BY l.log_id DESC LIMIT 1) as last_status
+                FROM users u
+            ")->fetchAll(PDO::FETCH_ASSOC);
+            
+            $statuses = array();
+            foreach ($all_users as $u) {
+                $isOnline = (isset($u['last_status']) && strtoupper($u['last_status']) === 'SUCCESS');
+                $statuses[$u['user_id']] = $isOnline;
+            }
+            echo json_encode(array('status' => 'success', 'data' => $statuses));
+        } catch (PDOException $e) {
+            echo json_encode(array('status' => 'error', 'message' => $e->getMessage()));
+        }
+        exit;
+    }
 
     try {
         $checkSql = ($action === 'create') 
@@ -36,20 +56,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['ajax'])) {
                 $stmt = $conn->prepare("INSERT INTO users (username, full_name, email, password_hash, is_active, role) VALUES (?, ?, ?, ?, ?, ?)");
                 $stmt->execute(array($user, $fn, $email, password_hash($password, PASSWORD_DEFAULT), $is_active, $role));
             } 
-            
-             elseif ($action === 'delete') {
-    // SECURITY: Prevent Super Admin from deleting themselves
-    if ($uid === $_SESSION['user_id']) {
-        echo json_encode(array('status' => 'error', 'message' => 'Cannot delete your own account.'));
-        exit;
-    }
-    $stmt = $conn->prepare("DELETE FROM users WHERE user_id = ?");
-    $stmt->execute(array($uid));
-    echo json_encode(array('status' => 'success', 'message' => 'Account deleted successfully!'));
-    exit;
-}
-
-else {
+            elseif ($action === 'delete') {
+                if ($uid === $_SESSION['user_id']) {
+                    echo json_encode(array('status' => 'error', 'message' => 'Cannot delete your own account.'));
+                    exit;
+                }
+                $stmt = $conn->prepare("DELETE FROM users WHERE user_id = ?");
+                $stmt->execute(array($uid));
+                echo json_encode(array('status' => 'success', 'message' => 'Account deleted successfully!'));
+                exit;
+            } else {
                 if (!empty($password)) {
                     $stmt = $conn->prepare("UPDATE users SET full_name=?, username=?, email=?, role=?, is_active=?, password_hash=? WHERE user_id=?");
                     $stmt->execute(array($fn, $user, $email, $role, $is_active, password_hash($password, PASSWORD_DEFAULT), $uid));
@@ -66,7 +82,19 @@ else {
     }
     exit;
 }
-$all_users = $conn->query("SELECT * FROM users ORDER BY user_id DESC")->fetchAll();
+
+// Fetch users with their live login log status
+try {
+    $all_users = $conn->query("
+        SELECT u.*, 
+               (SELECT l.status FROM login_logs l WHERE l.username = u.username ORDER BY l.log_id DESC LIMIT 1) as last_status
+        FROM users u 
+        ORDER BY u.user_id DESC
+    ")->fetchAll();
+} catch (PDOException $e) {
+    $all_users = $conn->query("SELECT * FROM users ORDER BY user_id DESC")->fetchAll();
+}
+
 ob_start();
 ?>
 
@@ -79,31 +107,46 @@ ob_start();
     <div class="bg-white rounded-lg shadow-sm border overflow-x-auto">
         <table class="w-full text-left">
             <thead class="bg-gray-50 border-b text-xs font-semibold uppercase text-gray-500">
-                <tr><th class="px-6 py-3">Full Name</th><th class="px-6 py-3">Username</th><th class="px-6 py-3">Role</th><th class="px-6 py-3">Status</th><th class="px-6 py-3">Actions</th></tr>
+                <tr>
+                    <th class="px-6 py-3">Full Name</th>
+                    <th class="px-6 py-3">Username</th>
+                    <th class="px-6 py-3">Role</th>
+                    <th class="px-6 py-3">Status</th>
+                    <th class="px-6 py-3">Live Status</th>
+                    <th class="px-6 py-3">Actions</th>
+                </tr>
             </thead>
             <tbody class="text-sm divide-y">
-                <?php foreach ($all_users as $u): ?>
-                    <tr>
-                        <td class="px-6 py-4"><?php echo htmlspecialchars($u['full_name']); ?></td>
+                <?php foreach ($all_users as $u): 
+                    $isOnline = (isset($u['last_status']) && strtoupper($u['last_status']) === 'SUCCESS');
+                ?>
+                    <tr data-user-id="<?php echo $u['user_id']; ?>">
+                        <td class="px-6 py-4 uppercase"><?php echo htmlspecialchars($u['full_name']); ?></td>
                         <td class="px-6 py-4"><?php echo htmlspecialchars($u['username']); ?></td>
                         <td class="px-6 py-4 capitalize"><?php echo htmlspecialchars($u['role']); ?></td>
                         <td class="px-6 py-4"><?php echo $u['is_active'] ? 'Active' : 'Inactive'; ?></td>
+                        <td class="px-6 py-4 live-status-cell">
+                            <?php if ($isOnline): ?>
+                                <span class="px-3 py-1 bg-green-100 text-green-700 rounded-full text-xs font-bold">ONLINE</span>
+                            <?php else: ?>
+                                <span class="px-3 py-1 bg-red-100 text-red-700 rounded-full text-xs font-bold">OFFLINE</span>
+                            <?php endif; ?>
+                        </td>
                         <td class="px-6 py-4 flex gap-5">
-    <button type="button" 
-            onclick="editUser(<?php echo $u['user_id']; ?>, '<?php echo htmlspecialchars($u['full_name']); ?>', '<?php echo htmlspecialchars($u['username']); ?>', '<?php echo htmlspecialchars($u['email']); ?>', '<?php echo $u['role']; ?>', <?php echo $u['is_active']; ?>)" 
-            class="text-blue-600 hover:text-blue-800 transition-colors"
-            title="Edit">
-        <i class="las la-edit text-xl"></i>
-    </button>
+                            <button type="button" 
+                                    onclick="editUser(<?php echo $u['user_id']; ?>, '<?php echo htmlspecialchars($u['full_name']); ?>', '<?php echo htmlspecialchars($u['username']); ?>', '<?php echo htmlspecialchars($u['email']); ?>', '<?php echo $u['role']; ?>', <?php echo $u['is_active']; ?>)" 
+                                    class="text-blue-600 hover:text-blue-800 transition-colors"
+                                    title="Edit">
+                                <i class="las la-edit text-xl"></i>
+                            </button>
 
-    <button type="button" 
-            onclick="deleteUser(<?php echo $u['user_id']; ?>)" 
-            class="text-red-600 hover:text-red-800 transition-colors"
-            title="Delete">
-        <i class="las la-trash text-xl"></i>
-    </button>
-</td>
-
+                            <button type="button" 
+                                    onclick="deleteUser(<?php echo $u['user_id']; ?>)" 
+                                    class="text-red-600 hover:text-red-800 transition-colors"
+                                    title="Delete">
+                                <i class="las la-trash text-xl"></i>
+                            </button>
+                        </td>
                     </tr>
                 <?php endforeach; ?>
             </tbody>
@@ -118,10 +161,10 @@ ob_start();
         <form class="ajax-form space-y-4">
             <input type="hidden" name="action" value="create">
             <input type="hidden" name="ajax" value="1">
-            <div><label class="block text-xs font-bold text-gray-700">FULL NAME</label><input type="text" name="full_name" required class="w-full p-2 border rounded text-sm"></div>
+            <div><label class="block text-xs font-bold text-gray-700">FULL NAME</label><input type="text" name="full_name" required class="w-full p-2 border rounded text-sm uppercase" style="text-transform: uppercase;"></div>
             <div><label class="block text-xs font-bold text-gray-700">EMAIL</label><input type="email" name="email" required class="w-full p-2 border rounded text-sm"></div>
             <div><label class="block text-xs font-bold text-gray-700">USERNAME</label><input type="text" name="username" required class="w-full p-2 border rounded text-sm"></div>
-            <div><label class="block text-xs font-bold text-gray-700">PASSWORD</label><input type="password" name="password" required class="w-full p-2 border rounded text-sm"></div>
+            <div><label class="block text-xs font-bold text-gray-700">PASSWORD</label><input type="text" name="password" value="bounty" required class="w-full p-2 border rounded text-sm font-mono"></div>
             <div class="grid grid-cols-2 gap-4">
                 <div><label class="block text-xs font-bold text-gray-700">STATUS</label><select name="is_active" class="w-full p-2 border rounded text-sm"><option value="1">Active</option><option value="0">Inactive</option></select></div>
                 <div><label class="block text-xs font-bold text-gray-700">ROLE</label><select name="role" class="w-full p-2 border rounded text-sm"><option value="user">User</option><option value="admin">Admin</option><option value="superadmin">Super Admin</option></select></div>
@@ -139,10 +182,10 @@ ob_start();
             <input type="hidden" name="action" value="edit">
             <input type="hidden" name="ajax" value="1">
             <input type="hidden" name="user_id" id="edit_user_id">
-            <div><label class="block text-xs font-bold text-gray-700">FULL NAME</label><input type="text" name="full_name" id="edit_fn" required class="w-full p-2 border rounded text-sm"></div>
+            <div><label class="block text-xs font-bold text-gray-700">FULL NAME</label><input type="text" name="full_name" id="edit_fn" required class="w-full p-2 border rounded text-sm uppercase" style="text-transform: uppercase;"></div>
             <div><label class="block text-xs font-bold text-gray-700">EMAIL</label><input type="email" name="email" id="edit_email" required class="w-full p-2 border rounded text-sm"></div>
             <div><label class="block text-xs font-bold text-gray-700">USERNAME</label><input type="text" name="username" id="edit_user" required class="w-full p-2 border rounded text-sm"></div>
-            <div><label class="block text-xs font-bold text-gray-700">NEW PASSWORD</label><input type="password" name="password" placeholder="Leave blank to keep current" class="w-full p-2 border rounded text-sm"></div>
+            <div><label class="block text-xs font-bold text-gray-700">NEW PASSWORD</label><input type="text" name="password" placeholder="Leave blank to keep current" class="w-full p-2 border rounded text-sm font-mono"></div>
             <div class="grid grid-cols-2 gap-4">
                 <div><label class="block text-xs font-bold text-gray-700">STATUS</label><select name="is_active" id="edit_active" class="w-full p-2 border rounded text-sm"><option value="1">Active</option><option value="0">Inactive</option></select></div>
                 <div><label class="block text-xs font-bold text-gray-700">ROLE</label><select name="role" id="edit_role" class="w-full p-2 border rounded text-sm"><option value="user">User</option><option value="admin">Admin</option><option value="superadmin">Super Admin</option></select></div>
@@ -211,6 +254,38 @@ function deleteUser(id) {
     })
     .catch(err => console.error("Error:", err));
 }
+
+// Auto-check statuses every 5 seconds without reloading the page
+setInterval(() => {
+    let formData = new FormData();
+    formData.append('ajax', '1');
+    formData.append('action', 'get_statuses');
+
+    fetch('users.php', {
+        method: 'POST',
+        body: formData
+    })
+    .then(res => res.json())
+    .then(res => {
+        if (res.status === 'success') {
+            for (let userId in res.data) {
+                let isOnline = res.data[userId];
+                let row = document.querySelector(`tr[data-user-id='${userId}']`);
+                if (row) {
+                    let cell = row.querySelector('.live-status-cell');
+                    if (cell) {
+                        if (isOnline) {
+                            cell.innerHTML = '<span class="px-3 py-1 bg-green-100 text-green-700 rounded-full text-xs font-bold">ONLINE</span>';
+                        } else {
+                            cell.innerHTML = '<span class="px-3 py-1 bg-red-100 text-red-700 rounded-full text-xs font-bold">OFFLINE</span>';
+                        }
+                    }
+                }
+            }
+        }
+    })
+    .catch(err => console.error("Status polling error:", err));
+}, 5000);
 </script>
 <?php
 $content = ob_get_clean();
