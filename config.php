@@ -18,8 +18,10 @@ if (session_status() === PHP_SESSION_NONE) {
 
 // 2. DATABASE CONFIGURATION SETTINGS (Moved up so $conn is ready)
 $server_name   = 'localhost';
+//$server_user   = 'app_user';
+//$server_pass   = 'Bounty2026'; 
 $server_user   = 'root';
-$server_pass   = ''; 
+$server_pass   = '';
 $database_name = 'admin_dm';
 
 try {

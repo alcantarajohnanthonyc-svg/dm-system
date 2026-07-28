@@ -84,8 +84,16 @@ if ($total_rows > 0) {
             $formatted_start = adjustDate($row[23]);
             $formatted_end   = adjustDate($row[24]);
 
-            if (empty($company) || empty($acc_num) || empty($mobile) || !$formatted_start || !$formatted_end) 
-                throw new Exception("Validation failed: Missing required fields or invalid dates.");
+          $errors = [];
+            if (empty($company))       $errors[] = "Company is missing";
+            if (empty($acc_num))       $errors[] = "Account number is missing";
+            if (empty($mobile))        $errors[] = "Mobile number is missing";
+            if (!$formatted_start)     $errors[] = "Invalid start date";
+            if (!$formatted_end)       $errors[] = "Invalid end date";
+
+            if (!empty($errors)) {
+                throw new Exception("Validation failed: " . implode(', ', $errors) . ".");
+            }
 
             $conn->beginTransaction();
 
