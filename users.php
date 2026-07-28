@@ -11,6 +11,23 @@ if (!isset($_SESSION['role']) || $_SESSION['role'] !== 'superadmin') {
 // Handle AJAX Request
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['ajax'])) {
     $action = isset($_POST['action']) ? $_POST['action'] : '';
+
+    // Handle Global Heartbeat Ping from layout wrapper
+    if ($action === 'heartbeat') {
+        if (isset($_SESSION['user_id'])) {
+            try {
+                $stmt = $conn->prepare("UPDATE users SET last_activity = NOW() WHERE user_id = ?");
+                $stmt->execute([$_SESSION['user_id']]);
+                echo json_encode(array('status' => 'success'));
+            } catch (PDOException $e) {
+                echo json_encode(array('status' => 'error', 'message' => $e->getMessage()));
+            }
+        } else {
+            echo json_encode(array('status' => 'error', 'message' => 'Unauthorized'));
+        }
+        exit;
+    }
+
     $uid = isset($_POST['user_id']) ? (int)$_POST['user_id'] : 0;
     $fn = isset($_POST['full_name']) ? strtoupper(trim($_POST['full_name'])) : '';
     $user = isset($_POST['username']) ? trim($_POST['username']) : '';
@@ -205,7 +222,7 @@ document.querySelectorAll('.ajax-form').forEach(form => {
     form.addEventListener('submit', function(e) {
         e.preventDefault();
         let errorBox = this.parentElement.querySelector('[id$="_error_box"]');
-        fetch('users.php', { method: 'POST', body: new FormData(this) })
+        fetch(window.location.pathname, { method: 'POST', body: new FormData(this) })
         .then(res => res.json())
         .then(data => {
             if (data.status === 'success') {
@@ -244,7 +261,7 @@ function deleteUser(id) {
     formData.append('action', 'delete');
     formData.append('user_id', id);
 
-    fetch('users.php', {
+    fetch(window.location.pathname, {
         method: 'POST',
         body: formData
     })
@@ -266,7 +283,7 @@ setInterval(() => {
     formData.append('ajax', '1');
     formData.append('action', 'get_statuses');
 
-    fetch('users.php', {
+    fetch(window.location.pathname, {
         method: 'POST',
         body: formData
     })
@@ -290,7 +307,7 @@ setInterval(() => {
         }
     })
     .catch(err => console.error("Status polling error:", err));
-}, 5000);
+}, 60000);
 </script>
 <?php
 $content = ob_get_clean();
