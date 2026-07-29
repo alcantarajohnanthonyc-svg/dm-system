@@ -9,6 +9,8 @@ if (!isset($_SESSION['role']) || $_SESSION['role'] !== 'superadmin') {
     exit;
 }
 
+
+
 /**
  * Function to fetch logs with LEFT JOIN and optional status filter
  */

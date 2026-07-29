@@ -11,6 +11,10 @@ if (!isset($_SESSION['user_id'])) {
     exit;
 }
 
+session_start();
+require_once 'config.php';
+
+
 
 if (isset($_GET['account_number'])) {
     $acc = $_GET['account_number'];
@@ -615,6 +619,88 @@ function submitPasteExport(type) {
 </div>
         </form>
     </div>
+</div><div id="addEditModal" class="hidden fixed inset-0 bg-gray-600 bg-opacity-50 flex items-center justify-center z-50">
+    <div class="bg-white rounded-lg shadow-xl w-full max-w-5xl p-6 max-h-[90vh] overflow-y-auto">
+     <h3 id="modalFormTitle" class="font-bold text-xl">Add Debit Memo Item</h3>
+        
+<form id="addEditForm" method="POST" action="save_record.php" novalidate>
+<input type="hidden" id="form_dm_id" name="id" value="">
+
+            <div class="grid grid-cols-1 sm:grid-cols-3 md:grid-cols-5 gap-4 mb-6 bg-gray-50 p-4 rounded-md">
+                <div>
+                    <label class="block text-[10px] font-bold text-gray-500 uppercase">Account #</label>
+                   <input type="text" name="account_number" list="acc_list" 
+       class="w-full p-2 border rounded-md text-xs" 
+       onchange="fetchAccountDetails(this.value)" 
+       onblur="fetchAccountDetails(this.value)"
+       placeholder="Search/Select..." required>
+                    <div id="accFeedback" class="text-[9px] font-bold mt-1" placeholder="Select/Type..."></div>
+                </div>
+                <div>
+                    <label class="block text-[10px] font-bold text-gray-500 uppercase">Company</label>
+                    <input type="text" name="company" class="w-full p-2 border rounded-md text-xs" required>
+                </div>
+                <div>
+                    <label class="block text-[10px] font-bold text-gray-500 uppercase">Assignee</label>
+                    <input type="text" name="assignee" class="w-full p-2 border rounded-md text-xs">
+                </div>
+                <div>
+                    <label class="block text-[10px] font-bold text-gray-500 uppercase">Mobile #</label>
+                    <input type="text" name="mobile_number" class="w-full p-2 border rounded-md text-xs" required>
+                </div>
+                <div>
+                    <label class="block text-[10px] font-bold text-gray-500 uppercase">Carrier</label>
+                    <input type="text" name="carrier" list="carrier_input" class="w-full p-2 border rounded-md text-xs" required>
+                </div>
+            </div>
+
+            <div class="grid grid-cols-2 gap-4 mb-6">
+                <div><label class="block text-[10px] font-bold text-gray-500 uppercase">Start Date</label><input type="date" name="coverage_start" class="w-full p-2 border rounded-md text-xs" required></div>
+                <div><label class="block text-[10px] font-bold text-gray-500 uppercase">End Date</label><input type="date" name="coverage_end" class="w-full p-2 border rounded-md text-xs" required></div>
+            </div>
+
+            <div class="grid grid-cols-3 md:grid-cols-6 gap-3 border-t pt-4">
+                <?php 
+                $amounts = [
+                    'approve_plan' => 'Approved Plan',
+                    'phone_amort' => 'Phone Amortization', 
+                    'debit_adj' => 'Debit Adj',
+                    'credit_adj' => 'Credit Adj',
+                    'other_charges' => 'Other Charges', 
+                    'local' => 'Local(Call/Text)',
+                    'ndd' => 'NDD (NATIONAL)', 
+                    'idd' => 'IDD (INTERNATIONAL)', 
+                    'roam' => 'Roam', 
+                    'sms' => 'SMS',
+                    'gprs' => 'GPRS',
+                    'wiz_usage' => 'Wiz Usage', 
+                    'loading' => 'Loading CAHRGES',
+                   'vat' => 'VAT', 
+                   'oct' => 'Overseas communication Tax',
+                    'current_charges' => 'Current Charges', 
+                    'total_amount_due' => 'TTotal Amount Due', 
+                    'debit_memo_details' => 'Total Debit Memo'
+                ];
+                foreach ($amounts as $name => $label): ?>
+                    <div>
+                        <label class="block text-[9px] font-bold text-gray-400 uppercase"><?= $label ?></label>
+                        <input type="number" step="0.01" name="<?= $name ?>" class="w-full p-1.5 border rounded-md text-xs" value="0.00">
+                    </div>
+                <?php endforeach; ?>
+            </div>
+
+          <div class="flex justify-center items-center gap-6 mt-8 border-t pt-6">
+    <button type="button" onclick="closeModal()" 
+            class="px-8 py-2 bg-gray-200 rounded-md text-xs font-bold hover:bg-gray-300 transition">
+            CANCEL
+    </button>
+    <button type="submit" 
+            class="px-8 py-2 bg-slate-800 text-white rounded-md text-xs font-bold hover:bg-slate-900 shadow-md transition">
+            SAVE ITEM
+    </button>
+</div>
+        </form>
+    </div>
 </div>
 
 
@@ -1003,7 +1089,7 @@ document.getElementById('addEditForm').addEventListener('submit', function(e) {
     });
 
     if (!allFieldsFilled) {
-        alert("Validation Error: Please fill in all required fields (Account, Company, Mobile, Carrier, and Dates).");
+        alert("Validation Error: Please fill in all required fields.");
         return;
     }
 
@@ -1024,24 +1110,38 @@ document.getElementById('addEditForm').addEventListener('submit', function(e) {
     submitBtn.innerText = "SAVING...";
     submitBtn.disabled = true;
 
+    const formElement = this;
+
     fetch('save_record.php', {
         method: 'POST',
-        body: new FormData(this)
+        body: new FormData(formElement)
     })
     .then(response => response.json())
     .then(data => {
+        // Reset button state
+        submitBtn.innerText = originalText;
+        submitBtn.disabled = false;
+
         if (data.status === 'success') {
             closeModal();
-            // Refresh modal contents or fallback to page reload
+            
+            // 1. Reset all standard form inputs
+            formElement.reset();
+            
+            // 2. CLEAR THE HIDDEN ID FIELD SO FUTURE SAVES DON'T STICK TO THE OLD RECORD
+            const formDmIdInput = document.getElementById('form_dm_id');
+            if (formDmIdInput) {
+                formDmIdInput.value = '';
+            }
+
+            // Refresh modal contents dynamically if open, or fallback
             if (typeof activeDmId !== 'undefined' && activeDmId > 0) {
-                openBreakdownModal(activeDmId, document.getElementById('modalAccountNumber').innerText.replace("Account Number: ", ""), document.getElementById('modalCompany').innerText.replace("Company: ", ""), '');
+                loadBreakdown(activeDmId);
             } else {
                 window.location.reload();
             }
         } else {
             alert("Error: " + data.message);
-            submitBtn.innerText = originalText;
-            submitBtn.disabled = false;
         }
     })
     .catch(err => {
@@ -1051,8 +1151,6 @@ document.getElementById('addEditForm').addEventListener('submit', function(e) {
         submitBtn.disabled = false;
     });
 });
-
-
 
 function openAddEditModal(dm_id = '') {
     const form = document.getElementById('addEditForm');

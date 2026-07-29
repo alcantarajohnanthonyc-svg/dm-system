@@ -18,8 +18,6 @@ if (session_status() === PHP_SESSION_NONE) {
 
 // 2. DATABASE CONFIGURATION SETTINGS (Moved up so $conn is ready)
 $server_name   = 'localhost';
-//$server_user   = 'app_user';
-//$server_pass   = 'Bounty2026'; 
 $server_user   = 'root';
 $server_pass   = '';
 $database_name = 'admin_dm';
@@ -32,7 +30,19 @@ try {
     die("Database Connection Failed: " . $e->getMessage());
 }
 
-// 3. GLOBAL INACTIVITY TIMEOUT & LIVE STATUS CHECK
+// ==========================================
+// 3. CENTRALIZED AJAX HEARTBEAT HANDLER
+// ==========================================
+if (isset($_POST['ajax']) && $_POST['action'] === 'heartbeat') {
+    while (ob_get_level()) {
+        ob_end_clean();
+    }
+    header('Content-Type: application/json');
+    echo json_encode(['status' => 'success']);
+    exit; // Terminate immediately so no HTML from config or templates leaks through
+}
+
+// 4. GLOBAL INACTIVITY TIMEOUT & LIVE STATUS CHECK
 $current_page = basename($_SERVER['PHP_SELF']);
 if ($current_page !== 'login.php' && isset($_SESSION['user_id'])) {
     

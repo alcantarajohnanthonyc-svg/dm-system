@@ -3,6 +3,9 @@ session_start();
 require_once 'config.php';
 require_once 'main.php';
 
+
+
+
 // Access control: Allow only non-superadmins
 if (!isset($_SESSION['user_id']) || $_SESSION['role'] === 'superadmin') {
     header("Location: dashboard.php");

@@ -7,6 +7,10 @@ session_start();
 require_once 'config.php';
 require_once 'main.php';
 
+
+
+
+
 // Restrict access to superadmin only
 if (!isset($_SESSION['role']) || $_SESSION['role'] !== 'superadmin') {
     header("Location: dashboard.php");

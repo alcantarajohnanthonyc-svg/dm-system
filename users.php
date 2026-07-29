@@ -12,21 +12,7 @@ if (!isset($_SESSION['role']) || $_SESSION['role'] !== 'superadmin') {
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['ajax'])) {
     $action = isset($_POST['action']) ? $_POST['action'] : '';
 
-    // Handle Global Heartbeat Ping from layout wrapper
-    if ($action === 'heartbeat') {
-        if (isset($_SESSION['user_id'])) {
-            try {
-                $stmt = $conn->prepare("UPDATE users SET last_activity = NOW() WHERE user_id = ?");
-                $stmt->execute([$_SESSION['user_id']]);
-                echo json_encode(array('status' => 'success'));
-            } catch (PDOException $e) {
-                echo json_encode(array('status' => 'error', 'message' => $e->getMessage()));
-            }
-        } else {
-            echo json_encode(array('status' => 'error', 'message' => 'Unauthorized'));
-        }
-        exit;
-    }
+
 
     $uid = isset($_POST['user_id']) ? (int)$_POST['user_id'] : 0;
     $fn = isset($_POST['full_name']) ? strtoupper(trim($_POST['full_name'])) : '';

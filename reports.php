@@ -18,6 +18,11 @@ if (!isset($_SESSION['user_id'])) {
     exit;
 }
 
+
+
+
+
+
 $page_title = "Reports Center";
 
 // Fetch dynamic dropdown options safely

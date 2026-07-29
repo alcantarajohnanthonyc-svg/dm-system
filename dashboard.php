@@ -3,22 +3,13 @@ session_start();
 require_once 'config.php';
 require_once 'main.php';
 
+
 if (!isset($_SESSION['user_id'])) {
     header("Location: login.php");
     exit;
 }
 
-// 1. Capture Date Filters (Backward compatible)
-$start_date = (isset($_GET['start_date']) && !empty($_GET['start_date'])) ? $_GET['start_date'] : null;
-$end_date   = (isset($_GET['end_date']) && !empty($_GET['end_date'])) ? $_GET['end_date'] : null;
 
-// 2. Build Dynamic Date Clause
-$date_clause = "";
-$params = [];
-if ($start_date && $end_date) {
-    $date_clause = " WHERE m.coverage_start >= :start AND m.coverage_end <= :end ";
-    $params = ['start' => $start_date, 'end' => $end_date];
-}
 
 // 3. Fetch Aggregated Data
 // Total Accounts & Total Amount

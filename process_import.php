@@ -21,10 +21,10 @@ $current_session_id = session_id();
 // Close session early to prevent locking issues
 session_write_close();
 
-$success_count = 0; $error_count = 0; $total_rows = 0;
+$success_count = 0; 
+$error_count = 0; 
+$total_rows = 0;
 $row_results = []; 
-$failed_logs = [];
-$success_logs = []; // <--- Added: Collects successful event logs
 
 function adjustDate($dateStr) {
     $parts = explode('/', trim($dateStr));
@@ -70,13 +70,13 @@ file_put_contents($progressFile, json_encode([
     'total' => $total_rows
 ]));
 
-$successful_inserts = []; 
-$successful_updates = []; 
-
 if ($total_rows > 0) {
     $current_row = 0;
     foreach ($all_rows as $row) {
         $current_row++;
+        $status = '';
+        $remarks = '';
+
         try {
             $company = trim($row[1]);
             $acc_num = trim(str_replace(['=', '"', "\r", "\n"], '', $row[3]));
@@ -84,7 +84,7 @@ if ($total_rows > 0) {
             $formatted_start = adjustDate($row[23]);
             $formatted_end   = adjustDate($row[24]);
 
-          $errors = [];
+            $errors = [];
             if (empty($company))       $errors[] = "Company is missing";
             if (empty($acc_num))       $errors[] = "Account number is missing";
             if (empty($mobile))        $errors[] = "Mobile number is missing";
@@ -130,7 +130,7 @@ if ($total_rows > 0) {
             if ($import_mode === 'add_new' && $existingRecord) throw new Exception("Record already exists in database.");
             if ($import_mode === 'update' && !$existingRecord) throw new Exception("Record not found for update.");
 
-            // Perform Update or Insert collection
+            // Perform Individual Update or Insert
             if ($import_mode === 'update') {
                 $newData = [
                     'carrier_name' => $row[25], 
@@ -178,47 +178,57 @@ if ($total_rows > 0) {
 
                 if (!$hasChanged) throw new Exception("No changes detected; record is identical.");
 
-                // Queue for bulk update execution parameters
-                $successful_updates[] = [
+                // Individual Update Execution
+                $updateStmt = $conn->prepare("UPDATE debit_memo_items SET carrier_name=?, approved_plan=?, phone_amortization=?, debit_adj=?, credit_adj=?, other_charges=?, local_call_text=?, ndd_charges=?, idd_charges=?, roaming_charges=?, sms_charges=?, gprs_charges=?, wiz_usage=?, loading_charges=?, vat=?, oct=?, current_charges=?, total_amount_due=?, debit_memo_details=?, batch_id=?, created_by=? WHERE id=?");
+                $updateStmt->execute([
                     $row[25], cleanNumber($row[5]), cleanNumber($row[6]), cleanNumber($row[7]), 
                     cleanNumber($row[8]), cleanNumber($row[9]), cleanNumber($row[10]), cleanNumber($row[11]), 
                     cleanNumber($row[12]), cleanNumber($row[13]), cleanNumber($row[14]), cleanNumber($row[15]), 
                     cleanNumber($row[16]), cleanNumber($row[17]), cleanNumber($row[18]), cleanNumber($row[19]), 
                     cleanNumber($row[20]), cleanNumber($row[21]), cleanNumber($row[22]), $batch_id, $user_id, $existingRecord['id']
-                ];
+                ]);
                 
                 $status = 'UPDATED';
                 $remarks = 'Record updated successfully';
             } else {
-                // Queue for bulk insert execution parameters
-                $successful_inserts[] = [
+                // Individual Insert Execution
+                $insertStmt = $conn->prepare("INSERT INTO debit_memo_items (dm_id, line_no, carrier_name, mobile_number, coverage_start, coverage_end, approved_plan, phone_amortization, debit_adj, credit_adj, other_charges, local_call_text, ndd_charges, idd_charges, roaming_charges, sms_charges, gprs_charges, wiz_usage, loading_charges, vat, oct, current_charges, total_amount_due, debit_memo_details, batch_id, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+                $insertStmt->execute([
                     $dm_id, $row[0], $row[25], $mobile, $formatted_start, $formatted_end,
                     cleanNumber($row[5]), cleanNumber($row[6]), cleanNumber($row[7]), cleanNumber($row[8]),
                     cleanNumber($row[9]), cleanNumber($row[10]), cleanNumber($row[11]), cleanNumber($row[12]),
                     cleanNumber($row[13]), cleanNumber($row[14]), cleanNumber($row[15]), cleanNumber($row[16]),
                     cleanNumber($row[17]), cleanNumber($row[18]), cleanNumber($row[19]), cleanNumber($row[20]),
                     cleanNumber($row[21]), cleanNumber($row[22]), $batch_id, $user_id
-                ];
+                ]);
                 
                 $status = 'ADDED';
                 $remarks = 'Record added successfully';
             }
 
+            // Insert Successful Log Immediately
+            $conn->prepare("INSERT INTO import_logs (batch_id, raw_row_data, status, remarks, user_id) VALUES (?, ?, ?, ?, ?)")
+                 ->execute([$batch_id, json_encode($row), $status, $remarks, $user_id]);
+
             $conn->commit();
             $success_count++;
-            
-            // Collect successful log entry
-            $success_logs[] = [$batch_id, json_encode($row), $status, $remarks, $user_id];
-            
             $row_results[] = ['row' => $current_row, 'status' => $status, 'remarks' => $remarks, 'original_row' => $row];
 
         } catch (Exception $e) {
             if ($conn->inTransaction()) $conn->rollBack();
             $error_count++;
-            
-            $failed_logs[] = [$batch_id, json_encode($row), $e->getMessage(), $user_id];
-            
-            $row_results[] = ['row' => $current_row, 'status' => 'FAILED', 'remarks' => $e->getMessage(), 'original_row' => $row];
+            $status = 'FAILED';
+            $remarks = $e->getMessage();
+
+            // Insert Failed Log Immediately
+            try {
+                $conn->prepare("INSERT INTO import_logs (batch_id, raw_row_data, status, remarks, user_id) VALUES (?, ?, ?, ?, ?)")
+                     ->execute([$batch_id, json_encode($row), $status, $remarks, $user_id]);
+            } catch (Exception $logEx) {
+                // Prevent crash if log entry fails
+            }
+
+            $row_results[] = ['row' => $current_row, 'status' => $status, 'remarks' => $remarks, 'original_row' => $row];
         }
 
         // Update temporary file progress dynamically per row processed
@@ -231,59 +241,15 @@ if ($total_rows > 0) {
     }
 }
 
-// BULK INSERT FOR ALL "ADD NEW" ITEMS AT ONCE
-if (!empty($successful_inserts)) {
-    $chunkedRows = array_chunk($successful_inserts, 500);
-    foreach ($chunkedRows as $chunk) {
-        $placeholders = implode(',', array_fill(0, count($chunk), '(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)'));
-        $flatData = [];
-        foreach ($chunk as $item) {
-            $flatData = array_merge($flatData, $item);
-        }
-        $bulkSql = "INSERT INTO debit_memo_items (dm_id, line_no, carrier_name, mobile_number, coverage_start, coverage_end, approved_plan, phone_amortization, debit_adj, credit_adj, other_charges, local_call_text, ndd_charges, idd_charges, roaming_charges, sms_charges, gprs_charges, wiz_usage, loading_charges, vat, oct, current_charges, total_amount_due, debit_memo_details, batch_id, created_by) VALUES $placeholders";
-        $conn->prepare($bulkSql)->execute($flatData);
-    }
+// RECORD BATCH & IMPORT HISTORY SAFELY
+try {
+    $conn->prepare("INSERT IGNORE INTO batch_history (batch_id) VALUES (?)")->execute([$batch_id]);
+    
+    $stmtHistory = $conn->prepare("INSERT INTO import_history (batch_id, filename, import_mode, total_rows, success_count, error_count, user_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, NOW())");
+    $stmtHistory->execute([$batch_id, $original_filename, $import_mode, $total_rows, $success_count, $error_count, $user_id]);
+} catch (Exception $histEx) {
+    error_log("History Insert Error: " . $histEx->getMessage());
 }
-
-// BULK UPDATE EXECUTION FOR UPDATES
-if (!empty($successful_updates)) {
-    $updateStmt = $conn->prepare("UPDATE debit_memo_items SET carrier_name=?, approved_plan=?, phone_amortization=?, debit_adj=?, credit_adj=?, other_charges=?, local_call_text=?, ndd_charges=?, idd_charges=?, roaming_charges=?, sms_charges=?, gprs_charges=?, wiz_usage=?, loading_charges=?, vat=?, oct=?, current_charges=?, total_amount_due=?, debit_memo_details=?, batch_id=?, created_by=? WHERE id=?");
-    foreach ($successful_updates as $upd) {
-        $updateStmt->execute($upd);
-    }
-}
-
-// BULK INSERT FOR ALL SUCCESSFUL LOGS AT ONCE
-if (!empty($success_logs)) {
-    $chunkedSuccess = array_chunk($success_logs, 500);
-    foreach ($chunkedSuccess as $chunk) {
-        $placeholders = implode(',', array_fill(0, count($chunk), '(?, ?, ?, ?, ?)'));
-        $flatData = [];
-        foreach ($chunk as $log) {
-            $flatData = array_merge($flatData, $log);
-        }
-        $bulkSuccessSql = "INSERT INTO import_logs (batch_id, raw_row_data, status, remarks, user_id) VALUES $placeholders";
-        $conn->prepare($bulkSuccessSql)->execute($flatData);
-    }
-}
-
-// BULK INSERT FOR ALL FAILURES AT ONCE
-if (!empty($failed_logs)) {
-    $chunkedFails = array_chunk($failed_logs, 500);
-    foreach ($chunkedFails as $chunk) {
-        $placeholders = implode(',', array_fill(0, count($chunk), '(?, ?, "FAILED", ?, ?)'));
-        $flatData = [];
-        foreach ($chunk as $log) {
-            $flatData = array_merge($flatData, $log);
-        }
-        $bulkFailSql = "INSERT INTO import_logs (batch_id, raw_row_data, status, remarks, user_id) VALUES $placeholders";
-        $conn->prepare($bulkFailSql)->execute($flatData);
-    }
-}
-
-$conn->prepare("INSERT IGNORE INTO batch_history (batch_id) VALUES (?)")->execute([$batch_id]);
-$stmtHistory = $conn->prepare("INSERT INTO import_history (batch_id, filename, import_mode, total_rows, success_count, error_count, user_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, NOW())");
-$stmtHistory->execute([$batch_id, $original_filename, $import_mode, $total_rows, $success_count, $error_count, $user_id]);
 
 // Clean up progress file when done
 if (file_exists($progressFile)) {
