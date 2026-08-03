@@ -1,7 +1,7 @@
 <?php
 /**
  * Reports Center Module (reports.php)
- * Updated front-end view table columns to fully match the complete Excel export layout.
+ * Cleaned XML export to resolve "Problems During Load: Table" corruptions.
  */
 
 // Enable error reporting for debugging
@@ -17,11 +17,6 @@ if (!isset($_SESSION['user_id'])) {
     header("Location: login.php");
     exit;
 }
-
-
-
-
-
 
 $page_title = "Reports Center";
 
@@ -49,7 +44,7 @@ $per_page     = 25;
 $offset       = ($page > 1) ? ($page - 1) * $per_page : 0;
 
 /**
- * EXPORT ACTION: Generates and downloads an Excel spreadsheet with yearly tabs and complete columns
+ * EXPORT ACTION: Generates and downloads an Excel XML spreadsheet
  */
 if ($action === 'export') {
     try {
@@ -125,88 +120,104 @@ if ($action === 'export') {
             $grouped_by_year[date('Y')] = array();
         }
 
-        $filename = 'Debit_Memo_Report_' . date('Y-m-d_His') . '.xlsx';
-        header('Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet; charset=UTF-8');
+        // Set Headers for Excel XML Download
+        $filename = 'Debit_Memo_Report_' . date('Y-m-d_His') . '.xls';
+        header('Content-Type: application/vnd.ms-excel; charset=UTF-8');
         header('Content-Disposition: attachment; filename="' . $filename . '"');
         header('Pragma: no-cache');
         header('Expires: 0');
 
-        echo '<?xml version="1.0" encoding="UTF-8"?>';
-        echo '<?mso-application progid="Excel.Sheet"?>';
-        echo '<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"';
-        echo ' xmlns:o="urn:schemas-microsoft-com:office:office"';
-        echo ' xmlns:x="urn:schemas-microsoft-com:office:excel"';
-        echo ' xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"';
-        echo ' xmlns:html="http://www.w3.org/TR/REC-html40">';
+        echo '<?xml version="1.0" encoding="UTF-8"?>' . "\n";
+        echo '<?mso-application progid="Excel.Sheet"?>' . "\n";
+        echo '<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"' . "\n";
+        echo ' xmlns:o="urn:schemas-microsoft-com:office:office"' . "\n";
+        echo ' xmlns:x="urn:schemas-microsoft-com:office:excel"' . "\n";
+        echo ' xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"' . "\n";
+        echo ' xmlns:html="http://www.w3.org/TR/REC-html40">' . "\n";
 
-        // Define Workbook Styles
-        echo '<Styles>';
-        echo '<Style ss:ID="HeaderYellow"><Alignment ss:Horizontal="Center" ss:Vertical="Center"/><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1"/></Borders><Interior ss:Color="#fde047" ss:Pattern="Solid"/><Font ss:Bold="1"/></Style>';
-        echo '<Style ss:ID="HeaderGreen"><Alignment ss:Horizontal="Center" ss:Vertical="Center"/><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1"/></Borders><Interior ss:Color="#4ade80" ss:Pattern="Solid"/><Font ss:Bold="1"/></Style>';
-        echo '<Style ss:ID="HeaderBlue"><Alignment ss:Horizontal="Center" ss:Vertical="Center"/><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1"/></Borders><Interior ss:Color="#93c5fd" ss:Pattern="Solid"/><Font ss:Bold="1"/></Style>';
-        echo '<Style ss:ID="DataCell"><Alignment ss:Horizontal="Center" ss:Vertical="Center"/><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1"/></Borders></Style>';
-        echo '<Style ss:ID="RedCell"><Alignment ss:Horizontal="Center" ss:Vertical="Center"/><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1"/></Borders><Font ss:Bold="1" ss:Color="#dc2626"/></Style>';
-        echo '</Styles>';
+        // Global Styles Definition (Must appear ONCE at the top level)
+        echo '<Styles>' . "\n";
+        echo '<Style ss:ID="DataCell"><Alignment ss:Horizontal="Center" ss:Vertical="Center"/><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1"/></Borders></Style>' . "\n";
+        echo '<Style ss:ID="RedCell"><Alignment ss:Horizontal="Center" ss:Vertical="Center"/><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1"/></Borders><Font ss:Bold="1" ss:Color="#dc2626"/></Style>' . "\n";
 
-        // Loop through each year to create separate sheets
+        $unique_colors = ["#FFE599", "#93C47D", "#4A86E8"];
+        foreach ($unique_colors as $color) {
+            $style_id = 'Header_' . md5($color);
+            echo '<Style ss:ID="' . $style_id . '">';
+            echo '<Alignment ss:Horizontal="Center" ss:Vertical="Center"/>';
+            echo '<Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1"/></Borders>';
+            echo '<Interior ss:Color="' . htmlspecialchars($color, ENT_QUOTES, 'UTF-8') . '" ss:Pattern="Solid"/>';
+            echo '<Font ss:Bold="1"/>';
+            echo '</Style>' . "\n";
+        }
+        echo '</Styles>' . "\n";
+
+        // Headers Configuration (20 columns total)
+        $headers = [
+            "COVERAGE DATE" => "#FFE599",
+            "MOBILE NUMBER" => "#93C47D",
+            "APPROVED PLAN" => "#93C47D",
+            "MSF (GLOBE / MRC (SMART)" => "#4A86E8",
+            "DEBIT ADJ" => "#93C47D",
+            "CREDIT ADJ" => "#93C47D",
+            "OTHER CHARGES / PHONE AMORTIZATION" => "#4A86E8",
+            "LOCAL (CALL/TEXT)" => "#4A86E8",
+            "NDD (NATIONAL)" => "#4A86E8",
+            "IDD (INTERNATIONAL)" => "#4A86E8",
+            "ROAM" => "#4A86E8",
+            "SMS" => "#4A86E8",
+            "GPRS" => "#4A86E8",
+            "WIZ USAGE" => "#4A86E8",
+            "LOADING CHARGES" => "#4A86E8",
+            "VAT" => "#4A86E8",
+            "OCT" => "#4A86E8",
+            "CURRENT CHARGES" => "#4A86E8",
+            "TOTAL AMOUNT DUE" => "#4A86E8",
+            "DEBIT MEMO" => "#93C47D"
+        ];
+
+        // Loop through each year to create separate sheet tabs
         foreach ($grouped_by_year as $year => $year_items) {
-            echo '<Worksheet ss:Name="Year ' . htmlspecialchars($year) . '">';
-            echo '<Table>';
+            echo '<Worksheet ss:Name="Year ' . htmlspecialchars($year, ENT_QUOTES, 'UTF-8') . '">' . "\n";
+            echo '<Table>' . "\n";
 
-            $colWidths = [150, 140, 150, 130, 110, 130, 100, 100, 180, 130, 130, 140, 90, 80, 80, 90, 120, 80, 80, 130, 130, 100];
+            // 20 Column Widths matching the 20 headers exactly
+            $colWidths = [150, 130, 110, 130, 100, 100, 180, 130, 130, 140, 90, 80, 80, 90, 120, 80, 80, 130, 130, 100];
             foreach ($colWidths as $w) {
-                echo '<Column ss:Width="' . $w . '"/>';
+                echo '<Column ss:Width="' . $w . '"/>' . "\n";
             }
 
-            // Filter Information Rows
-            echo '<Row>';
-            echo '<Cell ss:Index="1" ss:MergeAcross="3"><Data ss:Type="String">COMPANY FILTER: ' . (!empty($company) ? htmlspecialchars($company) : 'ALL COMPANIES') . '</Data></Cell>';
-            echo '</Row>';
-            echo '<Row>';
-            echo '<Cell ss:Index="1" ss:MergeAcross="3"><Data ss:Type="String">CARRIER FILTER: ' . (!empty($carrier_name) ? htmlspecialchars($carrier_name) : 'ALL CARRIERS') . '</Data></Cell>';
-            echo '</Row>';
-            echo '<Row></Row>';
+            // Filter Info Rows
+            echo '<Row>' . "\n";
+            echo '<Cell ss:Index="1" ss:MergeAcross="3"><Data ss:Type="String">COMPANY FILTER: ' . (!empty($company) ? htmlspecialchars($company, ENT_QUOTES, 'UTF-8') : 'ALL COMPANIES') . '</Data></Cell>' . "\n";
+            echo '</Row>' . "\n";
+            echo '<Row>' . "\n";
+            echo '<Cell ss:Index="1" ss:MergeAcross="3"><Data ss:Type="String">CARRIER FILTER: ' . (!empty($carrier_name) ? htmlspecialchars($carrier_name, ENT_QUOTES, 'UTF-8') : 'ALL CARRIERS') . '</Data></Cell>' . "\n";
+            echo '</Row>' . "\n";
+            echo '<Row></Row>' . "\n";
 
-            $headers = array(
-                "COVERAGE DATE", "ACCOUNT NUMBER", "COMPANY", "ASSIGNEE", "CARRIER / TELCO", "MOBILE NUMBER", "APPROVED PLAN", "PHONE AMORTIZATION", 
-                "DEBIT ADJ", "CREDIT ADJ", "OTHER CHARGES (PRE-TERM)", "LOCAL (CALL/TEXT)", 
-                "NDD (NATIONAL)", "IDD (INTERNATIONAL)", "ROAM", "SMS", "GPRS", 
-                "WIZ USAGE", "LOADING CHARGES", "VAT", "OCT", "CURRENT CHARGES", 
-                "TOTAL AMOUNT DUE", "DEBIT MEMO"
-            );
-
-            echo '<Row>';
-            foreach($headers as $index => $col) {
-                $styleID = 'HeaderBlue';
-                if ($index == 0) {
-                    $styleID = 'HeaderYellow';
-                } elseif ($index >= 1 && $index <= 5) {
-                    $styleID = 'HeaderGreen';
-                } elseif ($index == 23) {
-                    $styleID = 'HeaderGreen';
-                }
-                echo '<Cell ss:StyleID="' . $styleID . '"><Data ss:Type="String">' . htmlspecialchars($col) . '</Data></Cell>';
+            // Header Row (Single Render)
+            echo '<Row>' . "\n";
+            foreach ($headers as $colTitle => $colorCode) {
+                $styleID = 'Header_' . md5($colorCode);
+                echo '<Cell ss:StyleID="' . $styleID . '"><Data ss:Type="String">' . htmlspecialchars($colTitle, ENT_QUOTES, 'UTF-8') . '</Data></Cell>' . "\n";
             }
-            echo '</Row>';
+            echo '</Row>' . "\n";
 
+            // Data Rows (Matches the 20 Header columns exactly)
             foreach ($year_items as $row) {
-                $start  = isset($row['coverage_start']) && $row['coverage_start'] ? date('M d, Y', strtotime($row['coverage_start'])) : '';
-                $end    = isset($row['coverage_end']) && $row['coverage_end'] ? date('M d, Y', strtotime($row['coverage_end'])) : '';
+                $start = isset($row['coverage_start']) && $row['coverage_start'] ? date('M d, Y', strtotime($row['coverage_start'])) : '';
+                $end   = isset($row['coverage_end']) && $row['coverage_end'] ? date('M d, Y', strtotime($row['coverage_end'])) : '';
                 $dateText = ($start && $end) ? ($start . ' to ' . $end) : '';
-                $acc    = isset($row['account_number']) ? $row['account_number'] : '';
-                $comp   = isset($row['dm_company']) ? $row['dm_company'] : '';
-                $assign = isset($row['assignee_name']) ? $row['assignee_name'] : '';
-                $carrier= isset($row['carrier_name']) ? $row['carrier_name'] : '';
-                $mob    = isset($row['mobile_number']) ? $row['mobile_number'] : '';
+                $mob = isset($row['mobile_number']) ? $row['mobile_number'] : '';
 
-                echo '<Row>';
-                echo '<Cell ss:StyleID="DataCell"><Data ss:Type="String">' . htmlspecialchars($dateText) . '</Data></Cell>';
-                echo '<Cell ss:StyleID="DataCell"><Data ss:Type="String">' . htmlspecialchars($acc) . '</Data></Cell>';
-                echo '<Cell ss:StyleID="DataCell"><Data ss:Type="String">' . htmlspecialchars($comp) . '</Data></Cell>';
-                echo '<Cell ss:StyleID="DataCell"><Data ss:Type="String">' . htmlspecialchars($assign) . '</Data></Cell>';
-                echo '<Cell ss:StyleID="DataCell"><Data ss:Type="String">' . htmlspecialchars($carrier) . '</Data></Cell>';
-                echo '<Cell ss:StyleID="DataCell"><Data ss:Type="String">' . htmlspecialchars($mob) . '</Data></Cell>';
+                echo '<Row>' . "\n";
+                // Column 1: Coverage Date
+                echo '<Cell ss:StyleID="DataCell"><Data ss:Type="String">' . htmlspecialchars($dateText, ENT_QUOTES, 'UTF-8') . '</Data></Cell>' . "\n";
+                // Column 2: Mobile Number
+                echo '<Cell ss:StyleID="DataCell"><Data ss:Type="String">' . htmlspecialchars($mob, ENT_QUOTES, 'UTF-8') . '</Data></Cell>' . "\n";
 
+                // Columns 3 - 20: 18 Numeric Fields
                 $numericFields = array(
                     'approved_plan', 'phone_amortization', 'debit_adj', 'credit_adj', 
                     'other_charges', 'local_call_text', 'ndd_charges', 'idd_charges', 
@@ -218,13 +229,13 @@ if ($action === 'export') {
                 foreach ($numericFields as $field) {
                     $val = isset($row[$field]) ? (float)$row[$field] : 0.00;
                     $cellStyle = ($field === 'debit_memo_details') ? 'RedCell' : 'DataCell';
-                    echo '<Cell ss:StyleID="' . $cellStyle . '"><Data ss:Type="Number">' . number_format($val, 2, '.', '') . '</Data></Cell>';
+                    echo '<Cell ss:StyleID="' . $cellStyle . '"><Data ss:Type="Number">' . number_format($val, 2, '.', '') . '</Data></Cell>' . "\n";
                 }
-                echo '</Row>';
+                echo '</Row>' . "\n";
             }
 
-            echo '</Table>';
-            echo '</Worksheet>';
+            echo '</Table>' . "\n";
+            echo '</Worksheet>' . "\n";
         }
 
         echo '</Workbook>';
@@ -268,7 +279,7 @@ if ($action === 'view') {
         $total_records = $count_stmt->fetchColumn();
         $total_pages = ($total_records > 0) ? ceil($total_records / $per_page) : 1;
 
-        // Fetch paginated records with all comprehensive item columns matching Excel
+        // Fetch paginated records
         $sql = "SELECT 
                     dm.account_number, 
                     dm.company AS dm_company, 
@@ -372,7 +383,7 @@ ob_start();
                 </div>
                 <button type="submit" name="action" value="export" class="bg-emerald-600 hover:bg-emerald-700 text-white font-semibold text-xs px-6 py-2.5 rounded-lg shadow transition duration-150 flex items-center space-x-1.5">
                     <i class="las la-file-excel text-base"></i>
-                    <span>DOWNLOAD XLSX</span>
+                    <span>DOWNLOAD XML EXCEL</span>
                 </button>
             </div>
         </form>
@@ -387,31 +398,31 @@ ob_start();
         <div class="w-full overflow-x-auto scrollbar-thin scrollbar-thumb-slate-300 scrollbar-track-slate-100">
             <table class="w-full min-w-[2000px] text-left border-collapse whitespace-nowrap">
                 <thead>
-                    <tr class="bg-slate-100 border-b border-slate-200 text-[11px] font-bold text-slate-600 uppercase tracking-wider">
-                        <th class="px-4 py-3">Coverage Date</th>
-                        <th class="px-4 py-3">Account Number</th>
-                        <th class="px-4 py-3">Company</th>
-                        <th class="px-4 py-3">Assignee</th>
-                        <th class="px-4 py-3">Carrier / Telco</th>
-                        <th class="px-4 py-3">Mobile Number</th>
-                        <th class="px-4 py-3 text-right">Approved Plan</th>
-                        <th class="px-4 py-3 text-right">Phone Amortization</th>
-                        <th class="px-4 py-3 text-right">Debit Adj</th>
-                        <th class="px-4 py-3 text-right">Credit Adj</th>
-                        <th class="px-4 py-3 text-right">Other Charges (Pre-Term)</th>
-                        <th class="px-4 py-3 text-right">Local (Call/Text)</th>
-                        <th class="px-4 py-3 text-right">NDD (National)</th>
-                        <th class="px-4 py-3 text-right">IDD (International)</th>
-                        <th class="px-4 py-3 text-right">Roam</th>
-                        <th class="px-4 py-3 text-right">SMS</th>
-                        <th class="px-4 py-3 text-right">GPRS</th>
-                        <th class="px-4 py-3 text-right">Wiz Usage</th>
-                        <th class="px-4 py-3 text-right">Loading Charges</th>
-                        <th class="px-4 py-3 text-right">VAT</th>
-                        <th class="px-4 py-3 text-right">OCT</th>
-                        <th class="px-4 py-3 text-right">Current Charges</th>
-                        <th class="px-4 py-3 text-right">Total Amount Due</th>
-                        <th class="px-4 py-3 text-right">Debit Memo</th>
+                    <tr class="text-[11px] font-bold text-slate-800 uppercase tracking-wider">
+                        <th class="p-2 border border-gray-400 whitespace-normal text-center" style="background-color: #FFE599;">Coverage Date</th>
+                        <th class="p-2 border border-gray-400 whitespace-normal text-center" style="background-color: #4A86E8;">Account Number</th>
+                        <th class="p-2 border border-gray-400 whitespace-normal text-center" style="background-color: #4A86E8;">Company</th>
+                        <th class="p-2 border border-gray-400 whitespace-normal text-center" style="background-color: #4A86E8;">Assignee</th>
+                        <th class="p-2 border border-gray-400 whitespace-normal text-center" style="background-color: #4A86E8;">Carrier / Telco</th>
+                        <th class="p-2 border border-gray-400 whitespace-normal text-center" style="background-color: #93C47D;">Mobile Number</th>
+                        <th class="p-2 border border-gray-400 whitespace-normal text-center" style="background-color: #93C47D;">Approved Plan</th>
+                        <th class="p-2 border border-gray-400 whitespace-normal text-center" style="background-color: #4A86E8;">MSF (GLOBE / MRC (SMART)</th>
+                        <th class="p-2 border border-gray-400 whitespace-normal text-center" style="background-color: #93C47D;">Debit Adj</th>
+                        <th class="p-2 border border-gray-400 whitespace-normal text-center" style="background-color: #93C47D;">Credit Adj</th>
+                        <th class="p-2 border border-gray-400 whitespace-normal text-center" style="background-color: #4A86E8;">OTHER CHARGES / PHONE AMORTIZATION</th>
+                        <th class="p-2 border border-gray-400 whitespace-normal text-center" style="background-color: #4A86E8;">Local (Call/Text)</th>
+                        <th class="p-2 border border-gray-400 whitespace-normal text-center" style="background-color: #4A86E8;">NDD (National)</th>
+                        <th class="p-2 border border-gray-400 whitespace-normal text-center" style="background-color: #4A86E8;">IDD (International)</th>
+                        <th class="p-2 border border-gray-400 whitespace-normal text-center" style="background-color: #4A86E8;">Roam</th>
+                        <th class="p-2 border border-gray-400 whitespace-normal text-center" style="background-color: #4A86E8;">SMS</th>
+                        <th class="p-2 border border-gray-400 whitespace-normal text-center" style="background-color: #4A86E8;">GPRS</th>
+                        <th class="p-2 border border-gray-400 whitespace-normal text-center" style="background-color: #4A86E8;">Wiz Usage</th>
+                        <th class="p-2 border border-gray-400 whitespace-normal text-center" style="background-color: #4A86E8;">Loading Charges</th>
+                        <th class="p-2 border border-gray-400 whitespace-normal text-center" style="background-color: #4A86E8;">VAT</th>
+                        <th class="p-2 border border-gray-400 whitespace-normal text-center" style="background-color: #4A86E8;">OCT</th>
+                        <th class="p-2 border border-gray-400 whitespace-normal text-center" style="background-color: #4A86E8;">Current Charges</th>
+                        <th class="p-2 border border-gray-400 whitespace-normal text-center" style="background-color: #4A86E8;">Total Amount Due</th>
+                        <th class="p-2 border border-gray-400 whitespace-normal text-center" style="background-color: #93C47D;">Debit Memo</th>
                     </tr>
                 </thead>
                 <tbody class="divide-y divide-slate-200 text-xs text-slate-700">

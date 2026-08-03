@@ -23,8 +23,29 @@ function createDebitMemoPDF($dm_id, $conn, $item_ids = null, $startDate = null, 
     $pdf->SetAutoPageBreak(true, 15);
     
     // 3. Header array and dimensions
-    $headers = ["COVERAGE DATE", "MOBILE NUMBER", "APPROVED PLAN", "PHONE AMORTIZATION", "DEBIT ADJ", "CREDIT ADJ", "OTHER CHARGES (PRE-TERM)", "LOCAL (CALL/TEXT)", "NDD (NATIONAL)", "IDD (INTERNATIONAL)", "ROAM", "SMS", "GPRS", "WIZ USAGE", "LOADING CHARGES", "VAT", "OCT", "CURRENT CHARGES", "TOTAL AMOUNT DUE", "DEBIT MEMO"];
-    
+$headers = [
+    "COVERAGE DATE" => "#FFE599",
+    "MOBILE NUMBER" => "#93C47D",
+    "APPROVED PLAN" => "#93C47D",
+    "MSF (GLOBE / MRC (SMART)" => "#4A86E8",
+    "DEBIT ADJ" => "#93C47D",
+    "CREDIT ADJ" => "#93C47D",
+    "OTHER CHARGES / PHONE AMORTIZATION" => "#4A86E8",
+    "LOCAL (CALL/TEXT)" => "#4A86E8",
+    "NDD (NATIONAL)" => "#4A86E8",
+    "IDD (INTERNATIONAL)" => "#4A86E8",
+    "ROAM" => "#4A86E8",
+    "SMS" => "#4A86E8",
+    "GPRS" => "#4A86E8",
+    "WIZ USAGE" => "#4A86E8",
+    "LOADING CHARGES" => "#4A86E8",
+    "VAT" => "#4A86E8",
+    "OCT" => "#4A86E8",
+    "CURRENT CHARGES" => "#4A86E8",
+    "TOTAL AMOUNT DUE" => "#4A86E8",
+    "DEBIT MEMO" => "#93C47D"
+];
+
     $w = 16.5; 
     $dateW = 30;
     $h = 10; 
@@ -41,17 +62,26 @@ function createDebitMemoPDF($dm_id, $conn, $item_ids = null, $startDate = null, 
         $pdf->SetFont('Arial', 'B', 6);
         $startY = $pdf->GetY();
 
-        foreach($headers as $index => $col) {
+        $index = 0;
+        foreach($headers as $col => $colorType) {
             $currentW = ($index == 0) ? $dateW : $w;
-            if ($index == 0) $pdf->SetFillColor(255, 255, 0); 
-            elseif ($index == 1 || $index == 19) $pdf->SetFillColor(74, 222, 128); 
-            else $pdf->SetFillColor(147, 197, 253); 
+            
+            // Set background color based on your specific mapping
+            if ($colorType === '#FFE599') {
+                $pdf->SetFillColor(255, 229, 153); // Soft Yellow
+            } elseif ($colorType === '#93C47D') {
+                $pdf->SetFillColor(147, 196, 125); // Green
+            } else {
+                $pdf->SetFillColor(74, 135, 232); // #4A86E8-300 equivalent
+            }
             
             $currentX = $pdf->GetX();
             $currentY = $pdf->GetY();
             $pdf->Rect($currentX, $currentY, $currentW, $h, 'DF'); 
             $pdf->MultiCell($currentW, 3, $col, 0, 'C'); 
             $pdf->SetXY($currentX + $currentW, $startY);
+            
+            $index++;
         }
         $pdf->Ln($h);
     };

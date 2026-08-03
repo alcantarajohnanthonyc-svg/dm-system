@@ -29,7 +29,7 @@ function createDebitMemoExcel($dm_id, $conn, $item_ids = null, $startDate = null
         $effective_end   = !empty($endDate) ? $endDate : '2999-12-31';
 
         $sql .= " AND (STR_TO_DATE(coverage_start, '%Y-%m-%d') <= :end_date 
-                       AND STR_TO_DATE(coverage_end, '%Y-%m-%d') >= :start_date)";
+                      AND STR_TO_DATE(coverage_end, '%Y-%m-%d') >= :start_date)";
         
         $params[':start_date'] = $effective_start;
         $params[':end_date']   = $effective_end;
@@ -71,13 +71,29 @@ function createDebitMemoExcel($dm_id, $conn, $item_ids = null, $startDate = null
     echo ' xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"';
     echo ' xmlns:html="http://www.w3.org/TR/REC-html40">';
 
-    // Define Styles
+    // Define Styles (Dynamically generating XML tags for your exact colors)
     echo '<Styles>';
-    echo '<Style ss:ID="HeaderYellow"><Alignment ss:Horizontal="Center" ss:Vertical="Center"/><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1"/></Borders><Interior ss:Color="#fde047" ss:Pattern="Solid"/><Font ss:Bold="1"/></Style>';
-    echo '<Style ss:ID="HeaderGreen"><Alignment ss:Horizontal="Center" ss:Vertical="Center"/><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1"/></Borders><Interior ss:Color="#4ade80" ss:Pattern="Solid"/><Font ss:Bold="1"/></Style>';
-    echo '<Style ss:ID="HeaderBlue"><Alignment ss:Horizontal="Center" ss:Vertical="Center"/><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1"/></Borders><Interior ss:Color="#93c5fd" ss:Pattern="Solid"/><Font ss:Bold="1"/></Style>';
+    
+    // Base data cells and warning styles
     echo '<Style ss:ID="DataCell"><Alignment ss:Horizontal="Center" ss:Vertical="Center"/><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1"/></Borders></Style>';
     echo '<Style ss:ID="RedCell"><Alignment ss:Horizontal="Center" ss:Vertical="Center"/><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1"/></Borders><Font ss:Bold="1" ss:Color="#dc2626"/></Style>';
+
+    // Dynamic Header Styles mapping your requested colors
+    $unique_colors = ["#FFE599", "#93C47D", "#4A86E8"];
+    foreach ($unique_colors as $color) {
+        $style_id = 'Header_' . md5($color); // Generates a safe alphanumeric ID for XML
+        echo '<Style ss:ID="' . $style_id . '">';
+        echo '<Alignment ss:Horizontal="Center" ss:Vertical="Center"/>';
+        echo '<Borders>';
+        echo '<Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1"/>';
+        echo '<Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1"/>';
+        echo '<Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1"/>';
+        echo '<Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1"/>';
+        echo '</Borders>';
+        echo '<Interior ss:Color="' . htmlspecialchars($color) . '" ss:Pattern="Solid"/>';
+        echo '<Font ss:Bold="1"/>';
+        echo '</Style>';
+    }
     echo '</Styles>';
 
     // Loop through each year to create a separate sheet tab
@@ -104,24 +120,34 @@ function createDebitMemoExcel($dm_id, $conn, $item_ids = null, $startDate = null
         // Empty Spacer Row
         echo '<Row></Row>';
 
-        // Headers Row
-        $headers = array(
-            "COVERAGE DATE", "MOBILE NUMBER", "APPROVED PLAN", "PHONE AMORTIZATION", 
-            "DEBIT ADJ", "CREDIT ADJ", "OTHER CHARGES (PRE-TERM)", "LOCAL (CALL/TEXT)", 
-            "NDD (NATIONAL)", "IDD (INTERNATIONAL)", "ROAM", "SMS", "GPRS", 
-            "WIZ USAGE", "LOADING CHARGES", "VAT", "OCT", "CURRENT CHARGES", 
-            "TOTAL AMOUNT DUE", "DEBIT MEMO"
-        );
+      // Headers Row using your exact array structure
+       $headers = [
+    "COVERAGE DATE" => "#FFE599",
+    "MOBILE NUMBER" => "#93C47D",
+    "APPROVED PLAN" => "#93C47D",
+    "MSF (GLOBE / MRC (SMART)" => "#4A86E8",
+    "DEBIT ADJ" => "#93C47D",
+    "CREDIT ADJ" => "#93C47D",
+    "OTHER CHARGES / PHONE AMORTIZATION" => "#4A86E8",
+    "LOCAL (CALL/TEXT)" => "#4A86E8",
+    "NDD (NATIONAL)" => "#4A86E8",
+    "IDD (INTERNATIONAL)" => "#4A86E8",
+    "ROAM" => "#4A86E8",
+    "SMS" => "#4A86E8",
+    "GPRS" => "#4A86E8",
+    "WIZ USAGE" => "#4A86E8",
+    "LOADING CHARGES" => "#4A86E8",
+    "VAT" => "#4A86E8",
+    "OCT" => "#4A86E8",
+    "CURRENT CHARGES" => "#4A86E8",
+    "TOTAL AMOUNT DUE" => "#4A86E8",
+    "DEBIT MEMO" => "#93C47D"
+];
 
         echo '<Row>';
-        foreach($headers as $index => $col) {
-            $styleID = 'HeaderBlue';
-            if ($index == 0) {
-                $styleID = 'HeaderYellow';
-            } elseif ($index == 1 || $index == 19) {
-                $styleID = 'HeaderGreen';
-            }
-            echo '<Cell ss:StyleID="' . $styleID . '"><Data ss:Type="String">' . htmlspecialchars($col) . '</Data></Cell>';
+        foreach($headers as $colTitle => $colorCode) {
+            $styleID = 'Header_' . md5($colorCode);
+            echo '<Cell ss:StyleID="' . $styleID . '"><Data ss:Type="String">' . htmlspecialchars($colTitle) . '</Data></Cell>';
         }
         echo '</Row>';
 

@@ -336,14 +336,16 @@ function getCarrierBadge($carrierName) {
 }
     foreach ($memos as $row): 
     ?>
-    <tr class="hover:bg-gray-50">
-        <td class="pl-6 py-3"><input type="checkbox" class="dm-checkbox" value="<?= $row['dm_id'] ?>"></td>
-      <td class="py-3 px-4 font-semibold text-gray-900">
-    <span class="cursor-help border-b border-dashed border-gray-400" 
-          title="Company: <?= htmlspecialchars($row['company']) ?>&#10;Assignee: <?= htmlspecialchars($row['assignee_name']) ?>">
-        <?= htmlspecialchars($row['account_number']) ?>
-    </span>
-</td>
+<tr class="hover:bg-gray-50">
+    <td class="pl-6 py-3">
+        <input type="checkbox" class="dm-checkbox" value="<?= $row['dm_id'] ?>">
+    </td>
+    <td class="py-3 px-4 font-semibold text-gray-900">
+        <span title="Company: <?= htmlspecialchars($row['company']) ?>&#10;Assignee: <?= htmlspecialchars($row['assignee_name']) ?>">
+            <?= htmlspecialchars($row['account_number']) ?>
+        </span>
+    </td>
+
         <td class="py-3 px-4"><?= htmlspecialchars($row['company']) ?></td>
         
        <td class="py-3 px-4 space-y-1">
@@ -379,16 +381,16 @@ function getCarrierBadge($carrierName) {
 <td class="pr-6 py-3 text-center">
     <div class="flex items-center justify-center gap-4">
         <button type="button" 
-            onclick="openBreakdownModal(<?= $row['dm_id'] ?>, 
-                '<?= htmlspecialchars($row['account_number']) ?>', 
-                '<?= htmlspecialchars(addslashes($row['company'])) ?>',
-                '<?= htmlspecialchars(addslashes($row['assignee_name'])) ?>'
-            )" 
-            class="text-blue-600 hover:text-blue-800 transition">
-            <i class="las la-list-alt text-xl"></i>
-        </button>
-
-        
+    onclick="openBreakdownModal(
+        event,
+        <?= (int)$row['dm_id'] ?>, 
+'<?= htmlspecialchars($row['account_number'], ENT_QUOTES, 'UTF-8') ?>',
+'<?= htmlspecialchars($row['company'], ENT_QUOTES, 'UTF-8') ?>',
+        '<?= htmlspecialchars(isset($row['assignee_name']) ? $row['assignee_name'] : '', ENT_QUOTES, 'UTF-8') ?>'
+    )" 
+    class="text-blue-600 hover:text-blue-800 transition">
+    <i class="las la-list-alt text-xl"></i>
+</button>
     </div>
 </td>
     </tr>
@@ -418,45 +420,48 @@ function getCarrierBadge($carrierName) {
                 <button type="button" onclick="exportSelectedItems()" class="bg-green-600 text-white px-4 py-2 rounded text-xs font-bold hover:bg-green-700">
                     EXPORT SELECTED
                 </button>
-                <button onclick="closeAndRefresh()" class="bg-red-500 hover:bg-red-600 text-white px-4 py-2 rounded text-xs font-bold">
-                    CLOSE
-                </button>
+               <button type="button" 
+        onclick="closeBreakdownModal(event)" 
+        class="bg-red-500 hover:bg-red-600 text-white px-4 py-2 rounded text-xs font-bold">
+    CLOSE
+</button>
             </div>
         </div>
 
-        <div class="overflow-x-auto border rounded-lg flex-grow">
-            <table class="w-full text-left border-collapse text-[10px]">
-                <thead class="bg-blue-300 text-black uppercase font-bold sticky top-0 z-10">
-                    <tr>
-                        <th class="p-2 border border-gray-400 text-center"><input type="checkbox" id="modalSelectAll" onclick="toggleModalCheckboxes(this)"></th>
-                        <th class="p-2 border border-gray-400 whitespace-normal text-center bg-yellow-300">Coverage Date</th>
-                        <th class="p-2 border border-gray-400 whitespace-normal text-center bg-green-400">Mobile Number</th>
-                        <th class="p-2 border border-gray-400 whitespace-normal text-center bg-blue-300">Approved Plan</th>
-                        <th class="p-2 border border-gray-400 whitespace-normal text-center bg-blue-300">Phone Amortization</th>
-                        <th class="p-2 border border-gray-400 whitespace-normal text-center bg-blue-300">Debit Adj</th>
-                        <th class="p-2 border border-gray-400 whitespace-normal text-center bg-blue-300">Credit Adj</th>
-                        <th class="p-2 border border-gray-400 whitespace-normal text-center bg-blue-300">Other Charges</th>
-                        <th class="p-2 border border-gray-400 whitespace-normal text-center bg-blue-300">Local (Call/Text)</th>
-                        <th class="p-2 border border-gray-400 whitespace-normal text-center bg-blue-300">NDD (National)</th>
-                        <th class="p-2 border border-gray-400 whitespace-normal text-center bg-blue-300">IDD (International)</th>
-                        <th class="p-2 border border-gray-400 whitespace-normal text-center bg-blue-300">Roam</th>
-                        <th class="p-2 border border-gray-400 whitespace-normal text-center bg-blue-300">SMS</th>
-                        <th class="p-2 border border-gray-400 whitespace-normal text-center bg-blue-300">GPRS</th>
-                        <th class="p-2 border border-gray-400 whitespace-normal text-center bg-blue-300">Wiz Usage</th>
-                        <th class="p-2 border border-gray-400 whitespace-normal text-center bg-blue-300">Loading Charges</th>
-                        <th class="p-2 border border-gray-400 whitespace-normal text-center bg-blue-300">VAT</th>
-                        <th class="p-2 border border-gray-400 whitespace-normal text-center bg-blue-300">OCT</th>
-                        <th class="p-2 border border-gray-400 whitespace-normal text-center bg-blue-300">Current Charges</th>
-                        <th class="p-2 border border-gray-400 whitespace-normal text-center bg-blue-300">Total Amount Due</th>
-                        <th class="p-2 border border-gray-400 whitespace-normal text-center bg-green-400">Debit Memo</th>
-                        <th class="p-2 border border-gray-400 text-center">ACTION</th>
-                    </tr>
-                </thead>
-                <tbody id="modalContentBody">
-                    <!-- Dynamic rows loaded via get_breakdown.php -->
-                </tbody>
-            </table>
-        </div>
+<div class="overflow-x-auto border border-gray-300 rounded-lg flex-grow">
+    <!-- Changed border-collapse to border-separate border-spacing-0 so sticky headers don't hide borders -->
+    <table class="w-full text-left border-separate border-spacing-0 text-[10px]">
+        <thead class="text-black uppercase font-bold sticky top-0 z-10" style="background-color: #4A86E8;">
+            <tr class="border-b border-black">
+                <th class="p-2 border border-gray-300 text-center"><input type="checkbox" id="modalSelectAll" onclick="toggleModalCheckboxes(this)"></th>
+                <th class="p-2 border border-gray-300 whitespace-normal text-center" style="background-color: #FFE599;">Coverage Date</th>
+                <th class="p-2 border border-gray-300 whitespace-normal text-center" style="background-color: #93C47D;">Mobile Number</th>
+                <th class="p-2 border border-gray-300 whitespace-normal text-center" style="background-color: #93C47D;">Approved Plan</th>
+                <th class="p-2 border border-gray-300 whitespace-normal text-center" style="background-color: #4A86E8;">MSF (GLOBE / MRC (SMART)</th>
+                <th class="p-2 border border-gray-300 whitespace-normal text-center" style="background-color: #93C47D;">Debit Adj</th>
+                <th class="p-2 border border-gray-300 whitespace-normal text-center" style="background-color: #93C47D;">Credit Adj</th>
+                <th class="p-2 border border-gray-300 whitespace-normal text-center" style="background-color: #4A86E8;">OTHER CHARGES / PHONE AMORTIZATION</th>
+                <th class="p-2 border border-gray-300 whitespace-normal text-center" style="background-color: #4A86E8;">Local (Call/Text)</th>
+                <th class="p-2 border border-gray-300 whitespace-normal text-center" style="background-color: #4A86E8;">NDD (National)</th>
+                <th class="p-2 border border-gray-300 whitespace-normal text-center" style="background-color: #4A86E8;">IDD (International)</th>
+                <th class="p-2 border border-gray-300 whitespace-normal text-center" style="background-color: #4A86E8;">Roam</th>
+                <th class="p-2 border border-gray-300 whitespace-normal text-center" style="background-color: #4A86E8;">SMS</th>
+                <th class="p-2 border border-gray-300 whitespace-normal text-center" style="background-color: #4A86E8;">GPRS</th>
+                <th class="p-2 border border-gray-300 whitespace-normal text-center" style="background-color: #4A86E8;">Wiz Usage</th>
+                <th class="p-2 border border-gray-300 whitespace-normal text-center" style="background-color: #4A86E8;">Loading Charges</th>
+                <th class="p-2 border border-gray-300 whitespace-normal text-center" style="background-color: #4A86E8;">VAT</th>
+                <th class="p-2 border border-gray-300 whitespace-normal text-center" style="background-color: #4A86E8;">OCT</th>
+                <th class="p-2 border border-gray-300 whitespace-normal text-center" style="background-color: #4A86E8;">Current Charges</th>
+                <th class="p-2 border border-gray-300 whitespace-normal text-center" style="background-color: #4A86E8;">Total Amount Due</th>
+                <th class="p-2 border border-gray-300 whitespace-normal text-center" style="background-color: #93C47D;">Debit Memo</th>
+                <th class="p-2 border border-gray-300 text-center">ACTION</th>
+            </tr>
+        </thead>
+        <tbody id="modalContentBody">
+            <!-- Dynamic rows loaded via get_breakdown.php -->
+        </tbody>
+    </table>
+</div>
     </div>
 </div>
 
@@ -878,20 +883,40 @@ function executeUnifiedExport(format) {
 
 
 let activeDmId = 0; 
-
-function openBreakdownModal(dm_id, accountNum, company, assignee) {
+let hasChanges = false;
+function openBreakdownModal(event, dm_id, accountNum, company, assignee) {
+    // PREVENT PAGE RELOAD
+    if (event) {
+        event.preventDefault();
+        event.stopPropagation();
+    }
+    hasChanges = false;
     activeDmId = dm_id; 
-    const startDate = document.querySelector('input[name="start_date"]').value;
-    const endDate = document.querySelector('input[name="end_date"]').value;
+    
+    // Open modal immediately
+    const modal = document.getElementById('breakdownModal');
+    if (modal) {
+        modal.classList.remove('hidden');
+    }
 
-    fetch('get_breakdown.php?dm_id=' + dm_id + '&start=' + startDate + '&end=' + endDate)
+    // Set header details
+    document.getElementById('modalAccountNumber').innerText = "Account Number: " + accountNum;
+    document.getElementById('modalCompany').innerText = "Company: " + company;
+
+    // Get filter dates
+    const startDateInput = document.querySelector('input[name="start_date"]');
+    const endDateInput = document.querySelector('input[name="end_date"]');
+    const startDate = startDateInput ? startDateInput.value : '';
+    const endDate = endDateInput ? endDateInput.value : '';
+
+    // Fetch breakdown data
+    fetch('get_breakdown.php?dm_id=' + dm_id + '&start=' + encodeURIComponent(startDate) + '&end=' + encodeURIComponent(endDate))
     .then(response => response.text())
     .then(html => {
-        // Kapag nag-inject ka ng HTML, siguraduhin na ang input checkbox ay may class="w-3 h-3"
         document.getElementById('modalContentBody').innerHTML = html;
-        document.getElementById('modalAccountNumber').innerText = "Account Number: " + accountNum;
-        document.getElementById('modalCompany').innerText = "Company: " + company;
-        document.getElementById('breakdownModal').classList.remove('hidden');
+    })
+    .catch(err => {
+        console.error("Fetch error:", err);
     });
 }
 function toggleModalCheckboxes(source) {
@@ -1001,6 +1026,23 @@ function closeAndRefresh() {
     window.location.reload();
 }
 
+function closeBreakdownModal(event) {
+    if (event) {
+        event.preventDefault();
+        event.stopPropagation();
+    }
+    
+    // Hide the breakdown modal
+    const modal = document.getElementById('breakdownModal');
+    if (modal) {
+        modal.classList.add('hidden');
+    }
+
+    // Reload the page ONLY if data was actually modified/saved
+    if (hasChanges) {
+        window.location.reload();
+    }
+}
 
 function closeModal() {
     document.getElementById('addEditModal').classList.add('hidden');
@@ -1155,7 +1197,7 @@ document.getElementById('addEditForm').addEventListener('submit', function(e) {
 function openAddEditModal(dm_id = '') {
     const form = document.getElementById('addEditForm');
     form.reset();
-    
+    hasChanges = true;
     // Unlock and clear the Account Number for a new entry
     const accInput = form.querySelector('input[name="account_number"]');
     accInput.readOnly = false;
@@ -1169,6 +1211,7 @@ function openAddEditModal(dm_id = '') {
 
 // FUNCTION 2: FOR EDITING (Ensures it is populated THEN locked)
 function editBreakdownItem(itemId) {
+    hasChanges = true;
     fetch('get_item_data.php?id=' + itemId)
     .then(res => res.text()) // First read as text to debug what is actually returning
     .then(text => {
