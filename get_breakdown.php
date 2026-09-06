@@ -66,6 +66,19 @@ if (empty($items)) {
         $dm_val = isset($row['debit_memo_details']) ? $row['debit_memo_details'] : 0;
         echo "<td class='p-2 border font-bold text-red-600'>" . number_format((float)$dm_val, 2) . "</td>";
 
+        // CALCULATIONS FOR NEW COLUMNS
+        $approved_plan_val = isset($row['approved_plan']) ? (float)$row['approved_plan'] : 0;
+        $msf_mrc_val = isset($row['phone_amortization']) ? (float)$row['phone_amortization'] : 0; // Adjust database key if your MSF/MRC column has a different name
+        
+        // Column 1: Approved Plan - MSF (GLOBE / MRC (SMART))
+        $col1_val = $approved_plan_val - $msf_mrc_val;
+        echo "<td class='p-2 border font-bold text-blue-600'>" . number_format($col1_val, 2) . "</td>";
+
+        // Column 2: Debit Memo - Column 1
+        $col2_val = (float)$dm_val - $col1_val;
+        echo "<td class='p-2 border font-bold text-purple-600'>" . number_format($col2_val, 2) . "</td>";
+
+
         // ACTION COLUMN
         echo "<td class='p-2 border'>";
         

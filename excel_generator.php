@@ -78,6 +78,9 @@ function createDebitMemoExcel($dm_id, $conn, $item_ids = null, $startDate = null
     echo '<Style ss:ID="DataCell"><Alignment ss:Horizontal="Center" ss:Vertical="Center"/><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1"/></Borders></Style>';
     echo '<Style ss:ID="RedCell"><Alignment ss:Horizontal="Center" ss:Vertical="Center"/><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1"/></Borders><Font ss:Bold="1" ss:Color="#dc2626"/></Style>';
 
+    echo '<Style ss:ID="BlueCell"><Alignment ss:Horizontal="Center" ss:Vertical="Center"/><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1"/></Borders><Font ss:Bold="1" ss:Color="#2563eb"/></Style>';
+    echo '<Style ss:ID="PurpleCell"><Alignment ss:Horizontal="Center" ss:Vertical="Center"/><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1"/></Borders><Font ss:Bold="1" ss:Color="#7c3aed"/></Style>';
+
     // Dynamic Header Styles mapping your requested colors
     $unique_colors = ["#FFE599", "#93C47D", "#4A86E8"];
     foreach ($unique_colors as $color) {
@@ -102,7 +105,7 @@ function createDebitMemoExcel($dm_id, $conn, $item_ids = null, $startDate = null
         echo '<Table>';
 
         // Explicit column widths to ensure long headers fit completely without truncation
-        $colWidths = [150, 130, 110, 130, 100, 100, 180, 130, 130, 140, 90, 80, 80, 90, 120, 80, 80, 130, 130, 100];
+        $colWidths = [150, 130, 110, 130, 100, 100, 180, 130, 130, 140, 90, 80, 80, 90, 120, 80, 80, 130, 130, 100,140,140];
         foreach ($colWidths as $w) {
             echo '<Column ss:Width="' . $w . '"/>';
         }
@@ -141,7 +144,10 @@ function createDebitMemoExcel($dm_id, $conn, $item_ids = null, $startDate = null
     "OCT" => "#4A86E8",
     "CURRENT CHARGES" => "#4A86E8",
     "TOTAL AMOUNT DUE" => "#4A86E8",
-    "DEBIT MEMO" => "#93C47D"
+    "DEBIT MEMO" => "#93C47D",
+    "PLAN VARIANCE (APP. - MSF)" => "#93C47D",
+     "DM DIFFERENCE (DM - COL 1)" => "#93C47D"
+
 ];
 
         echo '<Row>';
@@ -174,6 +180,21 @@ function createDebitMemoExcel($dm_id, $conn, $item_ids = null, $startDate = null
                 $cellStyle = ($field === 'debit_memo_details') ? 'RedCell' : 'DataCell';
                 echo '<Cell ss:StyleID="' . $cellStyle . '"><Data ss:Type="Number">' . number_format($val, 2, '.', '') . '</Data></Cell>';
             }
+
+
+            // Calculations for the 2 new columns matching your table logic
+            $approved_plan_val = isset($row['approved_plan']) ? (float)$row['approved_plan'] : 0.00;
+            $msf_mrc_val = isset($row['phone_amortization']) ? (float)$row['phone_amortization'] : 0.00;
+            $dm_val = isset($row['debit_memo_details']) ? (float)$row['debit_memo_details'] : 0.00;
+
+            // Column 1: Approved Plan - MSF/MRC
+           $col1_val = $approved_plan_val - $msf_mrc_val;
+            echo '<Cell ss:StyleID="BlueCell"><Data ss:Type="Number">' . number_format($col1_val, 2, '.', '') . '</Data></Cell>';
+
+            // Column 2: Debit Memo - Column 1
+           $col2_val = $dm_val - $col1_val;
+            echo '<Cell ss:StyleID="PurpleCell"><Data ss:Type="Number">' . number_format($col2_val, 2, '.', '') . '</Data></Cell>';
+
             echo '</Row>';
         }
 

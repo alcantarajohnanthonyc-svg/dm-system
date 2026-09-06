@@ -454,6 +454,12 @@ function getCarrierBadge($carrierName) {
                 <th class="p-2 border border-gray-300 whitespace-normal text-center" style="background-color: #4A86E8;">Current Charges</th>
                 <th class="p-2 border border-gray-300 whitespace-normal text-center" style="background-color: #4A86E8;">Total Amount Due</th>
                 <th class="p-2 border border-gray-300 whitespace-normal text-center" style="background-color: #93C47D;">Debit Memo</th>
+               <!-- Updated Header 1 -->
+                <th class="p-2 border border-gray-300 whitespace-normal text-center" style="background-color: #93C47D;">Plan Variance (App. - MSF)</th>
+                
+                <!-- Updated Header 2 -->
+                <th class="p-2 border border-gray-300 whitespace-normal text-center" style="background-color: #93C47D;">DM Difference (DM - Col 1)</th>
+
                 <th class="p-2 border border-gray-300 text-center">ACTION</th>
             </tr>
         </thead>
