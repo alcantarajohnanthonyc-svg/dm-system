@@ -82,7 +82,7 @@ function createDebitMemoExcel($dm_id, $conn, $item_ids = null, $startDate = null
     echo '<Style ss:ID="PurpleCell"><Alignment ss:Horizontal="Center" ss:Vertical="Center"/><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1"/></Borders><Font ss:Bold="1" ss:Color="#7c3aed"/></Style>';
 
     // Dynamic Header Styles mapping your requested colors
-    $unique_colors = ["#FFE599", "#93C47D", "#4A86E8"];
+    $unique_colors = ["#FFE599", "#93C47D", "#4A86E8","#F7F700"];
     foreach ($unique_colors as $color) {
         $style_id = 'Header_' . md5($color); // Generates a safe alphanumeric ID for XML
         echo '<Style ss:ID="' . $style_id . '">';
@@ -144,9 +144,9 @@ function createDebitMemoExcel($dm_id, $conn, $item_ids = null, $startDate = null
     "OCT" => "#4A86E8",
     "CURRENT CHARGES" => "#4A86E8",
     "TOTAL AMOUNT DUE" => "#4A86E8",
-    "DEBIT MEMO" => "#93C47D",
-    "PLAN VARIANCE (APP. - MSF)" => "#93C47D",
-     "DM DIFFERENCE (DM - COL 1)" => "#93C47D"
+    "PROCESSED DM" => "#93C47D",
+    "SYSTEM GENERATED DM" => "#93C47D",
+     "DIFFERENCE" => "#F7F700"
 
 ];
 
@@ -184,11 +184,11 @@ function createDebitMemoExcel($dm_id, $conn, $item_ids = null, $startDate = null
 
             // Calculations for the 2 new columns matching your table logic
             $approved_plan_val = isset($row['approved_plan']) ? (float)$row['approved_plan'] : 0.00;
-            $msf_mrc_val = isset($row['phone_amortization']) ? (float)$row['phone_amortization'] : 0.00;
+            $msf_mrc_val = isset($row['current_charges']) ? (float)$row['current_charges'] : 0.00;
             $dm_val = isset($row['debit_memo_details']) ? (float)$row['debit_memo_details'] : 0.00;
 
             // Column 1: Approved Plan - MSF/MRC
-           $col1_val = $approved_plan_val - $msf_mrc_val;
+           $col1_val = $msf_mrc_val -  $approved_plan_val;
             echo '<Cell ss:StyleID="BlueCell"><Data ss:Type="Number">' . number_format($col1_val, 2, '.', '') . '</Data></Cell>';
 
             // Column 2: Debit Memo - Column 1

@@ -89,9 +89,9 @@ if ($action === 'export') {
             $params[] = $company;
         }
         if (!empty($start_date) && !empty($end_date)) {
-            $sql .= " AND (dmi.coverage_start <= ? AND dmi.coverage_end >= ?)";
-            $params[] = $end_date;
+            $sql .= " AND dmi.coverage_start >= ? AND dmi.coverage_start <= ?";
             $params[] = $start_date;
+            $params[] = $end_date;
         }
 
         $sql .= " ORDER BY dmi.coverage_start ASC";
@@ -135,12 +135,12 @@ if ($action === 'export') {
         echo ' xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"' . "\n";
         echo ' xmlns:html="http://www.w3.org/TR/REC-html40">' . "\n";
 
-        // Global Styles Definition (Must appear ONCE at the top level)
+        // Global Styles Definition
         echo '<Styles>' . "\n";
         echo '<Style ss:ID="DataCell"><Alignment ss:Horizontal="Center" ss:Vertical="Center"/><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1"/></Borders></Style>' . "\n";
         echo '<Style ss:ID="RedCell"><Alignment ss:Horizontal="Center" ss:Vertical="Center"/><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1"/></Borders><Font ss:Bold="1" ss:Color="#dc2626"/></Style>' . "\n";
 
-        $unique_colors = ["#FFE599", "#93C47D", "#4A86E8"];
+        $unique_colors = ["#FFE599", "#93C47D", "#4A86E8", "#F7F700"];
         foreach ($unique_colors as $color) {
             $style_id = 'Header_' . md5($color);
             echo '<Style ss:ID="' . $style_id . '">';
@@ -152,7 +152,7 @@ if ($action === 'export') {
         }
         echo '</Styles>' . "\n";
 
-        // Headers Configuration (20 columns total)
+        // Headers Configuration (22 columns total)
         $headers = [
             "COVERAGE DATE" => "#FFE599",
             "MOBILE NUMBER" => "#93C47D",
@@ -173,7 +173,9 @@ if ($action === 'export') {
             "OCT" => "#4A86E8",
             "CURRENT CHARGES" => "#4A86E8",
             "TOTAL AMOUNT DUE" => "#4A86E8",
-            "DEBIT MEMO" => "#93C47D"
+            "PROCESSED DM" => "#93C47D",
+            "SYSTEM GENERATED DM" => "#93C47D",
+            "DIFFERENCE" => "#F7F700"
         ];
 
         // Loop through each year to create separate sheet tabs
@@ -181,8 +183,8 @@ if ($action === 'export') {
             echo '<Worksheet ss:Name="Year ' . htmlspecialchars($year, ENT_QUOTES, 'UTF-8') . '">' . "\n";
             echo '<Table>' . "\n";
 
-            // 20 Column Widths matching the 20 headers exactly
-            $colWidths = [150, 130, 110, 130, 100, 100, 180, 130, 130, 140, 90, 80, 80, 90, 120, 80, 80, 130, 130, 100];
+            // 22 Column Widths
+            $colWidths = [150, 130, 110, 130, 100, 100, 180, 130, 130, 140, 90, 80, 80, 90, 120, 80, 80, 130, 130, 100, 140, 140];
             foreach ($colWidths as $w) {
                 echo '<Column ss:Width="' . $w . '"/>' . "\n";
             }
@@ -196,7 +198,7 @@ if ($action === 'export') {
             echo '</Row>' . "\n";
             echo '<Row></Row>' . "\n";
 
-            // Header Row (Single Render)
+            // Header Row
             echo '<Row>' . "\n";
             foreach ($headers as $colTitle => $colorCode) {
                 $styleID = 'Header_' . md5($colorCode);
@@ -204,7 +206,7 @@ if ($action === 'export') {
             }
             echo '</Row>' . "\n";
 
-            // Data Rows (Matches the 20 Header columns exactly)
+            // Data Rows
             foreach ($year_items as $row) {
                 $start = isset($row['coverage_start']) && $row['coverage_start'] ? date('M d, Y', strtotime($row['coverage_start'])) : '';
                 $end   = isset($row['coverage_end']) && $row['coverage_end'] ? date('M d, Y', strtotime($row['coverage_end'])) : '';
@@ -231,6 +233,13 @@ if ($action === 'export') {
                     $cellStyle = ($field === 'debit_memo_details') ? 'RedCell' : 'DataCell';
                     echo '<Cell ss:StyleID="' . $cellStyle . '"><Data ss:Type="Number">' . number_format($val, 2, '.', '') . '</Data></Cell>' . "\n";
                 }
+
+                // Column 21: SYSTEM GENERATED DM = CURRENT CHARGES - APPROVED PLAN
+                echo '<Cell ss:StyleID="DataCell" ss:Formula="=RC[-3]-RC[-18]"><Data ss:Type="Number">0</Data></Cell>' . "\n";
+
+                // Column 22: DIFFERENCE = PROCESSED DM - SYSTEM GENERATED DM
+                echo '<Cell ss:StyleID="RedCell" ss:Formula="=RC[-2]-RC[-1]"><Data ss:Type="Number">0</Data></Cell>' . "\n";
+
                 echo '</Row>' . "\n";
             }
 
@@ -268,9 +277,9 @@ if ($action === 'view') {
             $params[] = $company;
         }
         if (!empty($start_date) && !empty($end_date)) {
-            $base_sql .= " AND (dmi.coverage_start <= ? AND dmi.coverage_end >= ?)";
-            $params[] = $end_date;
+            $base_sql .= " AND dmi.coverage_start >= ? AND dmi.coverage_start <= ?";
             $params[] = $start_date;
+            $params[] = $end_date;
         }
 
         // Count total matching records for pagination
@@ -396,7 +405,7 @@ ob_start();
         </div>
         <!-- Scrollable container for full comprehensive data view -->
         <div class="w-full overflow-x-auto scrollbar-thin scrollbar-thumb-slate-300 scrollbar-track-slate-100">
-            <table class="w-full min-w-[2000px] text-left border-collapse whitespace-nowrap">
+            <table class="w-full min-w-[2200px] text-left border-collapse whitespace-nowrap">
                 <thead>
                     <tr class="text-[11px] font-bold text-slate-800 uppercase tracking-wider">
                         <th class="p-2 border border-gray-400 whitespace-normal text-center" style="background-color: #FFE599;">Coverage Date</th>
@@ -422,7 +431,9 @@ ob_start();
                         <th class="p-2 border border-gray-400 whitespace-normal text-center" style="background-color: #4A86E8;">OCT</th>
                         <th class="p-2 border border-gray-400 whitespace-normal text-center" style="background-color: #4A86E8;">Current Charges</th>
                         <th class="p-2 border border-gray-400 whitespace-normal text-center" style="background-color: #4A86E8;">Total Amount Due</th>
-                        <th class="p-2 border border-gray-400 whitespace-normal text-center" style="background-color: #93C47D;">Debit Memo</th>
+                        <th class="p-2 border border-gray-400 whitespace-normal text-center" style="background-color: #93C47D;">PROCESSED DM</th>
+                        <th class="p-2 border border-gray-400 whitespace-normal text-center" style="background-color: #93C47D;">SYSTEM GENERATED DM</th>
+                        <th class="p-2 border border-gray-400 whitespace-normal text-center" style="background-color: #F7F700;">DIFFERENCE</th>
                     </tr>
                 </thead>
                 <tbody class="divide-y divide-slate-200 text-xs text-slate-700">
@@ -438,24 +449,30 @@ ob_start();
                             $row_carrier = isset($row['carrier_name']) ? $row['carrier_name'] : 'N/A';
                             $row_mobile = isset($row['mobile_number']) ? $row['mobile_number'] : 'N/A';
 
-                            $plan = number_format((float)(isset($row['approved_plan']) ? $row['approved_plan'] : 0), 2);
-                            $amort = number_format((float)(isset($row['phone_amortization']) ? $row['phone_amortization'] : 0), 2);
-                            $dadj = number_format((float)(isset($row['debit_adj']) ? $row['debit_adj'] : 0), 2);
-                            $cadj = number_format((float)(isset($row['credit_adj']) ? $row['credit_adj'] : 0), 2);
-                            $other = number_format((float)(isset($row['other_charges']) ? $row['other_charges'] : 0), 2);
-                            $local = number_format((float)(isset($row['local_call_text']) ? $row['local_call_text'] : 0), 2);
-                            $ndd = number_format((float)(isset($row['ndd_charges']) ? $row['ndd_charges'] : 0), 2);
-                            $idd = number_format((float)(isset($row['idd_charges']) ? $row['idd_charges'] : 0), 2);
-                            $roam = number_format((float)(isset($row['roaming_charges']) ? $row['roaming_charges'] : 0), 2);
-                            $sms = number_format((float)(isset($row['sms_charges']) ? $row['sms_charges'] : 0), 2);
-                            $gprs = number_format((float)(isset($row['gprs_charges']) ? $row['gprs_charges'] : 0), 2);
-                            $wiz = number_format((float)(isset($row['wiz_usage']) ? $row['wiz_usage'] : 0), 2);
-                            $load = number_format((float)(isset($row['loading_charges']) ? $row['loading_charges'] : 0), 2);
-                            $vat = number_format((float)(isset($row['vat']) ? $row['vat'] : 0), 2);
-                            $oct = number_format((float)(isset($row['oct']) ? $row['oct'] : 0), 2);
-                            $current = number_format((float)(isset($row['current_charges']) ? $row['current_charges'] : 0), 2);
-                            $amount = number_format((float)(isset($row['total_amount_due']) ? $row['total_amount_due'] : 0), 2);
-                            $dm_details = number_format((float)(isset($row['debit_memo_details']) ? $row['debit_memo_details'] : 0), 2);
+                            $plan_raw = (float)(isset($row['approved_plan']) ? $row['approved_plan'] : 0);
+                            $amort_raw = (float)(isset($row['phone_amortization']) ? $row['phone_amortization'] : 0);
+                            $dadj_raw = (float)(isset($row['debit_adj']) ? $row['debit_adj'] : 0);
+                            $cadj_raw = (float)(isset($row['credit_adj']) ? $row['credit_adj'] : 0);
+                            $other_raw = (float)(isset($row['other_charges']) ? $row['other_charges'] : 0);
+                            $local_raw = (float)(isset($row['local_call_text']) ? $row['local_call_text'] : 0);
+                            $ndd_raw = (float)(isset($row['ndd_charges']) ? $row['ndd_charges'] : 0);
+                            $idd_raw = (float)(isset($row['idd_charges']) ? $row['idd_charges'] : 0);
+                            $roam_raw = (float)(isset($row['roaming_charges']) ? $row['roaming_charges'] : 0);
+                            $sms_raw = (float)(isset($row['sms_charges']) ? $row['sms_charges'] : 0);
+                            $gprs_raw = (float)(isset($row['gprs_charges']) ? $row['gprs_charges'] : 0);
+                            $wiz_raw = (float)(isset($row['wiz_usage']) ? $row['wiz_usage'] : 0);
+                            $load_raw = (float)(isset($row['loading_charges']) ? $row['loading_charges'] : 0);
+                            $vat_raw = (float)(isset($row['vat']) ? $row['vat'] : 0);
+                            $oct_raw = (float)(isset($row['oct']) ? $row['oct'] : 0);
+                            $current_raw = (float)(isset($row['current_charges']) ? $row['current_charges'] : 0);
+                            $amount_raw = (float)(isset($row['total_amount_due']) ? $row['total_amount_due'] : 0);
+                            $dm_details_raw = (float)(isset($row['debit_memo_details']) ? $row['debit_memo_details'] : 0);
+
+                            // SYSTEM GENERATED DM = Current Charges - Approved Plan
+                            $sys_gen_dm = $current_raw - $plan_raw;
+
+                            // DIFFERENCE = Processed DM - System Generated DM
+                            $difference = $dm_details_raw - $sys_gen_dm;
                         ?>
                             <tr class="hover:bg-slate-50/50 transition">
                                 <td class="px-4 py-3.5 text-slate-500 font-medium"><?php echo htmlspecialchars($coverage_text); ?></td>
@@ -464,29 +481,31 @@ ob_start();
                                 <td class="px-4 py-3.5"><?php echo htmlspecialchars($row_assignee); ?></td>
                                 <td class="px-4 py-3.5"><?php echo htmlspecialchars($row_carrier); ?></td>
                                 <td class="px-4 py-3.5"><?php echo htmlspecialchars($row_mobile); ?></td>
-                                <td class="px-4 py-3.5 text-right"><?php echo $plan; ?></td>
-                                <td class="px-4 py-3.5 text-right"><?php echo $amort; ?></td>
-                                <td class="px-4 py-3.5 text-right"><?php echo $dadj; ?></td>
-                                <td class="px-4 py-3.5 text-right"><?php echo $cadj; ?></td>
-                                <td class="px-4 py-3.5 text-right"><?php echo $other; ?></td>
-                                <td class="px-4 py-3.5 text-right"><?php echo $local; ?></td>
-                                <td class="px-4 py-3.5 text-right"><?php echo $ndd; ?></td>
-                                <td class="px-4 py-3.5 text-right"><?php echo $idd; ?></td>
-                                <td class="px-4 py-3.5 text-right"><?php echo $roam; ?></td>
-                                <td class="px-4 py-3.5 text-right"><?php echo $sms; ?></td>
-                                <td class="px-4 py-3.5 text-right"><?php echo $gprs; ?></td>
-                                <td class="px-4 py-3.5 text-right"><?php echo $wiz; ?></td>
-                                <td class="px-4 py-3.5 text-right"><?php echo $load; ?></td>
-                                <td class="px-4 py-3.5 text-right"><?php echo $vat; ?></td>
-                                <td class="px-4 py-3.5 text-right"><?php echo $oct; ?></td>
-                                <td class="px-4 py-3.5 text-right font-medium"><?php echo $current; ?></td>
-                                <td class="px-4 py-3.5 text-right font-bold text-emerald-600"><?php echo $amount; ?></td>
-                                <td class="px-4 py-3.5 text-right font-bold text-red-600"><?php echo $dm_details; ?></td>
+                                <td class="px-4 py-3.5 text-right"><?php echo number_format($plan_raw, 2); ?></td>
+                                <td class="px-4 py-3.5 text-right"><?php echo number_format($amort_raw, 2); ?></td>
+                                <td class="px-4 py-3.5 text-right"><?php echo number_format($dadj_raw, 2); ?></td>
+                                <td class="px-4 py-3.5 text-right"><?php echo number_format($cadj_raw, 2); ?></td>
+                                <td class="px-4 py-3.5 text-right"><?php echo number_format($other_raw, 2); ?></td>
+                                <td class="px-4 py-3.5 text-right"><?php echo number_format($local_raw, 2); ?></td>
+                                <td class="px-4 py-3.5 text-right"><?php echo number_format($ndd_raw, 2); ?></td>
+                                <td class="px-4 py-3.5 text-right"><?php echo number_format($idd_raw, 2); ?></td>
+                                <td class="px-4 py-3.5 text-right"><?php echo number_format($roam_raw, 2); ?></td>
+                                <td class="px-4 py-3.5 text-right"><?php echo number_format($sms_raw, 2); ?></td>
+                                <td class="px-4 py-3.5 text-right"><?php echo number_format($gprs_raw, 2); ?></td>
+                                <td class="px-4 py-3.5 text-right"><?php echo number_format($wiz_raw, 2); ?></td>
+                                <td class="px-4 py-3.5 text-right"><?php echo number_format($load_raw, 2); ?></td>
+                                <td class="px-4 py-3.5 text-right"><?php echo number_format($vat_raw, 2); ?></td>
+                                <td class="px-4 py-3.5 text-right"><?php echo number_format($oct_raw, 2); ?></td>
+                                <td class="px-4 py-3.5 text-right font-medium"><?php echo number_format($current_raw, 2); ?></td>
+                                <td class="px-4 py-3.5 text-right font-bold text-emerald-600"><?php echo number_format($amount_raw, 2); ?></td>
+                                <td class="px-4 py-3.5 text-right font-bold text-red-600"><?php echo number_format($dm_details_raw, 2); ?></td>
+                                <td class="px-4 py-3.5 text-right font-bold text-blue-600"><?php echo number_format($sys_gen_dm, 2); ?></td>
+                                <td class="px-4 py-3.5 text-right font-bold <?php echo ($difference != 0) ? 'text-red-600' : 'text-slate-700'; ?>"><?php echo number_format($difference, 2); ?></td>
                             </tr>
                         <?php endforeach; ?>
                     <?php else: ?>
                         <tr>
-                            <td colspan="24" class="px-6 py-10 text-center text-slate-400">No records found matching the criteria.</td>
+                            <td colspan="26" class="px-6 py-10 text-center text-slate-400">No records found matching the criteria.</td>
                         </tr>
                     <?php endif; ?>
                 </tbody>

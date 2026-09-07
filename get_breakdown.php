@@ -68,10 +68,10 @@ if (empty($items)) {
 
         // CALCULATIONS FOR NEW COLUMNS
         $approved_plan_val = isset($row['approved_plan']) ? (float)$row['approved_plan'] : 0;
-        $msf_mrc_val = isset($row['phone_amortization']) ? (float)$row['phone_amortization'] : 0; // Adjust database key if your MSF/MRC column has a different name
+        $msf_mrc_val = isset($row['current_charges']) ? (float)$row['current_charges'] : 0; // Adjust database key if your MSF/MRC column has a different name
         
         // Column 1: Approved Plan - MSF (GLOBE / MRC (SMART))
-        $col1_val = $approved_plan_val - $msf_mrc_val;
+        $col1_val =   $msf_mrc_val - $approved_plan_val;
         echo "<td class='p-2 border font-bold text-blue-600'>" . number_format($col1_val, 2) . "</td>";
 
         // Column 2: Debit Memo - Column 1

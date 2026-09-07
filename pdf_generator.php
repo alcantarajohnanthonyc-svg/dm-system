@@ -44,9 +44,9 @@ function createDebitMemoPDF($dm_id, $conn, $item_ids = null, $startDate = null, 
         "OCT" => "#4A86E8",
         "CURRENT CHARGES" => "#4A86E8",
         "TOTAL AMOUNT DUE" => "#4A86E8",
-        "DEBIT MEMO" => "#93C47D",
-        "PLAN VARIANCE (APP. - MSF)" => "#93C47D",
-        "DM DIFFERENCE (DM - COL 1)" => "#93C47D"
+        "PROCESSED DM" => "#93C47D",
+       "SYSTEM GENERATED DM" => "#93C47D",
+     "DIFFERENCE" => "#F7F700"
     ];
 
     // Dynamic width calculation to fit all columns perfectly on Legal Landscape (355.6 mm width)
@@ -77,9 +77,14 @@ function createDebitMemoPDF($dm_id, $conn, $item_ids = null, $startDate = null, 
                 $pdf->SetFillColor(255, 229, 153); // Soft Yellow
             } elseif ($colorType === '#93C47D') {
                 $pdf->SetFillColor(147, 196, 125); // Green
-            } else {
+            }
+              elseif ($colorType === '#F7F700') {
+                $pdf->SetFillColor(247, 247, 0); // yellow
+            }
+            else {
                 $pdf->SetFillColor(74, 135, 232); // Blue
             }
+
             
             $currentX = $pdf->GetX();
             $currentY = $pdf->GetY();
@@ -171,9 +176,9 @@ function createDebitMemoPDF($dm_id, $conn, $item_ids = null, $startDate = null, 
             
             // Calculations for the 2 new columns matching Excel structure
             $approved_plan_val = isset($row['approved_plan']) ? (float)$row['approved_plan'] : 0.00;
-            $msf_mrc_val = isset($row['phone_amortization']) ? (float)$row['phone_amortization'] : 0.00;
+            $msf_mrc_val = isset($row['current_charges']) ? (float)$row['current_charges'] : 0.00;
 
-            $col1_val = $approved_plan_val - $msf_mrc_val;
+            $col1_val =  $msf_mrc_val - $approved_plan_val;
             $col2_val = $dm_val - $col1_val;
 
             // Plan Variance Column (Blue text)

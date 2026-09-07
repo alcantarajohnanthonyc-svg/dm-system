@@ -303,8 +303,10 @@ $base_query = http_build_query($current_params);
         
         <th class="py-3 px-2 sticky top-0 bg-gray-50 z-10 text-right cursor-pointer hover:text-black" 
             onclick="window.location='?sort=5&dir=<?= ($sort_dir == 'ASC' ? 'desc' : 'asc') . '&' . $base_query ?>'">
-            Total Debit Memo &uarr;&darr;
+            PROCESSED DM &uarr;&darr;
         </th>
+
+
         
         <th class="pr-3 py-3 sticky top-0 bg-gray-50 z-10 text-center">Actions</th>
     </tr>
@@ -453,12 +455,12 @@ function getCarrierBadge($carrierName) {
                 <th class="p-2 border border-gray-300 whitespace-normal text-center" style="background-color: #4A86E8;">OCT</th>
                 <th class="p-2 border border-gray-300 whitespace-normal text-center" style="background-color: #4A86E8;">Current Charges</th>
                 <th class="p-2 border border-gray-300 whitespace-normal text-center" style="background-color: #4A86E8;">Total Amount Due</th>
-                <th class="p-2 border border-gray-300 whitespace-normal text-center" style="background-color: #93C47D;">Debit Memo</th>
+                <th class="p-2 border border-gray-300 whitespace-normal text-center" style="background-color: #93C47D;">PROCESSED DM</th>
                <!-- Updated Header 1 -->
-                <th class="p-2 border border-gray-300 whitespace-normal text-center" style="background-color: #93C47D;">Plan Variance (App. - MSF)</th>
+                <th class="p-2 border border-gray-300 whitespace-normal text-center" style="background-color: #93C47D;">SYSTEM GENERATED DM</th>
                 
                 <!-- Updated Header 2 -->
-                <th class="p-2 border border-gray-300 whitespace-normal text-center" style="background-color: #93C47D;">DM Difference (DM - Col 1)</th>
+                <th class="p-2 border border-gray-300 whitespace-normal text-center" style="background-color: #F7F700;">DIFFERENCE</th>
 
                 <th class="p-2 border border-gray-300 text-center">ACTION</th>
             </tr>
@@ -608,7 +610,7 @@ function submitPasteExport(type) {
                    'oct' => 'Overseas communication Tax',
                     'current_charges' => 'Current Charges', 
                     'total_amount_due' => 'TTotal Amount Due', 
-                    'debit_memo_details' => 'Total Debit Memo'
+                    'debit_memo_details' => 'PROCESSED DM'
                 ];
                 foreach ($amounts as $name => $label): ?>
                     <div>
