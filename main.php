@@ -68,6 +68,15 @@
                         <i class="las la-chart-bar text-xl"></i> <span>Reports</span>
                     </a>
 
+
+
+<?php if ($_SESSION['role'] === 'superadmin'): ?>
+    <a href="email_manage.php" class="flex items-center space-x-3 px-4 py-2.5 rounded-md transition <?php echo $current_script === 'email_manage.php' ? 'bg-blue-600 text-white shadow-md' : 'text-gray-400 hover:bg-slate-800 hover:text-white'; ?>">
+        <i class="las la-address-book text-xl"></i> <span>Manage Emails</span>
+
+<?php endif; ?>
+
+
                     <?php if ($_SESSION['role'] !== 'superadmin'): ?>
                     <a href="change_password.php" class="flex items-center space-x-3 px-4 py-2.5 rounded transition <?php echo $current_script === 'change_password.php' ? 'bg-blue-600 text-white shadow-md' : 'text-gray-400 hover:bg-slate-800 hover:text-white'; ?>">
                         <i class="las la-key text-xl"></i> <span>Change Password</span>
