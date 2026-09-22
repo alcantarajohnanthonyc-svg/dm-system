@@ -1,5 +1,6 @@
 {
     "require": {
-        "smalot/pdfparser": "^2.12"
+        "smalot/pdfparser": "^2.12",
+        "google/apiclient": "^2.20"
     }
 }

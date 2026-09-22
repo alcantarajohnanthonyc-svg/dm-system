@@ -1,10 +1,10 @@
-    <?php
-    // THIS FILE IS THE CORE TEMPLATE LAYOUT WRAPPER[cite: 1]
+<?php
+    // THIS FILE IS THE CORE TEMPLATE LAYOUT WRAPPER
     function render_layout($page_title, $content) {
 
         global $conn;
 
-        // Safely check authorization sessions[cite: 1]
+        // Safely check authorization sessions
         if (!isset($_SESSION['user_id'])) {
             header("Location: login.php");
             exit;
@@ -14,14 +14,15 @@
             $stmt = $conn->prepare("UPDATE users SET last_activity = NOW() WHERE user_id = ?");
             $stmt->execute([$_SESSION['user_id']]);
         } catch (PDOException $e) {
-            // Silently catch error[cite: 1]
+            // Silently catch error
         }
 
         $current_user_fullname = $_SESSION['full_name'];
         $current_user_username = $_SESSION['username'];
     
-        // Determine which menu tab to highlight based on active filename context[cite: 1]
+        // Determine which menu tab to highlight based on active filename context
         $current_script = basename($_SERVER['SCRIPT_NAME']);
+        $is_soa_active = in_array($current_script, ['debit_memo_dispatch.php', 'email_mapping.php', 'debit_memo_upload.php', 'upload.php', 'dispatch.php', 'mappings.php']);
     ?>
     <!DOCTYPE html>
     <html lang="en">
@@ -59,7 +60,7 @@
                     <a href="dashboard.php" class="flex items-center space-x-3 px-4 py-2.5 rounded-md transition <?php echo $current_script === 'dashboard.php' ? 'bg-blue-600 text-white shadow-md' : 'text-gray-400 hover:bg-slate-800 hover:text-white'; ?>">
                         <i class="las la-chart-pie text-xl"></i> <span>Dashboard</span>
                     </a>
-            
+        
                     <a href="list_dm.php" class="flex items-center space-x-3 px-4 py-2.5 rounded transition <?php echo $current_script === 'list_dm.php' ? 'bg-blue-600 text-white shadow-md' : 'text-gray-400 hover:bg-slate-800 hover:text-white'; ?>">
                         <i class="las la-file-invoice-dollar text-xl"></i> <span>Debit Memos List</span>
                     </a>
@@ -68,21 +69,38 @@
                         <i class="las la-chart-bar text-xl"></i> <span>Reports</span>
                     </a>
 
-
-
-<?php if ($_SESSION['role'] === 'superadmin'): ?>
-    <a href="email_manage.php" class="flex items-center space-x-3 px-4 py-2.5 rounded-md transition <?php echo $current_script === 'email_manage.php' ? 'bg-blue-600 text-white shadow-md' : 'text-gray-400 hover:bg-slate-800 hover:text-white'; ?>">
-        <i class="las la-address-book text-xl"></i> <span>Manage Emails</span>
-
-<?php endif; ?>
-
+                    <!-- SOA Management Dropdown para sa Superadmin -->
+                    <?php if ($_SESSION['role'] === 'superadmin'): ?>
+                    <div class="space-y-1">
+                        <button onclick="toggleSoaDropdown()" class="w-full flex items-center justify-between px-4 py-2.5 rounded-md transition <?php echo $is_soa_active ? 'bg-slate-800 text-white font-semibold' : 'text-gray-400 hover:bg-slate-800 hover:text-white'; ?>">
+                            <div class="flex items-center space-x-3">
+                                <i class="las la-address-book text-xl"></i> 
+                                <span>Manage SOA</span>
+                            </div>
+                            <i id="soaDropdownArrow" class="las la-angle-down transition-transform duration-200 <?php echo $is_soa_active ? 'rotate-180' : ''; ?>"></i>
+                        </button>
+                        
+                        <!-- Sub-links container -->
+                        <div id="soaSubMenu" class="<?php echo $is_soa_active ? 'block' : 'hidden'; ?> pl-4 space-y-1 mt-1 border-l-2 border-slate-700 ml-4">
+                            <a href="debit_memo_upload.php" class="flex items-center space-x-2 px-3 py-2 rounded text-xs transition <?php echo in_array($current_script, ['debit_memo_upload.php', 'upload.php']) ? 'text-blue-400 font-bold bg-slate-800/50' : 'text-gray-400 hover:text-white'; ?>">
+                                <i class="las la-file-upload text-lg"></i> <span>Upload Statements</span>
+                            </a>
+                            <a href="debit_memo_dispatch.php" class="flex items-center space-x-2 px-3 py-2 rounded text-xs transition <?php echo in_array($current_script, ['debit_memo_dispatch.php', 'dispatch.php']) ? 'text-blue-400 font-bold bg-slate-800/50' : 'text-gray-400 hover:text-white'; ?>">
+                                <i class="las la-paper-plane text-lg"></i> <span>Dispatch Hub</span>
+                            </a>
+                            <a href="email_mapping.php" class="flex items-center space-x-2 px-3 py-2 rounded text-xs transition <?php echo in_array($current_script, ['email_mapping.php', 'mappings.php']) ? 'text-blue-400 font-bold bg-slate-800/50' : 'text-gray-400 hover:text-white'; ?>">
+                                <i class="las la-envelope text-lg"></i> <span>Email Mappings</span>
+                            </a>
+                        </div>
+                    </div>
+                    <?php endif; ?>
 
                     <?php if ($_SESSION['role'] !== 'superadmin'): ?>
                     <a href="change_password.php" class="flex items-center space-x-3 px-4 py-2.5 rounded transition <?php echo $current_script === 'change_password.php' ? 'bg-blue-600 text-white shadow-md' : 'text-gray-400 hover:bg-slate-800 hover:text-white'; ?>">
                         <i class="las la-key text-xl"></i> <span>Change Password</span>
                     </a>
                     <?php endif; ?>
-            
+        
                     <?php if ($_SESSION['role'] === 'superadmin'): ?>
                         <a href="users.php" class="flex items-center space-x-3 px-4 py-2.5 rounded-md transition <?php echo $current_script === 'users.php' ? 'bg-blue-600 text-white shadow-md' : 'text-gray-400 hover:bg-slate-800 hover:text-white'; ?>">
                             <i class="las la-users text-xl"></i> <span>User Management</span>
@@ -113,7 +131,6 @@
             <header class="bg-white border-b px-8 py-3 flex items-center justify-between shadow-sm">
                 <h2 class="text-xl font-semibold text-gray-800"><?php echo $page_title; ?></h2>
             
-                <!-- Alternative modern unified card design integrating user details and a standout logout button -->
                 <div class="flex items-center bg-gradient-to-r from-slate-50 to-white border border-slate-200 rounded-xl p-1 shadow-sm space-x-3">
                     <div class="flex items-center space-x-2.5 pl-2">
                         <div class="w-8 h-8 rounded-lg bg-blue-600 flex items-center justify-center text-white text-xs font-bold uppercase shadow-sm">
@@ -145,38 +162,46 @@
                 <?php echo $content; ?>
             </main>
         </div>
-        <!-- 5-MINUTE HEARTBEAT SCRIPT                   -->
-    <!-- ========================================== -->
-   <script>
-function sendSharedHeartbeat() {
-    let lastPing = sessionStorage.getItem('last_heartbeat_time');
-    let now = Date.now();
 
-    // If no ping was sent in the last 5 minutes (300,000 ms), send one
-    if (!lastPing || (now - lastPing > 300000)) {
-        let formData = new FormData();
-        formData.append('ajax', '1');
-        formData.append('action', 'heartbeat');
+        <!-- DROPDOWN TOGGLE & 5-MINUTE HEARTBEAT SCRIPT -->
+        <!-- ========================================== -->
+       <script>
+        function toggleSoaDropdown() {
+            const subMenu = document.getElementById('soaSubMenu');
+            const arrow = document.getElementById('soaDropdownArrow');
+            subMenu.classList.toggle('hidden');
+            arrow.classList.toggle('rotate-180');
+        }
 
-        // Dynamically target the current page instead of hardcoding 'users.php'
-        fetch(window.location.pathname, {
-            method: 'POST',
-            body: formData
-        })
-        .then(res => res.json())
-        .then(data => {
-            if (data.status === 'success') {
-                sessionStorage.setItem('last_heartbeat_time', Date.now());
+        function sendSharedHeartbeat() {
+            let lastPing = sessionStorage.getItem('last_heartbeat_time');
+            let now = Date.now();
+
+            // If no ping was sent in the last 5 minutes (300,000 ms), send one
+            if (!lastPing || (now - lastPing > 300000)) {
+                let formData = new FormData();
+                formData.append('ajax', '1');
+                formData.append('action', 'heartbeat');
+
+                // Dynamically target the current page instead of hardcoding 'users.php'
+                fetch(window.location.pathname, {
+                    method: 'POST',
+                    body: formData
+                })
+                .then(res => res.json())
+                .then(data => {
+                    if (data.status === 'success') {
+                        sessionStorage.setItem('last_heartbeat_time', Date.now());
+                    }
+                })
+                .catch(err => console.error("Heartbeat error:", err));
             }
-        })
-        .catch(err => console.error("Heartbeat error:", err));
-    }
-}
+        }
 
-// Send immediately on page load, then check/ping every 5 minutes
-sendSharedHeartbeat();
-setInterval(sendSharedHeartbeat, 60000); // 1 minutes =60000 ms
-</script>
+        // Send immediately on page load, then check/ping every minute
+        sendSharedHeartbeat();
+        setInterval(sendSharedHeartbeat, 60000); // 1 minute = 60000 ms
+        </script>
     </body>
     </html>
     <?php

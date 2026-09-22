@@ -18,9 +18,10 @@ try {
         $pdo = $conn;
     }
 
-    $upload_dir = __DIR__ . "/uploads/debit_memos/";
-    if (!is_dir($upload_dir)) {
-        mkdir($upload_dir, 0777, true);
+    // Base upload directory
+    $base_upload_dir = __DIR__ . "/uploads/debit_memos/";
+    if (!is_dir($base_upload_dir)) {
+        mkdir($base_upload_dir, 0777, true);
     }
 
     $current_page_script = basename($_SERVER['PHP_SELF']);
@@ -28,10 +29,58 @@ try {
     $error = '';
 
     // ==========================================
+    // HELPER FUNCTIONS FOR FILENAME PARSING
+    // ==========================================
+
+    function extract_date_from_filename($filename) {
+        if (preg_match('/(20\d{2})(0[1-9]|1[0-2])([0-2][0-9]|3[01])/', $filename, $m)) {
+            return "{$m[1]}-{$m[2]}-{$m[3]}";
+        }
+        if (preg_match('/(20\d{2})-(0[1-9]|1[0-2])-([0-2][0-9]|3[01])/', $filename, $m)) {
+            return "{$m[1]}-{$m[2]}-{$m[3]}";
+        }
+        return date('Y-m-d');
+    }
+
+    function extract_account_from_filename($filename) {
+        if (preg_match('/\b\d{8,15}\b/', $filename, $m)) {
+            return $m[0];
+        }
+        if (preg_match('/\d+/', $filename, $m)) {
+            return $m[0];
+        }
+        return 'Unknown';
+    }
+
+    // ==========================================
     // BACKEND REQUEST ROUTING & HANDLERS
     // ==========================================
 
-    // 1. Handle PDF Batch Uploads (AJAX)
+    $available_date_folders = [];
+    if (is_dir($base_upload_dir)) {
+        $folder_scan = scandir($base_upload_dir);
+        foreach ($folder_scan as $dir_item) {
+            if ($dir_item !== '.' && $dir_item !== '..' && is_dir($base_upload_dir . $dir_item)) {
+                $available_date_folders[] = $dir_item;
+            }
+        }
+        rsort($available_date_folders);
+    }
+
+    // Do not select any folder by default unless explicitly requested via GET
+    $selected_date_folder = $_GET['date_folder'] ?? '';
+    $has_selected_folder = !empty($selected_date_folder) && in_array($selected_date_folder, $available_date_folders);
+    
+    $current_folder_path = $has_selected_folder ? $base_upload_dir . basename($selected_date_folder) . '/' : '';
+
+    // Pagination Parameters
+    $page = max(1, intval($_GET['page'] ?? 1));
+    $limit = intval($_GET['limit'] ?? 25);
+    if (!in_array($limit, [10, 25, 50, 100])) {
+        $limit = 25;
+    }
+
+    // 1. Handle PDF Batch Uploads
     if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['pdf_files'])) {
         header('Content-Type: application/json');
         $success_files = [];
@@ -43,27 +92,36 @@ try {
             if ($ext === 'pdf') {
                 $tmp_name = $_FILES['pdf_files']['tmp_name'][$i];
                 $basename = basename($name);
-                $destination = $upload_dir . $basename;
+
+                $extracted_date = extract_date_from_filename($basename);
+                $account_num = extract_account_from_filename($basename);
+
+                $target_folder = $base_upload_dir . $extracted_date . '/';
+                if (!is_dir($target_folder)) {
+                    mkdir($target_folder, 0777, true);
+                }
+
+                $destination = $target_folder . $basename;
                 
                 if (file_exists($destination)) {
                     if ($overwrite) {
                         if (move_uploaded_file($tmp_name, $destination)) {
-                            $success_files[] = $name . " (Overwritten)";
+                            $success_files[] = "$basename (Overwritten to folder $extracted_date)";
                         } else {
-                            $failed_files[] = $name . " (Failed to overwrite)";
+                            $failed_files[] = "$basename (Failed to overwrite)";
                         }
                     } else {
-                        $failed_files[] = $name . " (Skipped: Duplicate)";
+                        $failed_files[] = "$basename (Skipped: Duplicate in $extracted_date)";
                     }
                 } else {
                     if (move_uploaded_file($tmp_name, $destination)) {
-                        $success_files[] = $name;
+                        $success_files[] = "$basename (Saved to folder $extracted_date)";
                     } else {
-                        $failed_files[] = $name . " (Upload failed)";
+                        $failed_files[] = "$basename (Upload failed)";
                     }
                 }
             } else {
-                $failed_files[] = $name . " (Invalid file type)";
+                $failed_files[] = "$name (Invalid file type)";
             }
         }
 
@@ -75,7 +133,7 @@ try {
         exit;
     }
 
-    // 2. Handle Email Mappings CRUD (Save / Delete)
+    // 2. Handle Email Mappings CRUD
     if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && in_array($_POST['action'], ['save_email', 'delete_email'])) {
         $action = $_POST['action'];
 
@@ -115,15 +173,15 @@ try {
     if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'preview_email') {
         header('Content-Type: application/json');
         $filename = basename($_POST['filename'] ?? '');
-        $filepath = $upload_dir . $filename;
+        $date_folder = preg_replace('/[^0-9\-]/', '', $_POST['date_folder'] ?? '');
+        $filepath = $base_upload_dir . $date_folder . '/' . $filename;
 
         if (!file_exists($filepath)) {
-            echo json_encode(['status' => 'error', 'message' => 'File not found.']);
+            echo json_encode(['status' => 'error', 'message' => 'File not found. Path checked: ' . $filepath]);
             exit;
         }
 
-        preg_match('/\d+/', $filename, $matches);
-        $account_number = $matches[0] ?? '';
+        $account_number = extract_account_from_filename($filename);
 
         $company = 'N/A';
         $assignee_name = 'N/A';
@@ -143,23 +201,23 @@ try {
         exit;
     }
 
-    // 4. Handle Batch Email Dispatch (AJAX)
+    // 4. Handle Batch Email Dispatch & Report Download Request (AJAX)
     if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'send_emails') {
         header('Content-Type: application/json');
         $selected_files = $_POST['files'] ?? [];
+        $date_folder = preg_replace('/[^0-9\-]/', '', $_POST['date_folder'] ?? '');
         $results = [];
 
         foreach ($selected_files as $filename) {
             $filename = basename($filename);
-            $filepath = $upload_dir . $filename;
+            $filepath = $base_upload_dir . $date_folder . '/' . $filename;
             
             if (!file_exists($filepath)) {
-                $results[] = ['file' => $filename, 'status' => 'error', 'message' => 'File not found on server.'];
+                $results[] = ['file' => $filename, 'account' => 'N/A', 'email' => 'N/A', 'status' => 'error', 'message' => 'File not found on server.'];
                 continue;
             }
 
-            preg_match('/\d+/', $filename, $matches);
-            $account_number = $matches[0] ?? '';
+            $account_number = extract_account_from_filename($filename);
 
             $company = 'N/A';
             $assignee_name = 'N/A';
@@ -183,7 +241,7 @@ try {
             } catch (Exception $e) {}
 
             if (empty($email_address)) {
-                $results[] = ['file' => $filename, 'status' => 'error', 'message' => "No email registered for account: {$account_number}"];
+                $results[] = ['file' => $filename, 'account' => $account_number, 'email' => 'None', 'status' => 'error', 'message' => "No email registered for account: {$account_number}"];
                 continue;
             }
 
@@ -191,14 +249,15 @@ try {
             $html_content = generate_email_body_html($company, $assignee_name, $account_number, $billing_info);
 
             $to = $email_address;
-            $subject = "{$billing_info['telco']} Statement of Account - " . $account_number;
+            $period = !empty($billing_info['billing_period']) && $billing_info['billing_period'] !== 'N/A' ? $billing_info['billing_period'] : 'Current Period';
+            $subject = "Statement of Account for {$account_number}: Debit Memo Details for {$period}";
             
             $mail_status = send_smtp_mail_with_html_body($to, $subject, $filepath, $filename, $html_content);
 
             if ($mail_status === true) {
-                $results[] = ['file' => $filename, 'status' => 'success', 'message' => "Successfully sent to {$to} ({$billing_info['telco']})"];
+                $results[] = ['file' => $filename, 'account' => $account_number, 'email' => $to, 'status' => 'success', 'message' => "Successfully sent to {$to}"];
             } else {
-                $results[] = ['file' => $filename, 'status' => 'error', 'message' => $mail_status];
+                $results[] = ['file' => $filename, 'account' => $account_number, 'email' => $to, 'status' => 'error', 'message' => $mail_status];
             }
         }
 
@@ -222,14 +281,6 @@ try {
             'credit_limit' => 'N/A',
             'due_date' => 'N/A',
             'customer_tin' => 'N/A',
-            'prev_balance' => 'N/A',
-            'payment' => 'N/A',
-            'adjustment' => 'N/A',
-            'rem_prev_balance' => 'N/A',
-            'recurring_charges' => 'N/A',
-            'usage_charges' => 'N/A',
-            'non_recurring_charges' => 'N/A',
-            'total_current_charges' => 'N/A',
             'summary_html' => ''
         ];
 
@@ -257,40 +308,15 @@ try {
             if (preg_match('/Invoice\s*Number\s*(SMTBI[0-9]+)/i', $text, $m)) $data['invoice_number'] = trim($m[1]);
             if (preg_match('/Credit\s*Limit\s*([0-9,\.]+)/i', $text, $m)) $data['credit_limit'] = trim($m[1]);
             if (preg_match('/DUE\s*DATE[:]?\s*([A-Za-z0-9,\s]+)/i', $text, $m)) $data['due_date'] = trim($m[1]);
-            if (preg_match('/TOTAL\s*AMOUNT\s*DU[EE]\s*[:]?\s*([A-Z0-9\.,\(\)\s]+)/i', $text, $m)) {
-                $data['amount_due'] = trim($m[1]);
-            } elseif (preg_match('/Total\s*Amount\s*Due\s*([0-9,\.\(\)\sCR]+)/i', $text, $m)) {
+            
+            if (preg_match('/TOTAL\s*AMOUNT\s*DU[EE]\s*[:]?\s*(?:PHP)?\s*([0-9,\.\(\)\sCR]+)/i', $text, $m)) {
+                $raw_amount = trim($m[1]);
+                if (!empty($raw_amount)) {
+                    $data['amount_due'] = $raw_amount;
+                }
+            } elseif (preg_match('/Total\s*Amount\s*Due\s*(?:PHP)?\s*([0-9,\.\(\)\sCR]+)/i', $text, $m)) {
                 $data['amount_due'] = trim($m[1]);
             }
-
-            if (preg_match('/Balance\s*from\s*Previous\s*Charges\s*([0-9,\.\(\)\sCR]+)/i', $text, $m)) $data['prev_balance'] = trim($m[1]);
-            if (preg_match('/Payment\s*([0-9,\.\(\)\s]+)/i', $text, $m)) $data['payment'] = trim($m[1]);
-            if (preg_match('/Adjustment\s*([0-9,\.\(\)\s]+)/i', $text, $m)) $data['adjustment'] = trim($m[1]);
-            if (preg_match('/Remaining\s*Balance\s*from\s*Previous\s*Invoice\s*([0-9,\.\(\)\sCR]+)/i', $text, $m)) $data['rem_prev_balance'] = trim($m[1]);
-            if (preg_match('/Recurring\s*Charges\s*([0-9,\.\(\)\s]+)/i', $text, $m)) $data['recurring_charges'] = trim($m[1]);
-            if (preg_match('/Usage\s*Charges\s*([0-9,\.\(\)\s]+)/i', $text, $m)) $data['usage_charges'] = trim($m[1]);
-            if (preg_match('/Non\s*Recurring\s*Charges\s*([0-9,\.\(\)\s]+)/i', $text, $m)) $data['non_recurring_charges'] = trim($m[1]);
-            if (preg_match('/Total\s*Current\s*Charges\s*([0-9,\.\(\)\s]+)/i', $text, $m)) $data['total_current_charges'] = trim($m[1]);
-
-            $data['summary_html'] = '
-            <div style="border: 1px solid #16a34a; margin-top: 20px; font-family: Arial, sans-serif;">
-                <div style="background-color: #16a34a; color: white; padding: 10px 12px; font-weight: bold; font-size: 14px;">Invoice Summary</div>
-                <div style="padding: 10px 12px; font-weight: bold; font-size: 13px; color: #333;">Previous Charges</div>
-                <div style="display: flex; justify-content: space-between; padding: 6px 12px; border-bottom: 1px solid #eee; font-size: 13px;"><span>Balance from Previous Charges</span><span>' . htmlspecialchars($data['prev_balance']) . '</span></div>
-                <div style="display: flex; justify-content: space-between; padding: 6px 12px; border-bottom: 1px solid #eee; font-size: 13px;"><span>Payment</span><span>' . htmlspecialchars($data['payment']) . '</span></div>
-                <div style="display: flex; justify-content: space-between; padding: 6px 12px; border-bottom: 1px solid #eee; font-size: 13px;"><span>Adjustment</span><span>' . htmlspecialchars($data['adjustment']) . '</span></div>
-                <div style="display: flex; justify-content: space-between; padding: 8px 12px; border-bottom: 1px solid #ddd; font-size: 13px; font-weight: bold; color: #16a34a;"><span>Remaining Balance from Previous Invoice</span><span>' . htmlspecialchars($data['rem_prev_balance']) . '</span></div>
-                <div style="padding: 10px 12px; font-weight: bold; font-size: 13px; color: #333; margin-top: 5px;">Current Charges</div>
-                <div style="display: flex; justify-content: space-between; padding: 6px 12px; border-bottom: 1px solid #eee; font-size: 13px;"><span>Recurring Charges</span><span>' . htmlspecialchars($data['recurring_charges']) . '</span></div>
-                <div style="display: flex; justify-content: space-between; padding: 6px 12px; border-bottom: 1px solid #eee; font-size: 13px;"><span>Usage Charges</span><span>' . htmlspecialchars($data['usage_charges']) . '</span></div>
-                <div style="display: flex; justify-content: space-between; padding: 6px 12px; border-bottom: 1px solid #eee; font-size: 13px;"><span>Non Recurring Charges</span><span>' . htmlspecialchars($data['non_recurring_charges']) . '</span></div>
-                <div style="display: flex; justify-content: space-between; padding: 8px 12px; font-size: 13px; font-weight: bold; background-color: #f9f9f9; color: #16a34a;"><span>Total Current Charges</span><span>' . htmlspecialchars($data['total_current_charges']) . '</span></div>
-                <div style="padding: 6px 12px; font-style: italic; font-size: 11px; color: #666; border-top: 1px solid #eee;">Inclusive of Taxes</div>
-            </div>
-            <div style="background-color: #16a34a; color: white; padding: 12px; font-weight: bold; font-size: 15px; display: flex; justify-content: space-between; margin-top: 2px;">
-                <span>TOTAL AMOUNT DUE</span><span>' . htmlspecialchars($data['amount_due']) . '</span>
-            </div>';
-
         } elseif (stripos($text, 'Globe Telecom') !== false || stripos($text, 'GLOBE BUSINESS') !== false || stripos($text, 'CTGI') !== false) {
             $data['telco'] = 'Globe';
 
@@ -305,103 +331,42 @@ try {
             if (preg_match('/Billing\s*Period\s*([0-9\/]+\s*to\s*[0-9\/]+)/i', $text, $m)) $data['billing_period'] = trim($m[1]);
             if (preg_match('/Due\s*Date\s*([0-9\/]+)/i', $text, $m)) $data['due_date'] = trim($m[1]);
             if (preg_match('/Primary\s*Number\s*([0-9]+)/i', $text, $m)) $data['mobile_number'] = trim($m[1]);
-            if (preg_match('/Credit\s*Limit\s*Php\s*([0-9,\.]+)/i', $text, $m)) $data['credit_limit'] = trim($m[1]);
-            if (preg_match('/Customer\s*TIN\s*([0-9\-]+)/i', $text, $m)) $data['customer_tin'] = trim($m[1]);
-
-            if (preg_match('/Monthly\s*Plan\s*P\s*([0-9,\.]+)/i', $text, $m)) $data['recurring_charges'] = trim($m[1]);
-            if (preg_match('/Excess\s*Usage\s*P\s*([0-9,\.]+)/i', $text, $m)) $data['usage_charges'] = trim($m[1]);
-            if (preg_match('/Previous\s*Bill\s*Amount\s*P\s*([0-9,\.]+)/i', $text, $m)) $data['prev_balance'] = trim($m[1]);
-            if (preg_match('/Payment\s*\(P\s*([0-9,\.]+)\)/i', $text, $m)) $data['payment'] = '(' . trim($m[1]) . ')';
-            if (preg_match('/Remaining\s*Balance\s*P\s*([0-9,\.]+)/i', $text, $m)) $data['rem_prev_balance'] = trim($m[1]);
-
-            $data['summary_html'] = '
-            <div style="font-weight: bold; font-size: 15px; color: #0f172a; margin-top: 20px; margin-bottom: 8px;">Statement Summary</div>
-            <div style="border: 1px solid #333; margin-bottom: 15px;">
-                <div style="background-color: #f1f5f9; padding: 8px 12px; font-weight: bold; font-size: 13px; border-bottom: 1px solid #333;">Charges For This Month</div>
-                <div style="padding: 8px 12px; font-size: 13px;">
-                    <div style="font-weight: bold;">Monthly Recurring Fee</div>
-                    <div style="display: flex; justify-content: space-between; padding-left: 10px; margin-top: 2px;"><span>Monthly Plan</span><span>P ' . htmlspecialchars($data['recurring_charges']) . '</span></div>
-                    <div style="display: flex; justify-content: space-between; margin-top: 6px; font-weight: bold;"><span>Excess Usage</span><span>P ' . htmlspecialchars($data['usage_charges'] !== 'N/A' ? $data['usage_charges'] : '0.00') . '</span></div>
-                </div>
-                <div style="display: flex; justify-content: space-between; padding: 8px 12px; border-top: 1px solid #333; font-weight: bold; font-size: 13px; background-color: #f9f9f9;">
-                    <span>Total</span><span>' . htmlspecialchars($data['amount_due']) . '</span>
-                </div>
-            </div>
-            <div style="border: 1px solid #333; margin-bottom: 15px;">
-                <div style="background-color: #f1f5f9; padding: 8px 12px; font-weight: bold; font-size: 13px; border-bottom: 1px solid #333;">Previous Bill Activity</div>
-                <div style="display: flex; justify-content: space-between; padding: 8px 12px; border-bottom: 1px solid #eee; font-size: 13px;"><span>Previous Bill Amount</span><span>P ' . htmlspecialchars($data['prev_balance']) . '</span></div>
-                <div style="padding: 8px 12px; font-size: 13px; border-bottom: 1px solid #eee;">
-                    <div>Less :</div>
-                    <div style="display: flex; justify-content: space-between; padding-left: 10px; margin-top: 2px;"><span>Payment</span><span>(P ' . htmlspecialchars(str_replace(['(', ')'], '', $data['payment'])) . ')</span></div>
-                </div>
-                <div style="display: flex; justify-content: space-between; padding: 8px 12px; font-weight: bold; font-size: 13px;">
-                    <span>Remaining Balance</span><span>P ' . htmlspecialchars($data['rem_prev_balance']) . '</span>
-                </div>
-            </div>
-            <div style="border: 1px solid #333; display: flex; justify-content: space-between; padding: 10px 12px; font-weight: bold; font-size: 14px; background-color: #f1f5f9;">
-                <span>Amount to Pay</span><span>' . htmlspecialchars($data['amount_due']) . '</span>
-            </div>';
         }
 
         return $data;
     }
 
     function generate_email_body_html($company, $assignee_name, $account_number, $billing_info) {
-        $telco_brand = $billing_info['telco'];
         $amount_due = $billing_info['amount_due'];
-        $corporate_id = $billing_info['corporate_id'];
-        $summary_html = $billing_info['summary_html'];
-
-        $header_bg = ($telco_brand === 'Smart') ? '#16a34a' : '#0f172a';
-        $brand_title = ($telco_brand === 'Smart') ? 'Smart Business Statement of Account' : 'Globe Business Statement of Account';
+        $period = !empty($billing_info['billing_period']) && $billing_info['billing_period'] !== 'N/A' ? $billing_info['billing_period'] : 'Current Period';
+        $employee_identifier = !empty($company) && $company !== 'N/A' ? $company : $account_number;
 
         return '
         <!DOCTYPE html>
         <html>
         <head><meta charset="UTF-8"></head>
-        <body style="font-family: Arial, sans-serif; color: #333333; line-height: 1.5; background: #f4f4f4; margin: 0; padding: 20px;">
-            <div style="max-width: 600px; margin: 0 auto; background: #ffffff; border: 1px solid #ddd; overflow: hidden;">
-                <div style="background: ' . $header_bg . '; color: #ffffff; padding: 20px;">
-                    <h2 style="margin: 0; font-size: 20px; font-weight: bold;">' . $brand_title . '</h2>
-                    <p style="margin: 5px 0 0 0; font-size: 13px; opacity: 0.9;">Bounty Support Workspace Integration (' . htmlspecialchars($telco_brand) . ')</p>
+        <body style="font-family: Arial, sans-serif; color: #333333; line-height: 1.6; background: #f4f4f4; margin: 0; padding: 20px;">
+            <div style="max-width: 600px; margin: 0 auto; background: #ffffff; border: 1px solid #ddd; padding: 30px; border-radius: 8px;">
+                <p style="margin-top: 0;">Dear Ma\'am/Sir,</p>
+                
+                <p>Please find attached your Statement of Account (SOA) reflecting the applicable Debit Memo charges, with details below:</p>
+                
+                <div style="background: #f8fafc; border: 1px solid #e2e8f0; padding: 15px; border-radius: 6px; margin: 20px 0;">
+                    <h3 style="margin-top: 0; color: #1e293b; font-size: 15px; border-bottom: 1px solid #cbd5e1; padding-bottom: 8px;">Summary Details:</h3>
+                    <p style="margin: 6px 0;"><strong>Period Covered:</strong> ' . htmlspecialchars($period) . '</p>
+                    <p style="margin: 6px 0;"><strong>Account Name / ID:</strong> ' . htmlspecialchars($employee_identifier) . ' (' . htmlspecialchars($account_number) . ')</p>
+                    <p style="margin: 6px 0;"><strong>Total Chargeable Amount:</strong> <span style="color: #0d9488; font-weight: bold;">' . htmlspecialchars($amount_due) . '</span> (Refer to Attachment)</p>
                 </div>
-                <div style="padding: 20px;">
-                    <p style="margin-top: 0;">Good day <strong>' . htmlspecialchars($company) . '</strong>,</p>
-                    <p>Please find below your statement summary details. The official PDF copy is securely attached to this email for your review and processing.</p>
-                    <div style="border: 1px solid #333; margin-top: 15px;">
-                        <div style="display: flex; justify-content: space-between; align-items: center; padding: 12px; background: #fafafa; border-bottom: 1px solid #333;">
-                            <div>
-                                <span style="font-size: 16px; font-weight: bold; color: #000;">' . ($telco_brand === 'Smart' ? 'Total Amount Due' : 'Amount to Pay') . '</span>
-                                <div style="font-size: 11px; color: #666;">(total amount due)</div>
-                            </div>
-                            <div style="font-size: 20px; font-weight: bold; color: #000;">' . htmlspecialchars($amount_due) . '</div>
-                        </div>
-                        <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
-                            ' . ($telco_brand === 'Smart' ? '
-                            <tr><td style="padding: 8px 12px; border-bottom: 1px solid #ddd; width: 50%;"><strong>Invoice Date</strong></td><td style="padding: 8px 12px; border-bottom: 1px solid #ddd; text-align: right;">' . htmlspecialchars($billing_info['invoice_date']) . '</td></tr>
-                            <tr><td style="padding: 8px 12px; border-bottom: 1px solid #ddd;"><strong>Billing Period</strong></td><td style="padding: 8px 12px; border-bottom: 1px solid #ddd; text-align: right;">' . htmlspecialchars($billing_info['billing_period']) . '</td></tr>
-                            <tr><td style="padding: 8px 12px; border-bottom: 1px solid #ddd;"><strong>Account Number</strong></td><td style="padding: 8px 12px; border-bottom: 1px solid #ddd; text-align: right;">' . htmlspecialchars($account_number) . '</td></tr>
-                            <tr><td style="padding: 8px 12px; border-bottom: 1px solid #ddd;"><strong>Mobile Number</strong></td><td style="padding: 8px 12px; border-bottom: 1px solid #ddd; text-align: right;">' . htmlspecialchars($billing_info['mobile_number']) . '</td></tr>
-                            <tr><td style="padding: 8px 12px; border-bottom: 1px solid #ddd;"><strong>Invoice Number</strong></td><td style="padding: 8px 12px; border-bottom: 1px solid #ddd; text-align: right;">' . htmlspecialchars($billing_info['invoice_number']) . '</td></tr>
-                            <tr><td style="padding: 8px 12px; border-bottom: 1px solid #ddd;"><strong>Credit Limit</strong></td><td style="padding: 8px 12px; border-bottom: 1px solid #ddd; text-align: right;">' . htmlspecialchars($billing_info['credit_limit']) . '</td></tr>
-                            <tr><td style="padding: 8px 12px;"><strong>Due Date</strong></td><td style="padding: 8px 12px; text-align: right;">' . htmlspecialchars($billing_info['due_date']) . '</td></tr>
-                            ' : '
-                            <tr><td style="padding: 8px 12px; border-bottom: 1px solid #ddd; width: 50%;"><strong>Corporate ID</strong><br><span style="font-weight: bold; color: #000;">' . htmlspecialchars($corporate_id) . '</span></td><td style="padding: 8px 12px; border-bottom: 1px solid #ddd; width: 50%;"><strong>Account Number</strong><br><span style="font-weight: bold; color: #000;">' . htmlspecialchars($account_number) . '</span></td></tr>
-                            <tr><td style="padding: 8px 12px; border-bottom: 1px solid #ddd;"><strong>Primary Number</strong><br><span style="font-weight: bold; color: #000;">' . htmlspecialchars($billing_info['mobile_number']) . '</span></td><td style="padding: 8px 12px; border-bottom: 1px solid #ddd;"><strong>Credit Limit</strong><br><span style="font-weight: bold; color: #000;">Php ' . htmlspecialchars($billing_info['credit_limit']) . '</span></td></tr>
-                            <tr><td style="padding: 8px 12px; border-bottom: 1px solid #ddd;"><strong>Customer TIN</strong><br><span style="font-weight: bold; color: #000;">' . htmlspecialchars($billing_info['customer_tin']) . '</span></td><td style="padding: 8px 12px; border-bottom: 1px solid #ddd;"><strong>Invoice Date</strong><br><span style="font-weight: bold; color: #000;">' . htmlspecialchars($billing_info['invoice_date']) . '</span></td></tr>
-                            <tr><td style="padding: 8px 12px;"><strong>Billing Period</strong><br><span style="font-weight: bold; color: #000;">' . htmlspecialchars($billing_info['billing_period']) . '</span></td><td style="padding: 8px 12px;"><strong>Due Date</strong><br><span style="font-weight: bold; color: #000;">' . htmlspecialchars($billing_info['due_date']) . '</span></td></tr>
-                            ') . '
-                        </table>
-                    </div>
-                    <div style="margin-top: 15px; padding: 10px; background: #f8fafc; border: 1px solid #e2e8f0; font-size: 13px;">
-                        Assigned Coordinator: <strong>' . htmlspecialchars($assignee_name) . '</strong>
-                    </div>
-                    ' . $summary_html . '
-                    <p style="font-size: 13px; color: #555; margin-top: 25px;">If you have any questions or require clarifications regarding this statement, please feel free to reach out.</p>
-                </div>
-                <div style="background: #f1f5f9; padding: 15px 20px; text-align: center; font-size: 12px; color: #666; border-top: 1px solid #ddd;">
-                    Thank you,<br><strong>Bounty Support Team</strong>
-                </div>
+                
+                <p>This statement outlines the specific breakdown and descriptions of the charges applied to your telco account.</p>
+                
+                <p>Please review the attached SOA for full details.</p>
+                
+                <p style="background: #fffbeb; border-left: 4px solid #f59e0b; padding: 10px; font-size: 13px; color: #92400e;">
+                    If you have any questions or require clarification regarding these charges, please reach out to the IT Telco Admin team thru <strong>jcalcantara@bounty.com.ph</strong> within 24-48 hours upon receipt of this email.
+                </p>
+                
+                <p style="margin-top: 30px;">Thank you,</p>
             </div>
         </body>
         </html>';
@@ -416,7 +381,7 @@ try {
         $boundary_mixed = md5(time() . 'mixed');
 
         $headers  = "MIME-Version: 1.0\r\n";
-        $headers .= "From: <{$smtp_user}>\r\n";
+        $headers .= "From: IT Telco Admin <{$smtp_user}>\r\n";
         $headers .= "To: {$to}\r\n";
         $headers .= "Subject: {$subject}\r\n";
         $headers .= "Content-Type: multipart/mixed; boundary=\"{$boundary_mixed}\"\r\n\r\n";
@@ -478,16 +443,15 @@ try {
         $email_records = [];
     }
 
-    // Scan uploaded files for Dispatch tab
-    $pdf_files = [];
-    if (is_dir($upload_dir)) {
-        $scan = scandir($upload_dir);
+    // Scan uploaded files and apply server-side pagination for the Dispatch tab
+    $all_pdf_files = [];
+    if ($has_selected_folder && is_dir($current_folder_path)) {
+        $scan = scandir($current_folder_path);
         if ($scan !== false) {
             foreach ($scan as $file) {
                 if (strtolower(pathinfo($file, PATHINFO_EXTENSION)) === 'pdf') {
-                    $filepath = $upload_dir . $file;
-                    preg_match('/\d+/', $file, $matches);
-                    $account_number = $matches[0] ?? 'Unknown';
+                    $filepath = $current_folder_path . $file;
+                    $account_number = extract_account_from_filename($file);
 
                     $billing_info = extract_pdf_billing_details($filepath);
 
@@ -516,7 +480,7 @@ try {
                         } catch (Exception $e) {}
                     }
 
-                    $pdf_files[] = [
+                    $all_pdf_files[] = [
                         'filename' => $file,
                         'size' => file_exists($filepath) ? filesize($filepath) : 0,                             
                         'account_number' => $account_number,
@@ -524,15 +488,21 @@ try {
                         'assignee_name' => $assignee_name,
                         'email_address' => $email_address,
                         'telco' => $billing_info['telco'],
-                        'amount_due' => $billing_info['amount_due'],
-                        'corporate_id' => $billing_info['corporate_id']
+                        'amount_due' => $billing_info['amount_due']
                     ];
                 }
             }
         }
     }
 
-    // Start output buffering for unified page content
+    $total_files_count = count($all_pdf_files);
+    $total_pages = $total_files_count > 0 ? ceil($total_files_count / $limit) : 1;
+    if ($page > $total_pages) {
+        $page = $total_pages;
+    }
+    $offset = ($page - 1) * $limit;
+    $pdf_files = array_slice($all_pdf_files, $offset, $limit);
+
     ob_start();
     ?>
 
@@ -543,16 +513,16 @@ try {
                 <div>
                     <h1 class="text-2xl font-extrabold flex items-center space-x-3">
                         <span>⚡</span>
-                        <span>Statement of Account Hub (Smart & Globe)</span>
+                        <span>Statement of Account Management Hub</span>
                     </h1>
-                    <p class="text-blue-100 text-sm mt-1">Upload statements, configure email mappings, extract data, and dispatch client notifications seamlessly from one place.</p>
+                    <p class="text-blue-100 text-sm mt-1">Organized by Date Folders • Asynchronous Upload/Dispatch Controls • Smart & Globe Support</p>
                 </div>
                 <div class="flex bg-blue-900/60 p-1 rounded-xl backdrop-blur-md border border-blue-600/50">
                     <button type="button" onclick="switchTab('upload')" id="tabBtnUpload" class="tab-btn px-4 py-2 rounded-lg text-xs font-bold transition-all bg-white text-blue-900 shadow">
                         📤 Upload Queue
                     </button>
                     <button type="button" onclick="switchTab('dispatch')" id="tabBtnDispatch" class="tab-btn px-4 py-2 rounded-lg text-xs font-bold transition-all text-white hover:bg-blue-800">
-                        ✉️ Statement Dispatch
+                        ✉️ Dispatch by Date
                     </button>
                     <button type="button" onclick="switchTab('mappings')" id="tabBtnMappings" class="tab-btn px-4 py-2 rounded-lg text-xs font-bold transition-all text-white hover:bg-blue-800">
                         📇 Email Mappings
@@ -576,14 +546,14 @@ try {
         <!-- TAB 1: UPLOAD QUEUE -->
         <div id="tabContentUpload" class="tab-content bg-white shadow-lg rounded-2xl p-6 border border-gray-100 mb-6">
             <div class="mb-6">
-                <h2 class="text-lg font-bold text-gray-800">Debit Memo PDF Upload Queue</h2>
-                <p class="text-xs text-gray-500 mt-0.5">Select or drag-and-drop individual PDF files or entire folders with duplicate handling.</p>
+                <h2 class="text-lg font-bold text-gray-800">Upload Statements (Auto-routed by Filename Date)</h2>
+                <p class="text-xs text-gray-500 mt-0.5">The system automatically reads the date and 8–15 digit account number from each PDF filename to categorize folders.</p>
             </div>
 
             <div class="flex justify-between items-center mb-2">
-                <span class="text-xs font-bold tracking-wider text-rose-600 uppercase">Step 1: Select PDF files or folders (Accumulative)</span>
+                <span class="text-xs font-bold tracking-wider text-rose-600 uppercase">Select PDF Files (Accumulative Batching)</span>
                 <button type="button" id="clearBtn" class="text-xs text-gray-400 hover:text-rose-600 flex items-center space-x-1 transition-colors font-medium">
-                    <span>🗑️ Clear All Files</span>
+                    <span>🗑️ Clear Queue</span>
                 </button>
             </div>
 
@@ -595,7 +565,7 @@ try {
                     </svg>
                     <p id="queueCountText" class="text-sm font-medium text-gray-600 mb-3">0 file(s) loaded in queue.</p>
                     <span class="px-4 py-2 text-xs font-semibold text-gray-700 bg-white border border-gray-300 rounded-lg shadow-sm">
-                        Browse Files / Folders
+                        Browse PDF Files
                     </span>
                 </div>
             </div>
@@ -603,7 +573,7 @@ try {
             <div class="mb-6 flex items-center bg-blue-50/60 border border-blue-100 rounded-xl p-3.5">
                 <input type="checkbox" id="overwriteCheckbox" class="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500">
                 <label for="overwriteCheckbox" class="ml-2.5 text-xs font-medium text-blue-900 cursor-pointer">
-                    <strong>Overwrite existing files</strong> if they already exist on the server (Leave unchecked to skip duplicates).
+                    <strong>Overwrite existing files</strong> if they already exist in the target folder (Leave unchecked to skip duplicates).
                 </label>
             </div>
 
@@ -629,9 +599,12 @@ try {
                 <div id="logContent" class="space-y-1"></div>
             </div>
 
-            <div>
-                <button type="button" id="uploadBtn" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-3 px-4 rounded-xl shadow-md transition-colors flex items-center justify-center space-x-2 disabled:opacity-50 disabled:cursor-not-allowed" disabled>
-                    <span>🚀</span><span>Process and Upload Queue</span>
+            <div class="flex space-x-3">
+                <button type="button" id="uploadBtn" class="flex-1 bg-blue-600 hover:bg-blue-700 text-white font-semibold py-3 px-4 rounded-xl shadow-md transition-colors flex items-center justify-center space-x-2 disabled:opacity-50 disabled:cursor-not-allowed" disabled>
+                    <span>🚀</span><span>Start Batch Upload</span>
+                </button>
+                <button type="button" id="stopUploadBtn" class="hidden bg-rose-600 hover:bg-rose-700 text-white font-semibold py-3 px-4 rounded-xl shadow-md transition-colors flex items-center justify-center space-x-2">
+                    <span>🛑</span><span>Stop Upload</span>
                 </button>
             </div>
         </div>
@@ -640,17 +613,34 @@ try {
         <div id="tabContentDispatch" class="tab-content hidden bg-white shadow-lg rounded-2xl p-6 border border-gray-100 mb-6">
             <div class="flex flex-col md:flex-row justify-between items-start md:items-center mb-6 gap-4">
                 <div>
-                    <h2 class="text-lg font-bold text-gray-800">Email Statements of Account & Extraction</h2>
-                    <p class="text-xs text-gray-500 mt-0.5">Automatically extracts billing summaries from uploaded Smart & Globe PDFs for review and dispatch.</p>
+                    <h2 class="text-lg font-bold text-gray-800">Dispatch Statements by Date Folder</h2>
+                    <p class="text-xs text-gray-500 mt-0.5">Select a date folder to load statements, dispatch emails, and export dispatch logs.</p>
                 </div>
-                <div>
-                    <button type="button" id="sendSelectedBtn" class="bg-emerald-600 hover:bg-emerald-700 text-white font-semibold px-5 py-2.5 rounded-xl shadow-md text-xs transition-colors flex items-center space-x-2">
-                        <span>📤</span><span>Send Selected Statements</span>
+                <div class="flex flex-wrap items-center gap-3">
+                    <select id="dateFolderSelector" onchange="changeDispatchParams()" class="text-xs border border-gray-300 rounded-xl p-2.5 bg-white font-medium shadow-sm">
+                        <option value="" disabled <?php echo !$has_selected_folder ? 'selected' : ''; ?>>-- Select Date Folder --</option>
+                        <?php foreach ($available_date_folders as $folder): ?>
+                            <option value="<?php echo $folder; ?>" <?php echo ($selected_date_folder === $folder) ? 'selected' : ''; ?>><?php echo $folder; ?></option>
+                        <?php endforeach; ?>
+                    </select>
+
+                    <select id="limitSelector" onchange="changeDispatchParams()" class="text-xs border border-gray-300 rounded-xl p-2.5 bg-white font-medium shadow-sm">
+                        <option value="10" <?php echo $limit == 10 ? 'selected' : ''; ?>>10 per page</option>
+                        <option value="25" <?php echo $limit == 25 ? 'selected' : ''; ?>>25 per page</option>
+                        <option value="50" <?php echo $limit == 50 ? 'selected' : ''; ?>>50 per page</option>
+                        <option value="100" <?php echo $limit == 100 ? 'selected' : ''; ?>>100 per page</option>
+                    </select>
+
+                    <button type="button" id="sendSelectedBtn" class="bg-emerald-600 hover:bg-emerald-700 text-white font-semibold px-4 py-2.5 rounded-xl shadow-md text-xs transition-colors flex items-center space-x-2">
+                        <span>📤</span><span>Send Selected Emails</span>
+                    </button>
+                    <button type="button" id="downloadReportBtn" onclick="downloadReportCSV()" class="hidden bg-slate-700 hover:bg-slate-800 text-white font-semibold px-4 py-2.5 rounded-xl shadow-md text-xs transition-colors flex items-center space-x-2">
+                        <span>📥</span><span>Download Send Report</span>
                     </button>
                 </div>
             </div>
 
-            <div class="border border-gray-200 rounded-xl overflow-hidden mb-6 shadow-sm">
+            <div class="border border-gray-200 rounded-xl overflow-hidden mb-4 shadow-sm">
                 <table class="w-full text-left border-collapse">
                     <thead>
                         <tr class="bg-gray-50 text-gray-600 text-xs uppercase font-semibold border-b border-gray-200">
@@ -659,7 +649,7 @@ try {
                             </th>
                             <th class="py-3 px-4">Filename</th>
                             <th class="py-3 px-4">Provider</th>
-                            <th class="py-3 px-4">Account No / Corp ID</th>
+                            <th class="py-3 px-4">Account Number</th>
                             <th class="py-3 px-4">Amount Due</th>
                             <th class="py-3 px-4">Company & Assignee</th>
                             <th class="py-3 px-4">Registered Email</th>
@@ -667,9 +657,13 @@ try {
                         </tr>
                     </thead>
                     <tbody class="divide-y divide-gray-100 text-xs text-gray-700">
-                        <?php if (empty($pdf_files)): ?>
+                        <?php if (!$has_selected_folder): ?>
                             <tr>
-                                <td colspan="8" class="text-center py-10 text-gray-400 font-medium">No PDF files found in the upload directory. Upload files via the Upload Queue tab.</td>
+                                <td colspan="8" class="text-center py-10 text-gray-400 font-medium">Please select a date folder from the dropdown above to load statements.</td>
+                            </tr>
+                        <?php elseif (empty($pdf_files)): ?>
+                            <tr>
+                                <td colspan="8" class="text-center py-10 text-gray-400 font-medium">No PDF statements found in date folder: <strong><?php echo htmlspecialchars($selected_date_folder); ?></strong></td>
                             </tr>
                         <?php else: ?>
                             <?php foreach ($pdf_files as $file): ?>
@@ -687,12 +681,7 @@ try {
                                             <span class="px-2.5 py-1 rounded-full text-gray-600 bg-gray-100 font-medium">Unknown</span>
                                         <?php endif; ?>
                                     </td>
-                                    <td class="py-3 px-4 font-mono">
-                                        <div class="font-semibold text-blue-600"><?php echo htmlspecialchars($file['account_number']); ?></div>
-                                        <?php if ($file['corporate_id'] !== 'N/A'): ?>
-                                            <div class="text-[10px] text-gray-500">Corp: <?php echo htmlspecialchars($file['corporate_id']); ?></div>
-                                        <?php endif; ?>
-                                    </td>
+                                    <td class="py-3 px-4 font-mono font-semibold text-blue-600"><?php echo htmlspecialchars($file['account_number']); ?></td>
                                     <td class="py-3 px-4 font-bold text-slate-800"><?php echo htmlspecialchars($file['amount_due']); ?></td>
                                     <td class="py-3 px-4">
                                         <div class="font-medium text-gray-900"><?php echo htmlspecialchars($file['company']); ?></div>
@@ -717,8 +706,28 @@ try {
                 </table>
             </div>
 
+            <!-- Pagination Controls -->
+            <?php if ($has_selected_folder && $total_files_count > 0): ?>
+                <div class="flex flex-col md:flex-row justify-between items-center text-xs text-gray-600 mb-6 gap-3">
+                    <div>
+                        Showing <strong><?php echo $offset + 1; ?></strong> to <strong><?php echo min($offset + $limit, $total_files_count); ?></strong> of <strong><?php echo $total_files_count; ?></strong> statements
+                    </div>
+                    <div class="flex items-center space-x-1">
+                        <button type="button" onclick="changePage(1)" <?php echo ($page <= 1) ? 'disabled class="px-3 py-1.5 border rounded-lg bg-gray-100 text-gray-400 cursor-not-allowed"' : 'class="px-3 py-1.5 border rounded-lg hover:bg-gray-50 font-semibold"'; ?>>First</button>
+                        <button type="button" onclick="changePage(<?php echo $page - 1; ?>)" <?php echo ($page <= 1) ? 'disabled class="px-3 py-1.5 border rounded-lg bg-gray-100 text-gray-400 cursor-not-allowed"' : 'class="px-3 py-1.5 border rounded-lg hover:bg-gray-50 font-semibold"'; ?>>Previous</button>
+                        
+                        <span class="px-3 py-1.5 bg-blue-50 border border-blue-200 text-blue-700 font-bold rounded-lg">Page <?php echo $page; ?> of <?php echo $total_pages; ?></span>
+
+                        <button type="button" onclick="changePage(<?php echo $page + 1; ?>)" <?php echo ($page >= $total_pages) ? 'disabled class="px-3 py-1.5 border rounded-lg bg-gray-100 text-gray-400 cursor-not-allowed"' : 'class="px-3 py-1.5 border rounded-lg hover:bg-gray-50 font-semibold"'; ?>>Next</button>
+                        <button type="button" onclick="changePage(<?php echo $total_pages; ?>)" <?php echo ($page >= $total_pages) ? 'disabled class="px-3 py-1.5 border rounded-lg bg-gray-100 text-gray-400 cursor-not-allowed"' : 'class="px-3 py-1.5 border rounded-lg hover:bg-gray-50 font-semibold"'; ?>>Last</button>
+                    </div>
+                </div>
+            <?php endif; ?>
+
             <div id="emailLogContainer" class="hidden border border-gray-800 rounded-xl p-4 bg-slate-900 text-white text-xs font-mono max-h-48 overflow-y-auto">
-                <div class="font-bold text-gray-300 mb-2 border-b border-slate-700 pb-1">Email Dispatch Log:</div>
+                <div class="font-bold text-gray-300 mb-2 border-b border-slate-700 pb-1 flex justify-between items-center">
+                    <span>Email Dispatch Log:</span>
+                </div>
                 <div id="emailLogContent" class="space-y-1"></div>
             </div>
         </div>
@@ -727,7 +736,7 @@ try {
         <div id="tabContentMappings" class="tab-content hidden bg-white shadow-lg rounded-2xl p-6 border border-gray-100 mb-6">
             <div class="mb-6">
                 <h2 class="text-lg font-bold text-gray-800">Manage Account Email Mappings</h2>
-                <p class="text-xs text-gray-500 mt-0.5">Map account numbers to their respective client email addresses for automated statement dispatches.</p>
+                <p class="text-xs text-gray-500 mt-0.5">Map account numbers to client email addresses.</p>
             </div>
 
             <form action="<?php echo htmlspecialchars($current_page_script); ?>" method="POST" id="emailForm" class="bg-gray-50 p-4 rounded-xl border border-gray-200 mb-6 flex flex-col md:flex-row gap-4 items-end">
@@ -768,7 +777,7 @@ try {
                     <tbody class="divide-y divide-gray-100 text-xs text-gray-700">
                         <?php if (empty($email_records)): ?>
                             <tr>
-                                <td colspan="5" class="text-center py-10 text-gray-400 font-medium">No email records found. Add your first mapping above.</td>
+                                <td colspan="5" class="text-center py-10 text-gray-400 font-medium">No email records found.</td>
                             </tr>
                         <?php else: ?>
                             <?php foreach ($email_records as $rec): ?>
@@ -812,7 +821,6 @@ try {
     </div>
 
     <script>
-    // Tab Switching Logic
     function switchTab(tabName) {
         document.querySelectorAll('.tab-content').forEach(el => el.classList.add('hidden'));
         document.querySelectorAll('.tab-btn').forEach(el => {
@@ -830,14 +838,33 @@ try {
         return str.charAt(0).toUpperCase() + str.slice(1);
     }
 
+    function changeDispatchParams() {
+        const folder = document.getElementById('dateFolderSelector').value;
+        const limit = document.getElementById('limitSelector').value;
+        if(folder) {
+            window.location.href = `?date_folder=${folder}&limit=${limit}&page=1`;
+        }
+    }
+
+    function changePage(targetPage) {
+        const folder = document.getElementById('dateFolderSelector').value;
+        const limit = document.getElementById('limitSelector').value;
+        if(folder) {
+            window.location.href = `?date_folder=${folder}&limit=${limit}&page=${targetPage}`;
+        }
+    }
+
     // Upload Queue JS
     let accumulatedFiles = [];
+    let isUploading = false;
+    let abortUploadFlag = false;
     const fileInput = document.getElementById('pdf_files');
     const fileListContainer = document.getElementById('fileListContainer');
     const emptyQueueMsg = document.getElementById('emptyQueueMsg');
     const queueCountText = document.getElementById('queueCountText');
     const queueHeaderLabel = document.getElementById('queueHeaderLabel');
     const uploadBtn = document.getElementById('uploadBtn');
+    const stopUploadBtn = document.getElementById('stopUploadBtn');
     const clearBtn = document.getElementById('clearBtn');
     const dropZone = document.getElementById('dropZone');
     const overwriteCheckbox = document.getElementById('overwriteCheckbox');
@@ -897,7 +924,7 @@ try {
         fileListContainer.innerHTML = '';
         if (accumulatedFiles.length > 0) {
             emptyQueueMsg.style.display = 'none';
-            uploadBtn.removeAttribute('disabled');
+            if (!isUploading) uploadBtn.removeAttribute('disabled');
             queueCountText.textContent = `${accumulatedFiles.length} file(s) loaded in queue.`;
             queueHeaderLabel.textContent = `SELECTED FILES QUEUE (${accumulatedFiles.length})`;
 
@@ -925,12 +952,14 @@ try {
     }
 
     function removeFile(index) {
+        if (isUploading) return;
         accumulatedFiles.splice(index, 1);
         updateQueueUI();
     }
 
     if (clearBtn) {
         clearBtn.addEventListener('click', () => {
+            if (isUploading) return;
             accumulatedFiles = [];
             updateQueueUI();
             logContainer.classList.add('hidden');
@@ -938,22 +967,38 @@ try {
         });
     }
 
+    if (stopUploadBtn) {
+        stopUploadBtn.addEventListener('click', () => {
+            abortUploadFlag = true;
+            stopUploadBtn.setAttribute('disabled', 'true');
+            progressText.textContent = 'Stopping upload queue...';
+        });
+    }
+
     if (uploadBtn) {
         uploadBtn.addEventListener('click', async function() {
-            if (accumulatedFiles.length === 0) return;
+            if (accumulatedFiles.length === 0 || isUploading) return;
 
+            isUploading = true;
+            abortUploadFlag = false;
             uploadBtn.setAttribute('disabled', 'true');
             clearBtn.setAttribute('disabled', 'true');
+            stopUploadBtn.classList.remove('hidden');
             progressContainer.classList.remove('hidden');
             logContainer.classList.remove('hidden');
             logContent.innerHTML = '';
 
-            const batchSize = 10;
+            const batchSize = 25; 
             const totalFiles = accumulatedFiles.length;
             let uploadedCount = 0;
             const shouldOverwrite = overwriteCheckbox.checked ? '1' : '0';
 
             for (let i = 0; i < totalFiles; i += batchSize) {
+                if (abortUploadFlag) {
+                    logContent.innerHTML += `<div class="text-amber-400">⚠ Upload cancelled by user.</div>`;
+                    break;
+                }
+
                 const batch = accumulatedFiles.slice(i, i + batchSize);
                 const formData = new FormData();
                 
@@ -991,21 +1036,25 @@ try {
                 logContainer.scrollTop = logContainer.scrollHeight;
             }
 
-            progressText.textContent = 'Upload complete! Refreshing page files list...';
-            uploadBtn.innerHTML = '<span>🚀</span><span>Process and Upload Queue</span>';
-            uploadBtn.removeAttribute('disabled');
+            isUploading = false;
+            stopUploadBtn.classList.add('hidden');
+            stopUploadBtn.removeAttribute('disabled');
+            progressText.textContent = 'Upload sequence completed! Refreshing view...';
+            uploadBtn.innerHTML = '<span>🚀</span><span>Start Batch Upload</span>';
             clearBtn.removeAttribute('disabled');
             accumulatedFiles = [];
             updateQueueUI();
-            setTimeout(() => { location.reload(); }, 1500);
+            setTimeout(() => { window.location.reload(); }, 1500);
         });
     }
 
     // Dispatch & Preview JS
     const selectAll = document.getElementById('selectAll');
     const sendSelectedBtn = document.getElementById('sendSelectedBtn');
+    const downloadReportBtn = document.getElementById('downloadReportBtn');
     const emailLogContainer = document.getElementById('emailLogContainer');
     const emailLogContent = document.getElementById('emailLogContent');
+    let lastDispatchResults = [];
 
     if (selectAll) {
         selectAll.addEventListener('change', function() {
@@ -1019,9 +1068,11 @@ try {
         modal.classList.remove('hidden');
         iframe.srcdoc = '<div style="padding: 20px; text-align: center; font-family: sans-serif; color: #64748b;">Loading email preview...</div>';
 
+        const activeDateFolder = document.getElementById('dateFolderSelector').value;
         const formData = new FormData();
         formData.append('action', 'preview_email');
         formData.append('filename', filename);
+        formData.append('date_folder', activeDateFolder);
 
         try {
             const response = await fetch('', { method: 'POST', body: formData });
@@ -1057,12 +1108,15 @@ try {
             }
 
             sendSelectedBtn.setAttribute('disabled', 'true');
-            sendSelectedBtn.textContent = 'Sending...';
+            sendSelectedBtn.textContent = 'Sending Emails...';
             emailLogContainer.classList.remove('hidden');
             emailLogContent.innerHTML = '';
+            lastDispatchResults = [];
 
+            const activeDateFolder = document.getElementById('dateFolderSelector').value;
             const formData = new FormData();
             formData.append('action', 'send_emails');
+            formData.append('date_folder', activeDateFolder);
             selectedFiles.forEach(file => {
                 formData.append('files[]', file);
             });
@@ -1079,6 +1133,7 @@ try {
                 }
 
                 if (data.results) {
+                    lastDispatchResults = data.results;
                     data.results.forEach(res => {
                         if (res.status === 'success') {
                             emailLogContent.innerHTML += `<div class="text-emerald-400">✓ ${res.file}: ${res.message}</div>`;
@@ -1086,15 +1141,34 @@ try {
                             emailLogContent.innerHTML += `<div class="text-rose-400">✗ ${res.file}: ${res.message}</div>`;
                         }
                     });
+                    downloadReportBtn.classList.remove('hidden');
                 }
             } catch (err) {
                 emailLogContent.innerHTML += `<div class="text-rose-400">✗ ${err.message}</div>`;
             }
 
             sendSelectedBtn.removeAttribute('disabled');
-            sendSelectedBtn.innerHTML = '<span>📤</span><span>Send Selected Statements</span>';
+            sendSelectedBtn.innerHTML = '<span>📤</span><span>Send Selected Emails</span>';
             emailLogContainer.scrollTop = emailLogContainer.scrollHeight;
         });
+    }
+
+    function downloadReportCSV() {
+        if (lastDispatchResults.length === 0) return;
+
+        let csvContent = "data:text/csv;charset=utf-8,Filename,Account Number,Recipient Email,Status,Details\r\n";
+        lastDispatchResults.forEach(row => {
+            let sanitizedMsg = row.message.replace(/,/g, " ");
+            csvContent += `"${row.file}","${row.account}","${row.email}","${row.status}","${sanitizedMsg}"\r\n`;
+        });
+
+        const encodedUri = encodeURI(csvContent);
+        const link = document.createElement("a");
+        link.setAttribute("href", encodedUri);
+        link.setAttribute("download", `Email_Dispatch_Report_${document.getElementById('dateFolderSelector').value}.csv`);
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
     }
 
     // Email Mappings JS
