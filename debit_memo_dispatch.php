@@ -58,39 +58,34 @@ try {
         return $data;
     }
 
-function resolve_mobile_number($pdo, $account_number, $current_mobile) {
-    // 1. If the current mobile is already valid (not empty and not 'N/A'), use it
-    if (!empty($current_mobile) && trim($current_mobile) !== '' && strtoupper(trim($current_mobile)) !== 'N/A') {
-        return trim($current_mobile);
-    }
-    
-    // 2. Otherwise, look up the mobile number from the account_emails table using the account number
-    if ($pdo && !empty($account_number) && trim($account_number) !== 'N/A') {
-        try {
-            $stmt = $pdo->prepare("
-                SELECT mobile_number 
-                FROM account_emails 
-                WHERE TRIM(account_number) = TRIM(?) 
-                  AND mobile_number IS NOT NULL 
-                  AND TRIM(mobile_number) != '' 
-                  AND UPPER(TRIM(mobile_number)) != 'N/A'
-                ORDER BY id DESC 
-                LIMIT 1
-            ");
-            $stmt->execute([$account_number]);
-            if ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
-                if (!empty($row['mobile_number'])) {
-                    return trim($row['mobile_number']);
-                }
-            }
-        } catch (Exception $e) {
-            // Log or ignore query errors
+    function resolve_mobile_number($pdo, $account_number, $current_mobile) {
+        if (!empty($current_mobile) && trim($current_mobile) !== '' && strtoupper(trim($current_mobile)) !== 'N/A') {
+            return trim($current_mobile);
         }
+        
+        if ($pdo && !empty($account_number) && trim($account_number) !== 'N/A') {
+            try {
+                $stmt = $pdo->prepare("
+                    SELECT mobile_number 
+                    FROM account_emails 
+                    WHERE TRIM(account_number) = TRIM(?) 
+                      AND mobile_number IS NOT NULL 
+                      AND TRIM(mobile_number) != '' 
+                      AND UPPER(TRIM(mobile_number)) != 'N/A'
+                    ORDER BY id DESC 
+                    LIMIT 1
+                ");
+                $stmt->execute([$account_number]);
+                if ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+                    if (!empty($row['mobile_number'])) {
+                        return trim($row['mobile_number']);
+                    }
+                }
+            } catch (Exception $e) {}
+        }
+        
+        return !empty($current_mobile) && strtoupper(trim($current_mobile)) !== 'N/A' ? $current_mobile : 'N/A';
     }
-    
-    // 3. Fallback to original value or 'N/A' if nothing found in account_emails
-    return !empty($current_mobile) && strtoupper(trim($current_mobile)) !== 'N/A' ? $current_mobile : 'N/A';
-}
 
     function generate_email_body_html($company, $assignee_name, $account_number, $billing_info, $filename = '', $mobile_number = 'N/A') {
         $amount_due = $billing_info['amount_due'] ?? '0.00';
@@ -157,7 +152,13 @@ function resolve_mobile_number($pdo, $account_number, $current_mobile) {
         
         if (!$run_cmd("EHLO " . $_SERVER['SERVER_NAME'], 250) || !$run_cmd("AUTH LOGIN", 334) || !$run_cmd(base64_encode($smtp_user), 334) || !$run_cmd(base64_encode($smtp_pass), 235) || !$run_cmd("MAIL FROM: <{$smtp_user}>", 250)) return "SMTP Auth/Command error";
         
-        $run_cmd("RCPT TO: <{$to}>", 250);
+        $to_emails = explode(',', $to);
+        foreach ($to_emails as $to_email) {
+            $to_email = trim($to_email);
+            if (!empty($to_email)) {
+                @$run_cmd("RCPT TO: <{$to_email}>", 250);
+            }
+        }
         
         if (!empty($cc)) {
             $cc_emails = explode(',', $cc);
@@ -177,99 +178,115 @@ function resolve_mobile_number($pdo, $account_number, $current_mobile) {
         return (substr($result, 0, 3) == '250') ? true : "Failed: " . trim($result);
     }
 
-   function send_dispatch_report_to_admin($all_results_items) {
-        if (empty($all_results_items)) return;
+  function send_dispatch_report_to_admin($all_results_items) {
+    if (empty($all_results_items)) return;
+    global $pdo;
 
-        $admin_email = 'jcalcantara@bounty.com.ph';
-        $current_date = date('Y-m-d H:i:s');
-        $subject = "Statement Dispatch Report (Success & Failed) - " . date('Y-m-d');
+    $admin_emails = [];
 
-        $csv_filename = "dispatch_report_" . date('Ymd_His') . ".csv";
-        $csv_filepath = sys_get_temp_dir() . '/' . $csv_filename;
-        
-        $fp = fopen($csv_filepath, 'w');
-        fputcsv($fp, ['Timestamp', 'Status', 'Account Number', 'Telco', 'Mobile Number', 'Email', 'Billing Period', 'Total Charge', 'Filename', 'PDF Link', 'Message']);
-        
-        foreach ($all_results_items as $item) {
-            fputcsv($fp, [
-                $item['date'],
-                strtoupper($item['status']),
-                $item['account'],
-                $item['telco'] ?? 'Unknown',
-                $item['mobile_number'] ?? 'N/A',
-                $item['email'],
-                $item['billing_period'],
-                $item['total_charge'],
-                $item['filename'],
-                $item['file_link'],
-                $item['message']
-            ]);
-        }
-        fclose($fp);
-
-        $html_body  = '<!DOCTYPE html><html><body style="font-family: Arial, sans-serif; color: #333333; line-height: 1.5; padding: 20px;">';
-        $html_body .= '<h2 style="color: #2563eb;">Statement Email Dispatch Report</h2>';
-        $html_body .= '<p>Here is the summary of the email dispatches conducted on <strong>' . htmlspecialchars($current_date) . '</strong>. Attached to this email is a CSV file containing the full details of successful and failed items.</p>';
-        
-        $html_body .= '<table border="1" cellpadding="8" cellspacing="0" style="border-collapse: collapse; width: 100%; font-size: 11px; margin-top: 15px;">';
-        $html_body .= '<tr style="background-color: #f3f4f6;"><th>Status</th><th>Date</th><th>Account</th><th>Telco</th><th>Mobile Number</th><th>Email</th><th>Billing Period</th><th>Total Charge</th><th>Filename (Link)</th></tr>';
-
-        foreach ($all_results_items as $item) {
-            $status_color = ($item['status'] === 'success') ? 'color: #059669; font-weight: bold;' : 'color: #dc2626; font-weight: bold;';
+    if (isset($pdo)) {
+        try {
+            $stmt = $pdo->prepare("SELECT recipient_email FROM email_report WHERE report_type = ?");
+            $stmt->execute(['statement_dispatch']);
+            $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
             
-            $file_display_name = htmlspecialchars($item['filename']);
-            $target_link = !empty($item['file_link']) ? $item['file_link'] : '#';
-            if (!empty($target_link) && $target_link !== '#') {
-                $filename_html = '<a href="' . htmlspecialchars($target_link) . '" target="_blank" style="color: #2563eb; text-decoration: underline;">' . $file_display_name . '</a>';
-            } else {
-                $filename_html = $file_display_name;
+            if (!empty($rows)) {
+                foreach ($rows as $row) {
+                    if (!empty($row['recipient_email'])) {
+                        $admin_emails[] = trim($row['recipient_email']);
+                    }
+                }
             }
-
-            $html_body .= '<tr>';
-            $html_body .= '<td style="' . $status_color . '">' . strtoupper($item['status']) . '</td>';
-            $html_body .= '<td>' . htmlspecialchars($item['date']) . '</td>';
-            $html_body .= '<td>' . htmlspecialchars($item['account']) . '</td>';
-            $html_body .= '<td>' . htmlspecialchars($item['telco'] ?? 'Unknown') . '</td>';
-            $html_body .= '<td>' . htmlspecialchars($item['mobile_number'] ?? 'N/A') . '</td>';
-            $html_body .= '<td>' . htmlspecialchars($item['email']) . '</td>';
-            $html_body .= '<td>' . htmlspecialchars($item['billing_period']) . '</td>';
-            $html_body .= '<td style="font-weight: bold; text-align: right;">' . htmlspecialchars($item['total_charge']) . '</td>';
-            $html_body .= '<td>' . $filename_html . '</td>';
-            $html_body .= '</tr>';
-        }
-        $html_body .= '</table>';
-        $html_body .= '<p style="margin-top: 20px; font-size: 11px; color: #666;">This is an automated system report with attached CSV log.</p>';
-        $html_body .= '</body></html>';
-
-        send_smtp_mail_with_html_body($admin_email, $subject, '', '', $html_body, '', $csv_filepath, $csv_filename);
-        
-        if (file_exists($csv_filepath)) {
-            @unlink($csv_filepath);
+        } catch (Exception $e) {
+            // Error handling kung kinakailangan
         }
     }
+    
+    // Kung walang nahanap sa database para sa statement_dispatch, huwag nang magpatuloy
+    if (empty($admin_emails)) {
+        return;
+    }
 
-    function get_or_download_pdf_path($filename, $base_upload_dir, $pdo = null) {
+    $admin_email_str = implode(', ', $admin_emails);
+    $current_date = date('Y-m-d H:i:s');
+    $subject = "Statement Dispatch Report (Success & Failed) - " . date('Y-m-d');
+
+    $csv_filename = "dispatch_report_" . date('Ymd_His') . ".csv";
+    $csv_filepath = sys_get_temp_dir() . '/' . $csv_filename;
+    
+    $fp = fopen($csv_filepath, 'w');
+    fputcsv($fp, ['Timestamp', 'Status', 'Account Number', 'Telco', 'Mobile Number', 'Email', 'Billing Period', 'Total Charge', 'Filename', 'PDF Link', 'Message']);
+    
+    foreach ($all_results_items as $item) {
+        fputcsv($fp, [
+            $item['date'],
+            strtoupper($item['status']),
+            $item['account'],
+            $item['telco'] ?? 'Unknown',
+            $item['mobile_number'] ?? 'N/A',
+            $item['email'],
+            $item['billing_period'],
+            $item['total_charge'],
+            $item['filename'],
+            $item['file_link'],
+            $item['message']
+        ]);
+    }
+    fclose($fp);
+
+    $html_body  = '<!DOCTYPE html><html><body style="font-family: Arial, sans-serif; color: #333333; line-height: 1.5; padding: 20px;">';
+    $html_body .= '<p style="font-size: 14px; margin-bottom: 15px;">Good day Ma\'am/Sir,</p>';
+    $html_body .= '<h2 style="color: #2563eb;">Statement Email Dispatch Report</h2>';
+    $html_body .= '<p>Here is the summary of the email dispatches conducted on <strong>' . htmlspecialchars($current_date) . '</strong>. Attached to this email is a CSV file containing the full details of successful and failed items.</p>';
+
+    $html_body .= '<table border="1" cellpadding="8" cellspacing="0" style="border-collapse: collapse; width: 100%; font-size: 11px; margin-top: 15px;">';
+    $html_body .= '<tr style="background-color: #f3f4f6;"><th>Status</th><th>Date</th><th>Account</th><th>Telco</th><th>Mobile Number</th><th>Email</th><th>Billing Period</th><th>Total Charge</th><th>Filename (Link)</th></tr>';
+
+    foreach ($all_results_items as $item) {
+        $status_color = ($item['status'] === 'success') ? 'color: #059669; font-weight: bold;' : 'color: #dc2626; font-weight: bold;';
+        
+        $file_display_name = htmlspecialchars($item['filename']);
+        $target_link = !empty($item['file_link']) ? $item['file_link'] : '#';
+        if (!empty($target_link) && $target_link !== '#') {
+            $filename_html = '<a href="' . htmlspecialchars($target_link) . '" target="_blank" style="color: #2563eb; text-decoration: underline;">' . $file_display_name . '</a>';
+        } else {
+            $filename_html = $file_display_name;
+        }
+
+        $html_body .= '<tr>';
+        $html_body .= '<td style="' . $status_color . '">' . strtoupper($item['status']) . '</td>';
+        $html_body .= '<td>' . htmlspecialchars($item['date']) . '</td>';
+        $html_body .= '<td>' . htmlspecialchars($item['account']) . '</td>';
+        $html_body .= '<td>' . htmlspecialchars($item['telco'] ?? 'Unknown') . '</td>';
+        $html_body .= '<td>' . htmlspecialchars($item['mobile_number'] ?? 'N/A') . '</td>';
+        $html_body .= '<td>' . htmlspecialchars($item['email']) . '</td>';
+        $html_body .= '<td>' . htmlspecialchars($item['billing_period']) . '</td>';
+        $html_body .= '<td style="font-weight: bold; text-align: right;">' . htmlspecialchars($item['total_charge']) . '</td>';
+        $html_body .= '<td>' . $filename_html . '</td>';
+        $html_body .= '</tr>';
+    }
+    $html_body .= '</table>';
+    $html_body .= '<p style="margin-top: 20px; font-size: 11px; color: #666;">This is an automated system report with attached CSV log.</p>';
+    $html_body .= '</body></html>';
+
+    send_smtp_mail_with_html_body($admin_email_str, $subject, '', '', $html_body, '', $csv_filepath, $csv_filename);
+    
+    if (file_exists($csv_filepath)) {
+        @unlink($csv_filepath);
+    }
+}
+
+    // GOOGLE DRIVE PDF DOWNLOAD FUNCTION WITH TIMEOUT/DELAY (USLEEP)
+    function get_or_download_pdf_path($filename, $pdo = null) {
         $filename = basename($filename);
-        if ($pdo) {
-            try {
-                $stmtFile = $pdo->prepare("SELECT file_path FROM pdf_extracted_details WHERE filename = ? LIMIT 1");
-                $stmtFile->execute([$filename]);
-                if ($fRow = $stmtFile->fetch(PDO::FETCH_ASSOC)) {
-                    $db_path = !empty($fRow['file_path']) ? __DIR__ . '/' . $fRow['file_path'] : '';
-                    if (!empty($db_path) && file_exists($db_path) && filesize($db_path) > 100) return $db_path;
-                }
-            } catch (Exception $e) {}
-        }
-        $root_dir = __DIR__ . "/Teclo_Test_Uploads/Uploads/";
-        if (!is_dir($root_dir)) $root_dir = $base_upload_dir;
-        if (is_dir($root_dir)) {
-            $iterator = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($root_dir, RecursiveDirectoryIterator::SKIP_DOTS));
-            foreach ($iterator as $path => $info) {
-                if ($info->getFilename() === $filename && filesize($path) > 100) return $path; 
-            }
-        }
         $temp_file_path = sys_get_temp_dir() . '/' . md5($filename) . '.pdf';
-        if (file_exists($temp_file_path) && filesize($temp_file_path) > 100) return $temp_file_path;
+        
+        if (file_exists($temp_file_path) && filesize($temp_file_path) > 100) {
+            return $temp_file_path;
+        }
+
+        // I-dagdag ang maikling anti-rate limit pause (0.5 seconds delay) para hindi ma-block ng Google Drive
+        usleep(500000); 
         
         if ($pdo) {
             try {
@@ -281,6 +298,7 @@ function resolve_mobile_number($pdo, $account_number, $current_mobile) {
                         $gdrive_id = '';
                         if (preg_match('/\/d\/([a-zA-Z0-9_-]+)/', $link, $m)) $gdrive_id = $m[1];
                         elseif (preg_match('/[?&]id=([a-zA-Z0-9_-]+)/', $link, $m)) $gdrive_id = $m[1];
+                        
                         if (!empty($gdrive_id)) {
                             $download_url = "https://drive.google.com/uc?export=download&id=" . $gdrive_id;
                             $ch = curl_init();
@@ -289,15 +307,20 @@ function resolve_mobile_number($pdo, $account_number, $current_mobile) {
                             curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
                             curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
                             curl_setopt($ch, CURLOPT_USERAGENT, 'Mozilla/5.0');
+                            curl_setopt($ch, CURLOPT_TIMEOUT, 30); // Timeout connection settings
                             $response = curl_exec($ch);
+                            
                             if (strpos($response, 'confirm=') !== false && preg_match('/confirm=([a-zA-Z0-9_\-]+)/', $response, $matches)) {
                                 curl_setopt($ch, CURLOPT_URL, "https://drive.google.com/uc?export=download&confirm=" . $matches[1] . "&id=" . $gdrive_id);
                                 $response = curl_exec($ch);
                             }
                             curl_close($ch);
+                            
                             if (!empty($response) && strlen($response) > 500 && stripos($response, '<html') === false) {
                                 file_put_contents($temp_file_path, $response);
-                                if (file_exists($temp_file_path) && filesize($temp_file_path) > 100) return $temp_file_path;
+                                if (file_exists($temp_file_path) && filesize($temp_file_path) > 100) {
+                                    return $temp_file_path;
+                                }
                             }
                         }
                     }
@@ -338,7 +361,7 @@ function resolve_mobile_number($pdo, $account_number, $current_mobile) {
     if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'download_single_pdf') {
         $filename = basename($_POST['filename'] ?? '');
         if (!empty($filename)) {
-            $filepath = get_or_download_pdf_path($filename, $base_upload_dir, $pdo ?? null);
+            $filepath = get_or_download_pdf_path($filename, $pdo ?? null);
             if (!empty($filepath) && file_exists($filepath)) {
                 header('Content-Description: File Transfer');
                 header('Content-Type: application/pdf');
@@ -365,7 +388,7 @@ function resolve_mobile_number($pdo, $account_number, $current_mobile) {
             if ($zip->open($zip_name, ZipArchive::CREATE | ZipArchive::OVERWRITE) === TRUE) {
                 foreach ($filenames as $fname) {
                     $fname = basename($fname);
-                    $filepath = get_or_download_pdf_path($fname, $base_upload_dir, $pdo ?? null);
+                    $filepath = get_or_download_pdf_path($fname, $pdo ?? null);
                     if (!empty($filepath) && file_exists($filepath)) {
                         $zip->addFile($filepath, $fname);
                     }
@@ -439,7 +462,7 @@ function resolve_mobile_number($pdo, $account_number, $current_mobile) {
             
             if (empty($filename)) continue;
 
-            $filepath = get_or_download_pdf_path($filename, $base_upload_dir, $pdo ?? null);
+            $filepath = get_or_download_pdf_path($filename, $pdo ?? null);
             $account_number = 'N/A'; $company = 'N/A'; $assignee_name = 'N/A'; $mobile_number = 'N/A';
             $file_link = '';
             $telco_val = 'Unknown';
@@ -504,9 +527,9 @@ function resolve_mobile_number($pdo, $account_number, $current_mobile) {
             }
 
             if (!empty($filepath) && file_exists($filepath) && filesize($filepath) > 100) {
-                // File exists
+                // File ready
             } else {
-                $err_msg = "PDF file not found.";
+                $err_msg = "PDF file could not be downloaded from Google Drive.";
                 $results[] = ['file' => $filename, 'account' => $account_number, 'email' => $email_address, 'status' => 'error', 'message' => $err_msg];
                 
                 $all_report_items[] = [
@@ -585,6 +608,73 @@ function resolve_mobile_number($pdo, $account_number, $current_mobile) {
     }
 
     // ==========================================
+    // EMAIL REPORT SETTINGS AJAX HANDLERS
+    // ==========================================
+    if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'get_email_reports') {
+        header('Content-Type: application/json');
+        $reports = [];
+        if (isset($pdo)) {
+            try {
+                $stmt = $pdo->prepare("SELECT id, full_name, recipient_email as email 
+                    FROM email_report 
+                    WHERE report_type = 'statement_dispatch'
+                    ORDER BY id DESC");
+                $stmt->execute();
+                $reports = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            } catch (Exception $e) {}
+        }
+        echo json_encode(['status' => 'success', 'reports' => $reports]);
+        exit;
+    }
+
+    if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'save_email_report') {
+        header('Content-Type: application/json');
+        $id = $_POST['id'] ?? '';
+        $full_name = trim($_POST['full_name'] ?? '');
+        $email = trim($_POST['email'] ?? '');
+
+        if (empty($email)) {
+            echo json_encode(['status' => 'error', 'message' => 'Recipient email is required.']);
+            exit;
+        }
+
+        if (isset($pdo)) {
+            try {
+                if (!empty($id)) {
+                    $stmt = $pdo->prepare("UPDATE email_report SET full_name = ?, recipient_email = ? WHERE id = ?");
+                    $stmt->execute([$full_name, $email, $id]);
+                } else {
+                    $stmt = $pdo->prepare("INSERT INTO email_report (report_type, full_name, recipient_email) VALUES ('statement_dispatch', ?, ?)");
+                    $stmt->execute([$full_name, $email]);
+                }
+                echo json_encode(['status' => 'success']);
+            } catch (Exception $e) {
+                echo json_encode(['status' => 'error', 'message' => $e->getMessage()]);
+            }
+        } else {
+            echo json_encode(['status' => 'error', 'message' => 'Database connection not available.']);
+        }
+        exit;
+    }
+
+    if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'delete_email_report') {
+        header('Content-Type: application/json');
+        $id = $_POST['id'] ?? '';
+        if (!empty($id) && isset($pdo)) {
+            try {
+                $stmt = $pdo->prepare("DELETE FROM email_report WHERE id = ?");
+                $stmt->execute([$id]);
+                echo json_encode(['status' => 'success']);
+            } catch (Exception $e) {
+                echo json_encode(['status' => 'error', 'message' => $e->getMessage()]);
+            }
+        } else {
+            echo json_encode(['status' => 'error', 'message' => 'Invalid ID or database connection.']);
+        }
+        exit;
+    }
+
+    // ==========================================
     // PAGE LOAD DATA FETCHING (FILTERS, SEARCH & SORTING)
     // ==========================================
 
@@ -595,11 +685,9 @@ function resolve_mobile_number($pdo, $account_number, $current_mobile) {
     $selected_billing_period = $_GET['billing_period'] ?? '';
     $search_query = trim($_GET['search'] ?? '');
 
-    // Sorting parameters
     $sort_by = $_GET['sort'] ?? 'filename';
     $sort_dir = strtolower($_GET['dir'] ?? 'asc') === 'desc' ? 'DESC' : 'ASC';
 
-    // Map allowed sort columns to prevent SQL injection
     $allowed_sort_columns = [
         'filename' => 'p.filename',
         'provider' => 'p.telco',
@@ -664,7 +752,6 @@ function resolve_mobile_number($pdo, $account_number, $current_mobile) {
                      LEFT JOIN debit_memos d ON TRIM(p.account_number) = TRIM(d.account_number)
                      LEFT JOIN account_emails e ON TRIM(p.account_number) = TRIM(e.account_number)";
 
-        // Count Query
         $stmtCount = $pdo->prepare("SELECT COUNT(p.id) {$sqlJoins} {$sqlWhere}");
         $stmtCount->execute($params);
         $total_files_count = $stmtCount->fetchColumn();
@@ -747,10 +834,20 @@ function resolve_mobile_number($pdo, $account_number, $current_mobile) {
     ob_start();
     ?>
     <div class="max-w-7xl mx-auto py-6 px-4">
-        <div class="bg-gradient-to-r from-blue-700 to-indigo-800 rounded-2xl shadow-xl p-6 text-white mb-6">
+       <div class="bg-gradient-to-r from-blue-700 to-indigo-800 rounded-2xl shadow-xl p-6 text-white mb-6">
+    <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+        <div>
             <h1 class="text-2xl font-extrabold">✉️ Dispatch Statements Dashboard</h1>
             <p class="text-blue-100 text-sm mt-1">Select telco provider first, then billing period and search to send notifications or download statements.</p>
         </div>
+        
+        <?php if (isset($_SESSION['role']) && $_SESSION['role'] === 'superadmin'): ?>
+            <button type="button" onclick="openEmailReportListModal()" class="bg-white/10 hover:bg-white/20 text-white border border-white/20 font-semibold px-4 py-2.5 rounded-xl text-xs transition-colors backdrop-blur-sm flex items-center gap-1.5 shadow-sm shrink-0">
+                ⚙️ Manage Email Report
+            </button>
+        <?php endif; ?>
+    </div>
+</div>
 
         <div class="bg-white shadow-lg rounded-2xl p-6 border border-gray-100 mb-6">
             <form method="GET" action="" id="filterForm" class="flex flex-col lg:flex-row justify-between items-center mb-6 gap-4">
@@ -927,7 +1024,67 @@ function resolve_mobile_number($pdo, $account_number, $current_mobile) {
         </div>
     </div>
 
-    <script>
+<!-- Email Report Settings Management Modal -->
+<div id="emailReportListModal" class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 hidden">
+    <div class="bg-white rounded-lg shadow-xl w-full max-w-3xl overflow-hidden">
+        <div class="px-6 py-4 bg-slate-800 text-white flex justify-between items-center">
+            <h3 class="text-lg font-semibold">Manage Email Report Settings (Statement Dispatch)</h3>
+            <button type="button" onclick="closeEmailReportListModal()" class="text-slate-300 hover:text-white text-xl font-bold">&times;</button>
+        </div>
+        <div class="p-6 space-y-4 max-h-[70vh] overflow-y-auto">
+            <div class="flex justify-between items-center">
+                <p class="text-sm text-slate-600">Configure recipients who receive automated Statement Dispatch reports.</p>
+                <button type="button" onclick="openEmailReportFormModal()" class="px-4 py-2 bg-emerald-600 text-white text-sm font-medium rounded hover:bg-emerald-700 transition">
+                    + Add New Setting
+                </button>
+            </div>
+            <div class="overflow-x-auto border border-slate-200 rounded-lg">
+                <table class="min-w-full divide-y divide-slate-200 text-left text-sm">
+                    <thead class="bg-slate-50 text-slate-700 font-semibold">
+                        <tr>
+                            <th class="px-4 py-3">Full Name / Additional Info</th>
+                            <th class="px-4 py-3">Recipient Email</th>
+                            <th class="px-4 py-3 text-center">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="emailReportTableBody" class="divide-y divide-slate-200 bg-white"></tbody>
+                </table>
+            </div>
+        </div>
+        <div class="px-6 py-3 bg-slate-100 flex justify-end">
+            <button type="button" onclick="closeEmailReportListModal()" class="px-4 py-2 bg-slate-500 text-white text-sm font-medium rounded hover:bg-slate-600 transition">Close</button>
+        </div>
+    </div>
+</div>
+
+<!-- Sub-Modal for Add/Edit Form -->
+<div id="emailReportModal" class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 hidden">
+    <div class="bg-white rounded-lg shadow-xl w-full max-w-md overflow-hidden">
+        <div class="px-6 py-4 bg-slate-800 text-white flex justify-between items-center">
+            <h3 id="emailReportModalTitle" class="text-lg font-semibold">Add Email Report Setting</h3>
+            <button type="button" onclick="closeEmailReportFormModal()" class="text-slate-300 hover:text-white text-xl font-bold">&times;</button>
+        </div>
+        <form id="emailReportForm" onsubmit="saveEmailReportSetting(event)">
+            <div class="p-6 space-y-4">
+                <input type="hidden" id="reportId" name="id">
+                <div>
+                    <label class="block text-sm font-medium text-slate-700 mb-1">Full Name / Additional Info</label>
+                    <input type="text" id="reportFullName" name="full_name" class="w-full border border-slate-300 rounded px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500" placeholder="e.g. John Doe">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-slate-700 mb-1">Recipient Email</label>
+                    <input type="email" id="recipientEmail" name="email" required class="w-full border border-slate-300 rounded px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500" placeholder="email@bounty.com.ph">
+                </div>
+            </div>
+            <div class="px-6 py-3 bg-slate-100 flex justify-end space-x-2">
+                <button type="button" onclick="closeEmailReportFormModal()" class="px-4 py-2 bg-slate-300 text-slate-700 text-sm font-medium rounded hover:bg-slate-400">Cancel</button>
+                <button type="submit" class="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded hover:bg-blue-700">Save Setting</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<script>
     document.getElementById('telcoSelector').addEventListener('change', async function() {
         const telco = this.value;
         const billingPeriodSelect = document.getElementById('billingPeriodSelector');
@@ -1040,10 +1197,8 @@ function resolve_mobile_number($pdo, $account_number, $current_mobile) {
             const res = await fetch('', { method: 'POST', body: formData });
             const data = await res.json();
             
-            let allCombinedResults = [];
             if (data.results && data.results.length > 0) {
                 data.results.forEach(r => {
-                    allCombinedResults.push(r);
                     if (r.status === 'success') {
                         emailLogContent.innerHTML += `<div class="text-emerald-400">[SUCCESS] ${r.file} -> ${r.message}</div>`;
                     } else {
@@ -1150,7 +1305,6 @@ function resolve_mobile_number($pdo, $account_number, $current_mobile) {
                 const chunkSize = 10;
                 let totalSuccess = 0;
                 let totalFail = 0;
-                let allCombinedResults = [];
                 let allCombinedReportItems = [];
 
                 for (let i = 0; i < allItemsToSend.length; i += chunkSize) {
@@ -1175,7 +1329,6 @@ function resolve_mobile_number($pdo, $account_number, $current_mobile) {
                         
                         if (data.results && data.results.length > 0) {
                             data.results.forEach(r => {
-                                allCombinedResults.push(r);
                                 if (r.status === 'success') {
                                     totalSuccess++;
                                     emailLogContent.innerHTML += `<div class="text-emerald-400">[SUCCESS] ${r.file} -> ${r.message}</div>`;
@@ -1196,10 +1349,13 @@ function resolve_mobile_number($pdo, $account_number, $current_mobile) {
                     }
                     
                     emailLogContent.scrollTop = emailLogContent.scrollHeight;
+
+                    // MAGDAGDAG NG TIMEOUT/DELAY SA PAGITAN NG BATCH (Halimbawa: 2 seconds pause)
+                    await new Promise(resolve => setTimeout(resolve, 2000));
                 }
 
                 document.getElementById('dispatchProgressBar').style.width = '95%';
-                document.getElementById('dispatchProgressText').textContent = `All batches finished. Sending final summary report to admin...`;
+                document.getElementById('dispatchProgressText').textContent = `All batches finished. Sending final summary report to admin recipients...`;
 
                 if (allCombinedReportItems.length > 0) {
                     const finalFormData = new FormData();
@@ -1210,9 +1366,9 @@ function resolve_mobile_number($pdo, $account_number, $current_mobile) {
                         const finalRes = await fetch('', { method: 'POST', body: finalFormData });
                         const finalData = await finalRes.json();
                         if (finalData.status === 'success') {
-                            emailLogContent.innerHTML += `<div class="text-blue-300 font-bold mt-2">[INFO] Statement Dispatch Report successfully sent to jcalcantara!</div>`;
+                            emailLogContent.innerHTML += `<div class="text-blue-300 font-bold mt-2">[INFO] Statement Dispatch Report successfully sent to all admin recipients!</div>`;
                         } else {
-                            emailLogContent.innerHTML += `<div class="text-rose-400 font-bold mt-2">[WARNING] Failed to send summary report to admin.</div>`;
+                            emailLogContent.innerHTML += `<div class="text-rose-400 font-bold mt-2">[WARNING] Failed to send summary report to admin recipients.</div>`;
                         }
                     } catch (err) {
                         emailLogContent.innerHTML += `<div class="text-rose-400">[NETWORK ERROR] Failed to send final summary report.</div>`;
@@ -1226,7 +1382,107 @@ function resolve_mobile_number($pdo, $account_number, $current_mobile) {
             });
         }
     });
-    </script>
+
+    function openEmailReportListModal() {
+        document.getElementById('emailReportListModal').classList.remove('hidden');
+        fetchEmailReportSettings();
+    }
+
+    function closeEmailReportListModal() {
+        document.getElementById('emailReportListModal').classList.add('hidden');
+    }
+
+    async function fetchEmailReportSettings() {
+        const tbody = document.getElementById('emailReportTableBody');
+        tbody.innerHTML = `<tr><td colspan="3" class="px-4 py-4 text-center text-slate-500">Loading settings...</td></tr>`;
+
+        const formData = new FormData();
+        formData.append('action', 'get_email_reports');
+
+        try {
+            const res = await fetch('', { method: 'POST', body: formData });
+            const data = await res.json();
+
+            if (data.status === 'success' && data.reports.length > 0) {
+                let rows = '';
+                data.reports.forEach(r => {
+                    let displayName = r.full_name ? escapeHtml(r.full_name) : '<span class="text-slate-400 italic">No Name</span>';
+                    rows += `
+                        <tr class="hover:bg-slate-50">
+                            <td class="px-4 py-3 font-medium text-slate-800">${displayName}</td>
+                            <td class="px-4 py-3 text-slate-600">${escapeHtml(r.email)}</td>
+                            <td class="px-4 py-3 text-center space-x-2">
+                                <button type="button" onclick="openEmailReportFormModal('${r.id}', '${escapeHtml(r.full_name || '')}', '${escapeHtml(r.email)}')" class="text-blue-600 hover:text-blue-800 text-xs font-semibold px-2 py-1 bg-blue-50 rounded">Edit</button>
+                                <button type="button" onclick="deleteEmailReportSetting('${r.id}')" class="text-rose-600 hover:text-rose-800 text-xs font-semibold px-2 py-1 bg-rose-50 rounded">Delete</button>
+                            </td>
+                        </tr>
+                    `;
+                });
+                tbody.innerHTML = rows;
+            } else {
+                tbody.innerHTML = `<tr><td colspan="3" class="px-4 py-4 text-center text-slate-500">No email report settings found. Click "Add New Setting" to create one.</td></tr>`;
+            }
+        } catch (err) {
+            tbody.innerHTML = `<tr><td colspan="3" class="px-4 py-4 text-center text-rose-500">Failed to load email report settings.</td></tr>`;
+        }
+    }
+
+    function openEmailReportFormModal(id = '', fullName = '', email = '') {
+        document.getElementById('reportId').value = id;
+        document.getElementById('reportFullName').value = fullName;
+        document.getElementById('recipientEmail').value = email;
+        document.getElementById('emailReportModalTitle').innerText = id ? 'Edit Email Report Setting' : 'Add Email Report Setting';
+        document.getElementById('emailReportModal').classList.remove('hidden');
+    }
+
+    function closeEmailReportFormModal() {
+        document.getElementById('emailReportModal').classList.add('hidden');
+    }
+
+    async function saveEmailReportSetting(event) {
+        event.preventDefault();
+        const form = document.getElementById('emailReportForm');
+        const formData = new FormData(form);
+        formData.append('action', 'save_email_report');
+
+        try {
+            const res = await fetch('', { method: 'POST', body: formData });
+            const data = await res.json();
+            if (data.status === 'success') {
+                closeEmailReportFormModal();
+                fetchEmailReportSettings();
+            } else {
+                alert('Error: ' + data.message);
+            }
+        } catch (err) {
+            alert('Network error while saving setting.');
+        }
+    }
+
+    async function deleteEmailReportSetting(id) {
+        if (!confirm('Are you sure you want to delete this email report setting?')) return;
+
+        const formData = new FormData();
+        formData.append('action', 'delete_email_report');
+        formData.append('id', id);
+
+        try {
+            const res = await fetch('', { method: 'POST', body: formData });
+            const data = label = await res.json();
+            if (data.status === 'success') {
+                fetchEmailReportSettings();
+            } else {
+                alert('Error: ' + data.message);
+            }
+        } catch (err) {
+            alert('Network error while deleting setting.');
+        }
+    }
+
+    function escapeHtml(str) {
+        return (str + '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;');
+    }
+</script>
     <?php
     $content = ob_get_clean();
     if (function_exists('render_layout')) {

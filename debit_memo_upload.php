@@ -1,8 +1,15 @@
 <?php
-// debit_memo_upload.php - Direct Google Drive Hierarchical Folder Upload Module (Telco/Year/Billing Period)
-ini_set('display_errors', 1);
-ini_set('display_startup_errors', 1);
-error_reporting(E_ALL);
+// debit_memo_upload.php - Direct Google Drive Hierarchical Folder Upload Module (Batch Size: 10)
+@ini_set('display_errors', 1);
+@ini_set('display_startup_errors', 1);
+@error_reporting(E_ALL);
+
+// Runtime fallback limits for batch requests
+@ini_set('upload_max_filesize', '64M');
+@ini_set('post_max_size', '128M');
+@ini_set('max_execution_time', '300');
+@ini_set('max_input_time', '300');
+@ini_set('memory_limit', '512M');
 
 if (!defined('ALLOW_ACCESS')) {
     define('ALLOW_ACCESS', true);
@@ -78,12 +85,12 @@ if (!function_exists('extract_pdf_statement_details')) {
 
         $result = [
             'account_number' => 'N/A',
-            'mobile_number'  => 'N/A', // <-- Add this line
-            'telco' => detect_telco($filename,$text),
-            'amount_due' => '0.00',
+            'mobile_number'  => 'N/A',
+            'telco'          => detect_telco($filename,$text),
+            'amount_due'     => '0.00',
             'billing_period' => 'N/A',
-            'invoice_date' => 'N/A',
-            'due_date' => 'N/A'
+            'invoice_date'   => 'N/A',
+            'due_date'       => 'N/A'
         ];
 
         $clean_text = preg_replace('/\s+/', ' ',$text);
@@ -96,17 +103,19 @@ if (!function_exists('extract_pdf_statement_details')) {
             $result['account_number'] = trim($m[1]);
         }
 
-       // 2. Extract Mobile Number / Primary Number (Smart vs Globe labels)
-        $phone_pattern = '/(?:Mobile\s*Number|Primary\s*Number|Mobile\s*No\.?)\s*[:|]?\s*[\r\n\s]*(\+?(?:63|0)?9\d{9}|9\d{9})/i';
-        
-        if (preg_match($phone_pattern, $text, $m)) {
-            $result['mobile_number'] = trim(preg_replace('/[^\d\+]/', '', $m[1]));
-        } elseif (preg_match($phone_pattern, $clean_text, $m)) {
-            $result['mobile_number'] = trim(preg_replace('/[^\d\+]/', '', $m[1]));
-        } elseif (preg_match('/(0?9\d{9}|9\d{9})/i', $clean_text, $m)) {
-            $result['mobile_number'] = $m[1];
-        }
-        // 2. Extract Amount Due
+        // 2. Extract Mobile Number / Primary Number
+   // 2. Extract Mobile Number / Primary Number (Strictly tied to label or valid format)
+$result['mobile_number'] = 'N/A'; // Default value kung walang makita
+
+$phone_pattern = '/(?:Mobile\s*Number|Primary\s*Number|Mobile\s*No\.?)\s*[:|]?\s*[\r\n\s]*(\+?(?:63|0)?9\d{9}|9\d{9})/i';
+
+if (preg_match($phone_pattern, $text, $m)) {
+    $result['mobile_number'] = trim(preg_replace('/[^\d\+]+/', '', $m[1]));
+} elseif (preg_match($phone_pattern, $clean_text, $m)) {
+    $result['mobile_number'] = trim(preg_replace('/[^\d\+]+/', '', $m[1]));
+}
+
+        // 3. Extract Amount Due
         if (preg_match('/(?:TOTAL\s+AMOUNT\s+DUE|Amount\s+to\s+Pay)\s*(?:\(total\s+amount\s+due\))?\s*([A-Z]{3}|Php|P)?\s*([\d,\.\(\)]+)\s*(CR)?/i', $text,$m)) {
             $raw_val = trim($m[2]);
             if (strpos($raw_val, '(') !== false) {
@@ -119,7 +128,7 @@ if (!function_exists('extract_pdf_statement_details')) {
             }
         }
 
-        // 3. Telco-Specific Parsing
+        // 4. Telco-Specific Parsing
         if ($result['telco'] === 'Smart') {
             if (preg_match('/Invoice\s*Date\s*[:|]?\s*([A-Za-z]{3}\s+\d{1,2},\s+\d{4}|\d{2}\/\d{2}\/\d{2})/i', $text,$m)) {
                 $result['invoice_date'] = parse_flexible_date($m[1]);
@@ -175,9 +184,12 @@ if (!function_exists('get_or_create_drive_folder')) {
     }
 }
 
-// Handle AJAX PDF Batch Uploads
+// Handle AJAX Batch Uploads (10 files per request)
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['pdf_files'])) {
+    @ini_set('zlib.output_compression', 'Off');
+    @ob_end_clean();
     header('Content-Type: application/json');
+
     $success_files = [];
     $failed_files = [];$overwrite = isset($_POST['overwrite']) &&$_POST['overwrite'] === '1';
 
@@ -196,10 +208,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['pdf_files'])) {
             $client = new Google_Client();$credentials_path = __DIR__ . '/credentials.json';
 
             if (file_exists($credentials_path)) {$client->setAuthConfig($credentials_path);$client->addScope(Google_Service_Drive::DRIVE);
-            } elseif (function_exists('get_google_client')) {
-                $client = get_google_client();
-            } elseif (isset($_SESSION['google_access_token'])) {
-                $client->setAccessToken($_SESSION['google_access_token']);
             }
 
             if (class_exists('GuzzleHttp\Client')) {
@@ -211,28 +219,38 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['pdf_files'])) {
 
             $drive_service = new Google_Service_Drive($client);
         }
-    } catch (Exception $e) {$failed_files[] = "Google Drive Init Error: " . $e->getMessage();
+    } catch (Exception $e) {
+        echo json_encode(['status' => 'success', 'success_files' => [], 'failed_files' => ["Google Drive Init Error: " . $e->getMessage()]]);
+        exit;
     }
 
     foreach ($_FILES['pdf_files']['name'] as$i => $name) {$tmp_name = $_FILES['pdf_files']['tmp_name'][$i];
         $basename = basename($name);
 
+        if (!is_uploaded_file($tmp_name)) {
+            $failed_files[] = "$basename (Upload validation failed)";
+            continue;
+        }
+
         $details = extract_pdf_statement_details($tmp_name,$basename);
 
         $gdrive_status = "Not Uploaded";
         $file_link = null;
+        $file_id = null;
 
+        $telco_folder_name = !empty($details['telco']) ? $details['telco'] : 'Unknown_Telco';$year_folder_name = 'Unknown_Year';
+        if (!empty($details['invoice_date']) &&$details['invoice_date'] !== 'N/A') {
+            $year_folder_name = date('Y', strtotime($details['invoice_date']));
+        } elseif (preg_match('/(20\d{2})/', $basename, $ym)) {$year_folder_name = $ym[1];
+        } else {$year_folder_name = date('Y');
+        }
+
+        $billing_folder_name = !empty($details['billing_period']) ? str_replace(['/', '\\'], '-', $details['billing_period']) : 'Unknown_Period';
+        $db_file_path = "{$telco_folder_name}/{$year_folder_name}/{$billing_folder_name}";
+
+        // Google Drive Upload Logic
         if ($drive_service) {
             try {
-                $telco_folder_name = !empty($details['telco']) ? $details['telco'] : 'Unknown_Telco';$year_folder_name = 'Unknown_Year';
-                if (!empty($details['invoice_date']) &&$details['invoice_date'] !== 'N/A') {
-                    $year_folder_name = date('Y', strtotime($details['invoice_date']));
-                } elseif (preg_match('/(20\d{2})/', $basename, $ym)) {$year_folder_name = $ym[1];
-                } else {$year_folder_name = date('Y');
-                }
-
-                $billing_folder_name = !empty($details['billing_period']) ? str_replace(['/', '\\'], '-', $details['billing_period']) : 'Unknown_Period';
-
                 $telco_folder_id = get_or_create_drive_folder($drive_service, $google_drive_folder_id,$telco_folder_name);
                 $year_folder_id = get_or_create_drive_folder($drive_service, $telco_folder_id,$year_folder_name);
                 $target_parent_id = get_or_create_drive_folder($drive_service, $year_folder_id,$billing_folder_name);
@@ -245,75 +263,74 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['pdf_files'])) {
                     'fields' => 'files(id, name, webViewLink)'
                 ])->getFiles();
 
-                if (!empty($existingFiles) && !$overwrite) {$file_link = $existingFiles[0]->getWebViewLink();$gdrive_status = "Skipped in Drive (Already exists)";
+                $content = file_get_contents($tmp_name);
+
+                if (!empty($existingFiles)) {
+                    $existingFileId =$existingFiles[0]->getId();
+                    if ($overwrite) {
+                        $fileMetadata = new Google_Service_Drive_DriveFile(['name' =>$basename]);
+                        $updatedFile =$drive_service->files->update($existingFileId,$fileMetadata, [
+                            'data' => $content,
+                            'mimeType' => 'application/pdf',
+                            'uploadType' => 'multipart',
+                            'supportsAllDrives' => true,
+                            'fields' => 'id, webViewLink'
+                        ]);
+                        $file_id = $updatedFile->getId();$file_link = $updatedFile->getWebViewLink();$gdrive_status = "Overwritten in Shared Drive ({$db_file_path})";
+                    } else {
+                        $failed_files[] = "$basename (Upload Failed: File already exists in Google Drive and Overwrite is disabled)";
+                        continue;
+                    }
                 } else {
                     $fileMetadata = new Google_Service_Drive_DriveFile([
                         'name' => $basename,
                         'parents' => [$target_parent_id]
                     ]);
 
-                    $content = file_get_contents($tmp_name);$createdFile = $drive_service->files->create($fileMetadata, [
+                    $createdFile = $drive_service->files->create($fileMetadata, [
                         'data' => $content,
                         'mimeType' => 'application/pdf',
                         'uploadType' => 'multipart',
                         'fields' => 'id, webViewLink',
                         'supportsAllDrives' => true
                     ]);
-                    $file_link = $createdFile->getWebViewLink();$gdrive_status = "Uploaded to Shared Drive ({$telco_folder_name}/{$year_folder_name}/{$billing_folder_name})";
+                    $file_id = $createdFile->getId();$file_link = $createdFile->getWebViewLink();$gdrive_status = "Uploaded to Shared Drive ({$db_file_path})";
                 }
-            } catch (Exception $e) {$gdrive_status = "Drive Error: " . $e->getMessage();
+            } catch (Exception $e) {
+                $failed_files[] = "$basename (Drive Error: " . $e->getMessage() . ")";
+                continue;
             }
         } else {
-            $gdrive_status = "Drive Service Unavailable";
+            $failed_files[] = "$basename (Drive Service Unavailable)";
+            continue;
         }
 
         if ($db_connection) {
             try {
-                $telco_folder_name = !empty($details['telco']) ? $details['telco'] : 'Unknown_Telco';$year_folder_name = 'Unknown_Year';
-                if (!empty($details['invoice_date']) &&$details['invoice_date'] !== 'N/A') {
-                    $year_folder_name = date('Y', strtotime($details['invoice_date']));
-                } elseif (preg_match('/(20\d{2})/', $basename, $ym)) {$year_folder_name = $ym[1];                 } else {$year_folder_name = date('Y');
-                }
-
-                $billing_folder_name = !empty($details['billing_period']) ? str_replace(['/', '\\'], '-', $details['billing_period']) : 'Unknown_Period';
-                
-                $local_dir = __DIR__ . "/Teclo_Test_Uploads/Uploads/" . $telco_folder_name . "/" . $year_folder_name . "/" . $billing_folder_name . "/";
-                if (!is_dir($local_dir)) {
-                    @mkdir($local_dir, 0777, true);
-                }
-                $local_file_path = $local_dir .$basename;
-                @copy($tmp_name,$local_file_path);
-
-                $db_file_path = "Teclo_Test_Uploads/Uploads/" . $telco_folder_name . "/" . $year_folder_name . "/" . $billing_folder_name . "/" . $basename;
-
-            $stmt =$db_connection->prepare("
-    INSERT INTO pdf_extracted_details 
-    (filename, account_number, mobile_number, telco, amount_due, billing_period, invoice_date, due_date, file_link, file_path)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ON DUPLICATE KEY UPDATE 
-        account_number = VALUES(account_number),
-        mobile_number = VALUES(mobile_number),
-        telco = VALUES(telco),
-        amount_due = VALUES(amount_due),
-        billing_period = VALUES(billing_period),
-        invoice_date = VALUES(invoice_date),
-        due_date = VALUES(due_date),
-        file_link = VALUES(file_link),
-        file_path = VALUES(file_path)
-");
-$stmt->execute([
-    $basename, 
-    $details['account_number'],
-    $details['mobile_number'],
-    $details['telco'], 
-    $details['amount_due'],
-    $details['billing_period'], 
-    $details['invoice_date'],
-    $details['due_date'], 
-    $file_link,
-    $db_file_path
-]);
-                $success_files[] = "$basename (Saved to DB with Path & Link | Telco: {$details['telco']} \vert{} {$gdrive_status})";
+                $stmt =$db_connection->prepare("
+                    INSERT INTO pdf_extracted_details 
+                    (filename, account_number, mobile_number, telco, amount_due, billing_period, invoice_date, due_date, file_link, file_id, file_path)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON DUPLICATE KEY UPDATE 
+                        account_number = VALUES(account_number),
+                        mobile_number = VALUES(mobile_number),
+                        telco = VALUES(telco),
+                        amount_due = VALUES(amount_due),
+                        billing_period = VALUES(billing_period),
+                        invoice_date = VALUES(invoice_date),
+                        due_date = VALUES(due_date),
+                        file_link = VALUES(file_link),
+                        file_id = VALUES(file_id),
+                        file_path = VALUES(file_path)
+                ");
+                $stmt->execute([$basename, 
+                    $details['account_number'],$details['mobile_number'], 
+                    $details['telco'],$details['amount_due'], 
+                    $details['billing_period'],$details['invoice_date'], 
+                    $details['due_date'],$file_link, 
+                    $file_id,$db_file_path
+                ]);
+                $success_files[] = "$basename (Saved to DB | Telco: {$details['telco']} \vert{} {$gdrive_status})";
             } catch (Exception $e) {
                 $failed_files[] = "$basename (DB Error: " . $e->getMessage() . ")";
             }
@@ -334,8 +351,8 @@ ob_start();
 <!-- UPLOAD TAB VIEW HTML -->
 <div class="bg-white shadow-lg rounded-2xl p-6 border border-gray-100 max-w-5xl mx-auto mt-6">
     <div class="mb-6">
-        <h2 class="text-lg font-bold text-gray-800">Upload Statements</h2>
-        <p class="text-xs text-gray-500 mt-0.5">Drag and drop PDF statements below or browse to queue files for upload.</p>
+        <h2 class="text-lg font-bold text-gray-800">Upload Statements (Batch Size: 10)</h2>
+        <p class="text-xs text-gray-500 mt-0.5">Drag and drop thousands of files safely. Files sync to Google Drive in batches of 10 to speed up processing without server timeouts.</p>
     </div>
 
     <div id="dropZone" class="border-2 border-dashed border-gray-300 rounded-2xl p-8 text-center bg-gray-50/50 hover:bg-gray-50 transition-colors cursor-pointer mb-6 relative">
@@ -345,7 +362,7 @@ ob_start();
                 📄
             </div>
             <p class="text-sm font-medium text-gray-700 mb-1">Drag & drop PDF files here, or <span class="text-blue-600 underline font-semibold">browse</span></p>
-            <p class="text-xs text-gray-400">Supports multiple PDF files upload</p>
+            <p class="text-xs text-gray-400">Optimized for fast batch cloud syncing</p>
         </div>
     </div>
     
@@ -372,7 +389,7 @@ ob_start();
 
         <div class="flex justify-end pt-2">
             <button type="button" id="uploadBtn" onclick="startUploadProcess()" class="bg-rose-500 hover:bg-rose-600 text-white font-semibold py-2.5 px-5 rounded-xl shadow-md transition-colors text-xs flex items-center space-x-2 disabled:opacity-40 disabled:cursor-not-allowed" disabled>
-                <span>❌</span><span>Upload All Files</span>
+                <span>❌</span><span>Start Batch Upload (10 per batch)</span>
             </button>
         </div>
     </div>
@@ -387,7 +404,7 @@ ob_start();
                     <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
                     <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
                 </svg>
-                <span>Uploading Files to Cloud</span>
+                <span>Uploading Files to Cloud (Batch Mode)</span>
             </h3>
             <span id="progressPercentage" class="bg-blue-100 text-blue-800 px-3 py-1 rounded-full text-xs font-bold">0%</span>
         </div>
@@ -398,7 +415,7 @@ ob_start();
             </div>
             <div class="flex justify-between items-center mt-2.5">
                 <span id="progressText" class="text-xs font-semibold text-gray-600">Preparing upload...</span>
-                <span id="progressCountDetail" class="text-xs font-bold text-blue-600">Uploaded: 0 / 0 files</span>
+                <span id="progressCountDetail" class="text-xs font-bold text-blue-600">Processed: 0 / 0 files</span>
             </div>
         </div>
 
@@ -493,7 +510,7 @@ function updateQueueUI() {
         let html = '';
         fileQueue.forEach((file, index) => {
             html += `<div class="py-2 px-2 flex justify-between items-center text-xs text-gray-700">
-                <span class="truncate max-w-[80%]">${index + 1}. ${file.name}</span>
+                <span class="truncate max-w-[80%]" title="${file.name}">${index + 1}. ${file.name}</span>
                 <span class="text-gray-400">(${(file.size / 1024 / 1024).toFixed(2)} MB)</span>
             </div>`;
         });
@@ -539,15 +556,15 @@ async function startUploadProcess() {
     if(logContent) logContent.innerHTML = '';
     if(modalSpinnerIcon) modalSpinnerIcon.style.display = 'inline-block';
 
-    const chunkSize = 10;
+    const chunkSize = 10; // Batch size set to 10 files per HTTP request
     const totalFiles = fileQueue.length;
     let processedFiles = 0;
     let successTotal = 0;
     let failedTotal = 0;
 
-    if(progressText) progressText.textContent = 'Preparing upload...';
-    if(progressCountDetail) progressCountDetail.textContent = `Uploaded: 0 / ${totalFiles} files`;
-    if(progressBar) progressBar.style.width = '2%';
+    if(progressText) progressText.textContent = 'Starting batch upload queue...';
+    if(progressCountDetail) progressCountDetail.textContent = `Processed: 0 / ${totalFiles} files`;
+    if(progressBar) progressBar.style.width = '1%';
     if(progressPercentage) progressPercentage.textContent = '0%';
 
     for (let i = 0; i < totalFiles; i += chunkSize) {
@@ -555,14 +572,17 @@ async function startUploadProcess() {
 
         const chunk = fileQueue.slice(i, i + chunkSize);
         const formData = new FormData();
-        chunk.forEach(file => formData.append('pdf_files[]', file));
+        
+        chunk.forEach(file => {
+            formData.append('pdf_files[]', file);
+        });
 
         if (overwriteCheckbox && overwriteCheckbox.checked) {
             formData.append('overwrite', '1');
         }
 
         let currentBatchEnd = Math.min(i + chunkSize, totalFiles);
-        if(progressText) progressText.textContent = `Uploading files ${i + 1} to ${currentBatchEnd}...`;
+        if(progressText) progressText.textContent = `Uploading batch: files ${i + 1} to ${currentBatchEnd} of ${totalFiles}...`;
 
         try {
             const response = await fetch('debit_memo_upload.php', {
@@ -577,11 +597,7 @@ async function startUploadProcess() {
                 failedTotal += result.failed_files.length;
 
                 result.success_files.forEach(msg => {
-                    let colorClass = 'text-emerald-400';
-                    if (msg.includes('Skipped in Drive') || msg.includes('Already exists')) {
-                        colorClass = 'text-amber-400';
-                    }
-                    if(logContent) logContent.innerHTML += `<div class="${colorClass}">[SUCCESS] ${msg}</div>`;
+                    if(logContent) logContent.innerHTML += `<div class="text-emerald-400">[SUCCESS] ${msg}</div>`;
                 });
 
                 result.failed_files.forEach(msg => {
@@ -589,7 +605,7 @@ async function startUploadProcess() {
                 });
             }
         } catch (error) {
-            if(logContent) logContent.innerHTML += `<div class="text-rose-400">[NETWORK ERROR] Batch failed: ${error.message}</div>`;
+            if(logContent) logContent.innerHTML += `<div class="text-rose-400">[NETWORK ERROR] Batch ${i + 1}-${currentBatchEnd} failed: ${error.message}</div>`;
             failedTotal += chunk.length;
         }
 
@@ -598,7 +614,7 @@ async function startUploadProcess() {
         
         if(progressBar) progressBar.style.width = percentage + '%';
         if(progressPercentage) progressPercentage.textContent = percentage + '%';
-        if(progressCountDetail) progressCountDetail.textContent = `Uploaded: ${processedFiles} / ${totalFiles} files`;
+        if(progressCountDetail) progressCountDetail.textContent = `Processed: ${processedFiles} / ${totalFiles} files`;
         
         const logContainerElem = document.getElementById('logContainer');
         if(logContainerElem) logContainerElem.scrollTop = logContainerElem.scrollHeight;
@@ -614,7 +630,7 @@ async function startUploadProcess() {
         if(progressBar) progressBar.classList.remove('bg-blue-600');
         if(progressBar) progressBar.classList.add('bg-rose-500');
     } else {
-        if(progressText) progressText.textContent = `Bulk upload complete! (Success: ${successTotal}, Failed: ${failedTotal})`;
+        if(progressText) progressText.textContent = `All files processed! (Success: ${successTotal}, Failed: ${failedTotal})`;
         fileQueue = [];
         updateQueueUI();
     }

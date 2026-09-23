@@ -81,12 +81,14 @@ function createDebitMemoExcel($dm_id, $conn, $item_ids = null, $startDate = null
     echo '<Style ss:ID="BlueCell"><Alignment ss:Horizontal="Center" ss:Vertical="Center"/><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1"/></Borders><Font ss:Bold="1" ss:Color="#2563eb"/></Style>';
     echo '<Style ss:ID="PurpleCell"><Alignment ss:Horizontal="Center" ss:Vertical="Center"/><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1"/></Borders><Font ss:Bold="1" ss:Color="#7c3aed"/></Style>';
 
+    echo '<Style ss:ID="OrangeCell"><Alignment ss:Horizontal="Center" ss:Vertical="Center"/><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1"/></Borders><Font ss:Bold="1" ss:Color="#ea580c"/></Style>';
+    echo '<Style ss:ID="GreenCell"><Alignment ss:Horizontal="Center" ss:Vertical="Center"/><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1"/></Borders><Font ss:Bold="1" ss:Color="#16a34a"/></Style>';
     // Dynamic Header Styles mapping your requested colors
     $unique_colors = ["#FFE599", "#93C47D", "#4A86E8","#F7F700"];
     foreach ($unique_colors as $color) {
         $style_id = 'Header_' . md5($color); // Generates a safe alphanumeric ID for XML
         echo '<Style ss:ID="' . $style_id . '">';
-        echo '<Alignment ss:Horizontal="Center" ss:Vertical="Center"/>';
+       echo '<Alignment ss:Horizontal="Center" ss:Vertical="Center" ss:WrapText="1"/>';
         echo '<Borders>';
         echo '<Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1"/>';
         echo '<Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1"/>';
@@ -105,7 +107,7 @@ function createDebitMemoExcel($dm_id, $conn, $item_ids = null, $startDate = null
         echo '<Table>';
 
         // Explicit column widths to ensure long headers fit completely without truncation
-        $colWidths = [150, 130, 110, 130, 100, 100, 180, 130, 130, 140, 90, 80, 80, 90, 120, 80, 80, 130, 130, 100,140,140];
+        $colWidths = [150, 130, 110, 130, 100, 100, 180, 130, 130, 140, 90, 80, 80, 90, 120, 80, 80, 130, 130, 100,140,140,120,120];
         foreach ($colWidths as $w) {
             echo '<Column ss:Width="' . $w . '"/>';
         }
@@ -146,16 +148,25 @@ function createDebitMemoExcel($dm_id, $conn, $item_ids = null, $startDate = null
     "TOTAL AMOUNT DUE" => "#4A86E8",
     "PROCESSED DM" => "#93C47D",
     "SYSTEM GENERATED DM" => "#93C47D",
-     "DIFFERENCE" => "#F7F700"
-
+    "DIFFERENCE\n(PROCESSED DM - SYSTEM GENERATED DM)" => "#F7F700",
+    "ADD ONS" => "#93C47D",
+    "FINAL DM\n(PROCESSED DM - ADD ONS)" => "#F7F700",
 ];
 
-        echo '<Row>';
+      
+       echo '<Row>';
         foreach($headers as $colTitle => $colorCode) {
             $styleID = 'Header_' . md5($colorCode);
-            echo '<Cell ss:StyleID="' . $styleID . '"><Data ss:Type="String">' . htmlspecialchars($colTitle) . '</Data></Cell>';
+            
+            // Hatiin ang title kung may newline (\n), i-escape ang bawat bahagi, tapos pagsamahin gamit ang tamang XML line break code
+            $lines = explode("\n", $colTitle);
+            $escapedLines = array_map('htmlspecialchars', $lines);
+            $finalTitle = implode('&#10;', $escapedLines);
+
+            echo '<Cell ss:StyleID="' . $styleID . '"><Data ss:Type="String">' . $finalTitle . '</Data></Cell>';
         }
         echo '</Row>';
+       
 
         // Data Rows
         foreach ($year_items as $row) {
@@ -187,13 +198,21 @@ function createDebitMemoExcel($dm_id, $conn, $item_ids = null, $startDate = null
             $msf_mrc_val = isset($row['current_charges']) ? (float)$row['current_charges'] : 0.00;
             $dm_val = isset($row['debit_memo_details']) ? (float)$row['debit_memo_details'] : 0.00;
 
-            // Column 1: Approved Plan - MSF/MRC
-           $col1_val = $msf_mrc_val -  $approved_plan_val;
+           // Column 1: Approved Plan - MSF/MRC (Cap to 0.00 if negative)
+            $col1_val = max(0, $msf_mrc_val - $approved_plan_val);
             echo '<Cell ss:StyleID="BlueCell"><Data ss:Type="Number">' . number_format($col1_val, 2, '.', '') . '</Data></Cell>';
 
-            // Column 2: Debit Memo - Column 1
-           $col2_val = $dm_val - $col1_val;
+            // Column 2: Debit Memo - Column 1 (Cap to 0.00 if negative)
+            $col2_val = max(0, $dm_val - $col1_val);
             echo '<Cell ss:StyleID="PurpleCell"><Data ss:Type="Number">' . number_format($col2_val, 2, '.', '') . '</Data></Cell>';
+
+            // Add Ons Column
+            $add_ons_val = isset($row['add_ons']) ? (float)$row['add_ons'] : 0.00;
+            echo '<Cell ss:StyleID="OrangeCell"><Data ss:Type="Number">' . number_format($add_ons_val, 2, '.', '') . '</Data></Cell>';
+
+            // Final DM Column
+            $final_dm_val = isset($row['final_dm']) ? (float)$row['final_dm'] : ($dm_val - $add_ons_val);
+            echo '<Cell ss:StyleID="GreenCell"><Data ss:Type="Number">' . number_format($final_dm_val, 2, '.', '') . '</Data></Cell>';
 
             echo '</Row>';
         }

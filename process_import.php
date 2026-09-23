@@ -81,8 +81,10 @@ if ($total_rows > 0) {
             $company = trim($row[1]);
             $acc_num = trim(str_replace(['=', '"', "\r", "\n"], '', $row[3]));
             $mobile  = trim(str_replace(['=', '"', "\r", "\n"], '', $row[4]));
-            $formatted_start = adjustDate($row[23]);
-            $formatted_end   = adjustDate($row[24]);
+            
+            // NOTE: Dahil nadagdag ang Add Ons sa index 23, lumipat ang dates sa 24 at 25
+            $formatted_start = adjustDate($row[24]); 
+            $formatted_end   = adjustDate($row[25]); 
 
             $errors = [];
             if (empty($company))       $errors[] = "Company is missing";
@@ -133,7 +135,7 @@ if ($total_rows > 0) {
             // Perform Individual Update or Insert
             if ($import_mode === 'update') {
                 $newData = [
-                    'carrier_name' => $row[25], 
+                    'carrier_name' => $row[26], // Telco ay nasa index 26 na ngayon
                     'approved_plan' => cleanNumber($row[5]),
                     'phone_amortization' => cleanNumber($row[6]), 
                     'debit_adj' => cleanNumber($row[7]), 
@@ -151,14 +153,15 @@ if ($total_rows > 0) {
                     'oct' => cleanNumber($row[19]), 
                     'current_charges' => cleanNumber($row[20]), 
                     'total_amount_due' => cleanNumber($row[21]), 
-                    'debit_memo_details' => cleanNumber($row[22])
+                    'debit_memo_details' => cleanNumber($row[22]),
+                    'add_ons' => cleanNumber($row[23]) // <--- Idinagdag ang Add Ons dito
                 ];
 
                 $hasChanged = false;
-                $numericFields = ['phone_amortization', 'debit_adj', 'credit_adj', 'other_charges', 'local_call_text', 'ndd_charges', 'idd_charges', 'roaming_charges', 'sms_charges', 'gprs_charges', 'wiz_usage', 'loading_charges', 'vat', 'oct', 'current_charges', 'total_amount_due', 'debit_memo_details', 'approved_plan'];
+                $numericFields = ['phone_amortization', 'debit_adj', 'credit_adj', 'other_charges', 'local_call_text', 'ndd_charges', 'idd_charges', 'roaming_charges', 'sms_charges', 'gprs_charges', 'wiz_usage', 'loading_charges', 'vat', 'oct', 'current_charges', 'total_amount_due', 'debit_memo_details', 'add_ons', 'approved_plan'];
 
                 foreach ($newData as $key => $value) {
-                    $dbVal = $existingRecord[$key];
+                    $dbVal = $existingRecord[$key] ?? 0;
                     if (in_array($key, $numericFields)) {
                         if ((float)$value !== (float)$dbVal) {
                             $hasChanged = true;
@@ -178,28 +181,29 @@ if ($total_rows > 0) {
 
                 if (!$hasChanged) throw new Exception("No changes detected; record is identical.");
 
-                // Individual Update Execution
-                $updateStmt = $conn->prepare("UPDATE debit_memo_items SET carrier_name=?, approved_plan=?, phone_amortization=?, debit_adj=?, credit_adj=?, other_charges=?, local_call_text=?, ndd_charges=?, idd_charges=?, roaming_charges=?, sms_charges=?, gprs_charges=?, wiz_usage=?, loading_charges=?, vat=?, oct=?, current_charges=?, total_amount_due=?, debit_memo_details=?, batch_id=?, created_by=? WHERE id=?");
+                // Individual Update Execution (Idinagdag ang add_ons =)
+                $updateStmt = $conn->prepare("UPDATE debit_memo_items SET carrier_name=?, approved_plan=?, phone_amortization=?, debit_adj=?, credit_adj=?, other_charges=?, local_call_text=?, ndd_charges=?, idd_charges=?, roaming_charges=?, sms_charges=?, gprs_charges=?, wiz_usage=?, loading_charges=?, vat=?, oct=?, current_charges=?, total_amount_due=?, debit_memo_details=?, add_ons=?, batch_id=?, created_by=? WHERE id=?");
                 $updateStmt->execute([
-                    $row[25], cleanNumber($row[5]), cleanNumber($row[6]), cleanNumber($row[7]), 
+                    $row[26], cleanNumber($row[5]), cleanNumber($row[6]), cleanNumber($row[7]), 
                     cleanNumber($row[8]), cleanNumber($row[9]), cleanNumber($row[10]), cleanNumber($row[11]), 
                     cleanNumber($row[12]), cleanNumber($row[13]), cleanNumber($row[14]), cleanNumber($row[15]), 
                     cleanNumber($row[16]), cleanNumber($row[17]), cleanNumber($row[18]), cleanNumber($row[19]), 
-                    cleanNumber($row[20]), cleanNumber($row[21]), cleanNumber($row[22]), $batch_id, $user_id, $existingRecord['id']
+                    cleanNumber($row[20]), cleanNumber($row[21]), cleanNumber($row[22]), cleanNumber($row[23]), 
+                    $batch_id, $user_id, $existingRecord['id']
                 ]);
                 
                 $status = 'UPDATED';
                 $remarks = 'Record updated successfully';
             } else {
-                // Individual Insert Execution
-                $insertStmt = $conn->prepare("INSERT INTO debit_memo_items (dm_id, line_no, carrier_name, mobile_number, coverage_start, coverage_end, approved_plan, phone_amortization, debit_adj, credit_adj, other_charges, local_call_text, ndd_charges, idd_charges, roaming_charges, sms_charges, gprs_charges, wiz_usage, loading_charges, vat, oct, current_charges, total_amount_due, debit_memo_details, batch_id, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+                // Individual Insert Execution (Idinagdag ang add_ons sa columns at values)
+                $insertStmt = $conn->prepare("INSERT INTO debit_memo_items (dm_id, line_no, carrier_name, mobile_number, coverage_start, coverage_end, approved_plan, phone_amortization, debit_adj, credit_adj, other_charges, local_call_text, ndd_charges, idd_charges, roaming_charges, sms_charges, gprs_charges, wiz_usage, loading_charges, vat, oct, current_charges, total_amount_due, debit_memo_details, add_ons, batch_id, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
                 $insertStmt->execute([
-                    $dm_id, $row[0], $row[25], $mobile, $formatted_start, $formatted_end,
+                    $dm_id, $row[0], $row[26], $mobile, $formatted_start, $formatted_end,
                     cleanNumber($row[5]), cleanNumber($row[6]), cleanNumber($row[7]), cleanNumber($row[8]),
                     cleanNumber($row[9]), cleanNumber($row[10]), cleanNumber($row[11]), cleanNumber($row[12]),
                     cleanNumber($row[13]), cleanNumber($row[14]), cleanNumber($row[15]), cleanNumber($row[16]),
                     cleanNumber($row[17]), cleanNumber($row[18]), cleanNumber($row[19]), cleanNumber($row[20]),
-                    cleanNumber($row[21]), cleanNumber($row[22]), $batch_id, $user_id
+                    cleanNumber($row[21]), cleanNumber($row[22]), cleanNumber($row[23]), $batch_id, $user_id
                 ]);
                 
                 $status = 'ADDED';

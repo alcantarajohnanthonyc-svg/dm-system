@@ -460,8 +460,21 @@ function getCarrierBadge($carrierName) {
                 <th class="p-2 border border-gray-300 whitespace-normal text-center" style="background-color: #93C47D;">SYSTEM GENERATED DM</th>
                 
                 <!-- Updated Header 2 -->
-                <th class="p-2 border border-gray-300 whitespace-normal text-center" style="background-color: #F7F700;">DIFFERENCE</th>
+               <th class="p-2 border border-gray-300 whitespace-normal text-center" style="background-color: #F7F700;">
+                DIFFERENCE
+                <br>
+                <span class="text-[9px] font-normal">(PROCESSED DM - SYSTEM GENERATED DM)</span>
+            </th>
 
+            <!-- NEW: Add Ons Column -->
+            <th class="p-2 border border-gray-300 whitespace-normal text-center" style="background-color: #93C47D;">ADD ONS</th>
+
+            <!-- NEW: Final DM Column -->
+<th class="p-2 border border-gray-300 whitespace-normal text-center" style="background-color: #F7F700;">
+    FINAL DM
+    <br>
+    <span class="text-[9px] font-normal">(PROCESSED DM - ADD ONS)</span>
+</th>
                 <th class="p-2 border border-gray-300 text-center">ACTION</th>
             </tr>
         </thead>
@@ -610,14 +623,23 @@ function submitPasteExport(type) {
                    'oct' => 'Overseas communication Tax',
                     'current_charges' => 'Current Charges', 
                     'total_amount_due' => 'TTotal Amount Due', 
-                    'debit_memo_details' => 'PROCESSED DM'
+                   'debit_memo_details'   => 'PROCESSED DM',
+    'system_generated_dm'  => 'System Generated DM',
+    'difference'           => 'Difference<br><span class="text-[9px] font-normal">(Processed - System)</span>',
+    'add_ons'              => 'Add Ons',          
+    'final_dm'             => 'Final DM<br><span class="text-[9px] font-normal">(Processed - Add Ons)</span>'
                 ];
-                foreach ($amounts as $name => $label): ?>
-                    <div>
-                        <label class="block text-[9px] font-bold text-gray-400 uppercase"><?= $label ?></label>
-                        <input type="number" step="0.01" name="<?= $name ?>" class="w-full p-1.5 border rounded-md text-xs" value="0.00">
-                    </div>
-                <?php endforeach; ?>
+
+
+               foreach ($amounts as $name => $label): 
+    // Gawing readonly ang Difference at Final DM para hindi ma-typean nang manu-mano
+    $isReadOnly = in_array($name, ['difference', 'final_dm']) ? 'readonly style="background-color: #f1f5f9; cursor: not-allowed;"' : '';
+?>
+    <div>
+        <label class="block text-[9px] font-bold text-gray-400 uppercase"><?= $label ?></label>
+        <input type="number" step="0.01" name="<?= $name ?>" class="w-full p-1.5 border rounded-md text-xs" value="0.00" <?= $isReadOnly ?>>
+    </div>
+<?php endforeach; ?>
             </div>
 
           <div class="flex justify-center items-center gap-6 mt-8 border-t pt-6">
@@ -1263,7 +1285,10 @@ function editBreakdownItem(itemId) {
             'oct': data.oct,
             'current_charges': data.current_charges,
             'total_amount_due': data.total_amount_due,
-            'debit_memo_details': data.debit_memo_details
+            'debit_memo_details': data.debit_memo_details,
+            'add_ons': data.add_ons,          // Added mapping
+            'final_dm': data.final_dm         // Added mapping
+
         };
 
         for (const [name, value] of Object.entries(mappings)) {
@@ -1353,7 +1378,48 @@ if (typeof executeUnifiedExport === 'function') {
     };
 }
 
+function computeModalValues() {
+    const form = document.getElementById('addEditForm');
+    if (!form) return;
 
+    const processedDmInput = form.querySelector('input[name="debit_memo_details"]');
+    const sysGenDmInput    = form.querySelector('input[name="system_generated_dm"]');
+    const differenceInput  = form.querySelector('input[name="difference"]');
+    const addOnsInput      = form.querySelector('input[name="add_ons"]');
+    const finalDmInput     = form.querySelector('input[name="final_dm"]');
+
+    const processedDm = parseFloat(processedDmInput ? processedDmInput.value : 0) || 0;
+    const sysGenDm    = parseFloat(sysGenDmInput ? sysGenDmInput.value : 0) || 0;
+    const addOns      = parseFloat(addOnsInput ? addOnsInput.value : 0) || 0;
+
+    // 1. DIFFERENCE = PROCESSED DM - SYSTEM GENERATED DM
+    const difference = processedDm - sysGenDm;
+    if (differenceInput) {
+        differenceInput.value = difference.toFixed(2);
+    }
+
+    // 2. FINAL DM = PROCESSED DM - ADD ONS
+    const finalDm = processedDm - addOns;
+    if (finalDmInput) {
+        finalDmInput.value = finalDm.toFixed(2);
+    }
+}
+
+// Makikinig sa bawat galaw o input sa form
+document.addEventListener('input', function(e) {
+    if (e.target && ['debit_memo_details', 'system_generated_dm', 'add_ons'].includes(e.target.name)) {
+        computeModalValues();
+    }
+});
+
+// Para gumana rin kapag nag-click ka ng "Edit" at lumabas ang lumang data
+const existingEditFunc = window.editBreakdownItem;
+if (typeof existingEditFunc === 'function') {
+    window.editBreakdownItem = function(itemId) {
+        existingEditFunc(itemId);
+        setTimeout(computeModalValues, 250); // slight delay para ma-load muna ang data sa inputs
+    };
+}
 </script>
 
 <?php

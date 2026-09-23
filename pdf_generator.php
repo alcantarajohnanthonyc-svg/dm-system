@@ -45,10 +45,20 @@ function createDebitMemoPDF($dm_id, $conn, $item_ids = null, $startDate = null, 
         "CURRENT CHARGES" => "#4A86E8",
         "TOTAL AMOUNT DUE" => "#4A86E8",
         "PROCESSED DM" => "#93C47D",
-       "SYSTEM GENERATED DM" => "#93C47D",
-     "DIFFERENCE" => "#F7F700"
+        "SYSTEM GENERATED DM" => "#93C47D",
+        "DIFFERENCE\n(PROCESSED DM - SYSTEM GENERATED DM)" => "#F7F700",
+        "ADD ONS" => "#93C47D",
+        "FINAL DM\n(PROCESSED DM - ADD ONS)" => "#F7F700"
     ];
-
+    foreach ($amounts as $name => $label): 
+    // Make Difference and Final DM readonly and styled differently
+    $isReadOnly = in_array($name, ['difference', 'final_dm']) ? 'readonly style="background-color: #f1f5f9; cursor: not-allowed;"' : '';
+?>
+    <div>
+        <label class="block text-[9px] font-bold text-gray-400 uppercase"><?= $label ?></label>
+        <input type="number" step="0.01" name="<?= $name ?>" class="w-full p-1.5 border rounded-md text-xs" value="0.00" <?= $isReadOnly ?>>
+    </div>
+<?php endforeach; ?>
     // Dynamic width calculation to fit all columns perfectly on Legal Landscape (355.6 mm width)
     $pageWidth = 355.6; 
     $printableWidth = $pageWidth - 10; // Accounting for 5mm left and 5mm right margins
@@ -178,8 +188,8 @@ function createDebitMemoPDF($dm_id, $conn, $item_ids = null, $startDate = null, 
             $approved_plan_val = isset($row['approved_plan']) ? (float)$row['approved_plan'] : 0.00;
             $msf_mrc_val = isset($row['current_charges']) ? (float)$row['current_charges'] : 0.00;
 
-            $col1_val =  $msf_mrc_val - $approved_plan_val;
-            $col2_val = $dm_val - $col1_val;
+        $col1_val = max(0, $msf_mrc_val - $approved_plan_val);
+            $col2_val = max(0, $dm_val - $col1_val);
 
             // Plan Variance Column (Blue text)
             $pdf->SetTextColor(37, 99, 235);
@@ -189,6 +199,16 @@ function createDebitMemoPDF($dm_id, $conn, $item_ids = null, $startDate = null, 
             $pdf->SetTextColor(124, 58, 237);
             $pdf->Cell($w, $rowH, number_format($col2_val, 2), 1, 0, 'C');
 
+            // Add Ons Column (Orange text)
+            $add_ons_val = isset($row['add_ons']) ? (float)$row['add_ons'] : 0.00;
+            $pdf->SetTextColor(234, 88, 12); 
+            $pdf->Cell($w, $rowH, number_format($add_ons_val, 2), 1, 0, 'C');
+
+            // Final DM Column (Green text: Processed DM - Add Ons)
+            $final_dm_val = isset($row['final_dm']) ? (float)$row['final_dm'] : ($dm_val - $add_ons_val);
+            $pdf->SetTextColor(22, 163, 74); 
+            $pdf->Cell($w, $rowH, number_format($final_dm_val, 2), 1, 0, 'C');
+
             // Reset text color back to black
             $pdf->SetTextColor(0, 0, 0); 
             
@@ -196,6 +216,51 @@ function createDebitMemoPDF($dm_id, $conn, $item_ids = null, $startDate = null, 
         }
     }
     
+
+    function computeDebitMemoValues() {
+    const form = document.getElementById('addEditForm');
+    if (!form) return;
+
+    const processedDmInput = form.querySelector('input[name="debit_memo_details"]');
+    const sysGenDmInput    = form.querySelector('input[name="system_generated_dm"]');
+    const differenceInput  = form.querySelector('input[name="difference"]');
+    const addOnsInput      = form.querySelector('input[name="add_ons"]');
+    const finalDmInput     = form.querySelector('input[name="final_dm"]');
+
+    const processedDm = parseFloat(processedDmInput ? processedDmInput.value : 0) || 0;
+    const sysGenDm    = parseFloat(sysGenDmInput ? sysGenDmInput.value : 0) || 0;
+    const addOns      = parseFloat(addOnsInput ? addOnsInput.value : 0) || 0;
+
+    // 1. DIFFERENCE = (PROCESSED DM - SYSTEM GENERATED DM)
+    const difference = processedDm - sysGenDm;
+    if (differenceInput) {
+        differenceInput.value = difference.toFixed(2);
+    }
+
+    // 2. FINAL DM = (PROCESSED DM - ADD ONS)
+    const finalDm = processedDm - addOns;
+    if (finalDmInput) {
+        finalDmInput.value = finalDm.toFixed(2);
+    }
+}
+
+// Trigger calculation on input change
+document.addEventListener('input', function(e) {
+    if (e.target && ['debit_memo_details', 'system_generated_dm', 'add_ons'].includes(e.target.name)) {
+        computeDebitMemoValues();
+    }
+});
+
+// Also compute values right after editing an existing item populates the form
+const originalEditBreakdownItem = window.editBreakdownItem;
+if (typeof window.editBreakdownItem === 'function') {
+    window.editBreakdownItem = function(itemId) {
+        originalEditBreakdownItem(itemId);
+        setTimeout(computeDebitMemoValues, 200); // slight delay to allow DOM population
+    };
+}
+
+
     return [$pdf, $acc_num];
 }
 ?>

@@ -71,14 +71,20 @@ if (empty($items)) {
         $msf_mrc_val = isset($row['current_charges']) ? (float)$row['current_charges'] : 0; // Adjust database key if your MSF/MRC column has a different name
         
         // Column 1: Approved Plan - MSF (GLOBE / MRC (SMART))
-        $col1_val =   $msf_mrc_val - $approved_plan_val;
+        $col1_val =   max(0, $msf_mrc_val - $approved_plan_val);
         echo "<td class='p-2 border font-bold text-blue-600'>" . number_format($col1_val, 2) . "</td>";
 
         // Column 2: Debit Memo - Column 1
-        $col2_val = (float)$dm_val - $col1_val;
+        $col2_val = max(0,(float)$dm_val - $col1_val);
         echo "<td class='p-2 border font-bold text-purple-600'>" . number_format($col2_val, 2) . "</td>";
 
+        // NEW: Add Ons Column
+        $add_ons_val = isset($row['add_ons']) ? (float)$row['add_ons'] : 0;
+        echo "<td class='p-2 border font-bold text-orange-600'>" . number_format($add_ons_val, 2) . "</td>";
 
+        // NEW: Final DM Column (Processed DM - Add Ons)
+        $final_dm_val = isset($row['final_dm']) ? (float)$row['final_dm'] : ($dm_val - $add_ons_val);
+        echo "<td class='p-2 border font-bold text-green-600'>" . number_format($final_dm_val, 2) . "</td>";
         // ACTION COLUMN
         echo "<td class='p-2 border'>";
         
