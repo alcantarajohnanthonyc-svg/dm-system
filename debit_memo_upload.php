@@ -103,18 +103,18 @@ if (!function_exists('extract_pdf_statement_details')) {
             $result['account_number'] = trim($m[1]);
         }
 
-        // 2. Extract Mobile Number / Primary Number
-   // 2. Extract Mobile Number / Primary Number (Strictly tied to label or valid format)
+// 2. Extract Mobile Number / Primary Number (Supports both Smart and Globe PDFs)
 $result['mobile_number'] = 'N/A'; // Default value kung walang makita
 
-$phone_pattern = '/(?:Mobile\s*Number|Primary\s*Number|Mobile\s*No\.?)\s*[:|]?\s*[\r\n\s]*(\+?(?:63|0)?9\d{9}|9\d{9})/i';
+// Sinusuportahan na nito ang "Mobile Number" / "Mobile No." (Smart) at "Primary Number" (Globe) 
+// kahit may mga newline, spaces, o table symbols sa pagitan ng label at ng numero.
+$phone_pattern = '/(?:Primary\s*Number|Mobile\s*Number|Mobile\s*No\.?)\D*?(\+?(?:63|0)?9\d{9}|9\d{9})/is';
 
 if (preg_match($phone_pattern, $text, $m)) {
     $result['mobile_number'] = trim(preg_replace('/[^\d\+]+/', '', $m[1]));
 } elseif (preg_match($phone_pattern, $clean_text, $m)) {
     $result['mobile_number'] = trim(preg_replace('/[^\d\+]+/', '', $m[1]));
 }
-
         // 3. Extract Amount Due
         if (preg_match('/(?:TOTAL\s+AMOUNT\s+DUE|Amount\s+to\s+Pay)\s*(?:\(total\s+amount\s+due\))?\s*([A-Z]{3}|Php|P)?\s*([\d,\.\(\)]+)\s*(CR)?/i', $text,$m)) {
             $raw_val = trim($m[2]);

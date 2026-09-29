@@ -13,7 +13,15 @@ $dm_id = isset($_GET['dm_id']) ? intval($_GET['dm_id']) : 0;
 $start_date = isset($_GET['start']) ? $_GET['start'] : '';
 $end_date = isset($_GET['end']) ? $_GET['end'] : '';
 
-$sql = "SELECT * FROM `debit_memo_items` WHERE dm_id = :dm_id";
+$sql = "SELECT dmi.*, pdf.file_link, pdf.filename 
+        FROM `debit_memo_items` dmi 
+        JOIN debit_memos dm ON dm.dm_id = dmi.dm_id
+        LEFT JOIN pdf_extracted_details pdf ON pdf.account_number = dm.account_number 
+             AND pdf.mobile_number = dmi.mobile_number 
+             AND ABS(DATEDIFF(dmi.coverage_end, STR_TO_DATE(SUBSTRING_INDEX(pdf.billing_period, ' - ', -1), '%Y-%m-%d'))) <= 5
+        WHERE dmi.dm_id = :dm_id";
+
+
 $params = [':dm_id' => $dm_id];
 
 // Filter base sa coverage dates
@@ -36,7 +44,14 @@ if (empty($items)) {
     foreach ($items as $row) {
         $id_val = isset($row['id']) ? $row['id'] : 0;
 
-        echo "<tr class='border-b hover:bg-gray-50 text-[10px] text-center' id='row-".$id_val."'>";
+        $mobile = isset($row['mobile_number']) ? $row['mobile_number'] : '-';
+       $has_soa = !empty($row['file_link']);
+
+        // Pinalitan natin ng mas matingkad na light green (#bbf7d0) para madaling makita agad
+        $row_style = $has_soa ? "background-color: #bbf7d0 !important;" : "";
+        $row_class = $has_soa ? "border-b hover:bg-green-300 text-[10px] text-center" : "border-b hover:bg-gray-50 text-[10px] text-center";
+
+        echo "<tr class='" . $row_class . "' style='" . $row_style . "' id='row-".$id_val."'>";
         
         // Checkbox
         echo "<td class='p-2 border'><input type='checkbox' class='item-checkbox' value='".$id_val."'></td>";
@@ -46,8 +61,10 @@ if (empty($items)) {
         $end_f = isset($row['coverage_end']) ? date('M d, Y', strtotime($row['coverage_end'])) : 'N/A';
         echo "<td class='p-2 border font-bold'>" . $start_f . " to " . $end_f . "</td>";
         
-        // Mobile
-        echo "<td class='p-2 border'>" . (isset($row['mobile_number']) ? $row['mobile_number'] : '-') . "</td>";
+        // Mobile Number
+        echo "<td class='p-2 border text-center font-bold'>";
+        echo "<span>" . $mobile . "</span>";
+        echo "</td>";
         
         // Numeric Columns Mapping
         $cols = [
@@ -68,14 +85,14 @@ if (empty($items)) {
 
         // CALCULATIONS FOR NEW COLUMNS
         $approved_plan_val = isset($row['approved_plan']) ? (float)$row['approved_plan'] : 0;
-        $msf_mrc_val = isset($row['current_charges']) ? (float)$row['current_charges'] : 0; // Adjust database key if your MSF/MRC column has a different name
+        $msf_mrc_val = isset($row['current_charges']) ? (float)$row['current_charges'] : 0; 
         
         // Column 1: Approved Plan - MSF (GLOBE / MRC (SMART))
-        $col1_val =   max(0, $msf_mrc_val - $approved_plan_val);
+        $col1_val = max(0, $msf_mrc_val - $approved_plan_val);
         echo "<td class='p-2 border font-bold text-blue-600'>" . number_format($col1_val, 2) . "</td>";
 
         // Column 2: Debit Memo - Column 1
-        $col2_val = max(0,(float)$dm_val - $col1_val);
+        $col2_val = max(0, (float)$dm_val - $col1_val);
         echo "<td class='p-2 border font-bold text-purple-600'>" . number_format($col2_val, 2) . "</td>";
 
         // NEW: Add Ons Column
@@ -85,20 +102,33 @@ if (empty($items)) {
         // NEW: Final DM Column (Processed DM - Add Ons)
         $final_dm_val = isset($row['final_dm']) ? (float)$row['final_dm'] : ($dm_val - $add_ons_val);
         echo "<td class='p-2 border font-bold text-green-600'>" . number_format($final_dm_val, 2) . "</td>";
+        
+        // Huling Column para sa Status (WITH SOA o Blank)
+      echo "<td class='p-2 border text-center font-bold text-xs'>";
+        if ($has_soa) {$file_link = htmlspecialchars($row['file_link']);$filename = !empty($row['filename']) ? htmlspecialchars($row['filename']) : 'View SOA File';
+            echo "<a href='" . $file_link . "' target='_blank' class='text-green-700 font-extrabold underline hover:text-green-900' title='" . $filename . "'>WITH SOA</a>";
+        } else {
+            echo ""; // Blank kapag walang match o walang file link
+        }
+        echo "</td>";
+
         // ACTION COLUMN
         echo "<td class='p-2 border'>";
-        
+        echo "<div class='flex items-center justify-center gap-4'>"; 
+
         // Only show the Edit button to Admin/Superadmin
         if ($_SESSION['role'] === 'superadmin' || $_SESSION['role'] === 'admin') {
-            echo "<button type='button' onclick='editBreakdownItem(" . $id_val . ")' class='text-blue-600 hover:text-blue-800 text-lg'>";
+            echo "<button type='button' onclick='editBreakdownItem(" . $id_val . ")' class='text-blue-600 hover:text-blue-800 text-2xl' title='Edit Record'>";
             echo "<i class='las la-pencil-alt'></i>";
             echo "</button>";
         } else {
             // Visual indicator for non-admins
-            echo "<span class='text-gray-300'>-</span>";
+            echo "<span class='text-gray-300 text-xl'>-</span>";
         }
+
+        echo "</div>";
         echo "</td>";
-        echo "</tr>";
+        echo "</tr>"; 
     }
 }
 ?>

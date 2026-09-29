@@ -113,76 +113,119 @@ try {
             . '</div></body></html>';
     }
 
-    function send_smtp_mail_with_html_body($to, $subject, $filepath, $filename, $html_content, $cc = '', $extra_attachment_path = '', $extra_attachment_name = '') {
-        $smtp_host = 'tcp://smtp.gmail.com'; $smtp_port = 587;                    
-        $smtp_user = 'jcalcantara@bounty.com.ph';
-        $smtp_pass = str_replace(' ', '', 'kowg yhnc dryb uumq'); $boundary = md5(time());
+   function send_smtp_mail_with_html_body($to, $subject, $filepath, $filename, $html_content, $cc = '', $extra_attachment_path = '', $extra_attachment_name = '') {
+    $smtp_host = 'tcp://smtp.gmail.com'; 
+    $smtp_port = 587;                    
+    
+    // 1. Credentials para sa SMTP Authentication (Kasalukuyang gumaganang account mo)
+    $auth_user = 'jcalcantara@bounty.com.ph';
+    $auth_pass = str_replace(' ', '', 'kowg yhnc dryb uumq'); 
 
-        $headers  = "MIME-Version: 1.0\r\nFrom: IT Telco Admin <{$smtp_user}>\r\nTo: {$to}\r\n";
-        if (!empty($cc)) {
-            $headers .= "Cc: {$cc}\r\n";
-        }
-        $headers .= "Subject: {$subject}\r\nContent-Type: multipart/mixed; boundary=\"{$boundary}\"\r\n\r\n";
-        
-        $body  = "--{$boundary}\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n{$html_content}\r\n\r\n";
-        
-        if (!empty($filepath) && file_exists($filepath) && filesize($filepath) > 100) {
-            $pdfData = chunk_split(base64_encode(file_get_contents($filepath)));
-            $body .= "--{$boundary}\r\nContent-Type: application/pdf; name=\"{$filename}\"\r\nContent-Transfer-Encoding: base64\r\nContent-Disposition: attachment; filename=\"{$filename}\"\r\n\r\n{$pdfData}\r\n\r\n";
-        }
+    // 2. Sender Details na gustong ipatampok bilang Sender
+    $from_email = 'testgrp@bounty.com.ph';
+    $from_name  = 'Admin Telco';
 
-        if (!empty($extra_attachment_path) && file_exists($extra_attachment_path)) {
-            $extraData = chunk_split(base64_encode(file_get_contents($extra_attachment_path)));
-            $exName = !empty($extra_attachment_name) ? $extra_attachment_name : basename($extra_attachment_path);
-            $body .= "--{$boundary}\r\nContent-Type: text/csv; name=\"{$exName}\"\r\nContent-Transfer-Encoding: base64\r\nContent-Disposition: attachment; filename=\"{$exName}\"\r\n\r\n{$extraData}\r\n\r\n";
-        }
+    $boundary = md5(time());
 
-        $body .= "--{$boundary}--";
-
-        $socket = @fsockopen($smtp_host, $smtp_port, $errno, $errstr, 15);
-        if (!is_resource($socket)) return "Connection failed: $errstr";
-        fgets($socket, 512);
-        $run_cmd = function($cmd, $code) use ($socket) {
-            fwrite($socket, $cmd . "\r\n");
-            $res = ''; while ($s = fgets($socket, 512)) { $res .= $s; if (substr($s, 3, 1) == ' ') break; }
-            return (substr($res, 0, 3) == $code);
-        };
-        if (!$run_cmd("EHLO " . $_SERVER['SERVER_NAME'], 250) || !$run_cmd("STARTTLS", 220)) return "TLS handshake error";
-        stream_socket_enable_crypto($socket, true, STREAM_CRYPTO_METHOD_TLS_CLIENT);
-        
-        if (!$run_cmd("EHLO " . $_SERVER['SERVER_NAME'], 250) || !$run_cmd("AUTH LOGIN", 334) || !$run_cmd(base64_encode($smtp_user), 334) || !$run_cmd(base64_encode($smtp_pass), 235) || !$run_cmd("MAIL FROM: <{$smtp_user}>", 250)) return "SMTP Auth/Command error";
-        
-        $to_emails = explode(',', $to);
-        foreach ($to_emails as $to_email) {
-            $to_email = trim($to_email);
-            if (!empty($to_email)) {
-                @$run_cmd("RCPT TO: <{$to_email}>", 250);
-            }
-        }
-        
-        if (!empty($cc)) {
-            $cc_emails = explode(',', $cc);
-            foreach ($cc_emails as $cc_email) {
-                $cc_email = trim($cc_email);
-                if (!empty($cc_email)) {
-                    @$run_cmd("RCPT TO: <{$cc_email}>", 250);
-                }
-            }
-        }
-
-        if (!$run_cmd("DATA", 354)) return "DATA command error";
-        
-        fwrite($socket, $headers . "\r\n" . $body . "\r\n.\r\n");
-        $result = fgets($socket, 512); $run_cmd("QUIT", 221);
-        fclose($socket);
-        return (substr($result, 0, 3) == '250') ? true : "Failed: " . trim($result);
+    $headers  = "MIME-Version: 1.0\r\n";
+    $headers .= "From: {$from_name} <{$from_email}>\r\n";
+    $headers .= "Reply-To: {$from_name} <{$from_email}>\r\n";
+    $headers .= "To: {$to}\r\n";
+    
+    if (!empty($cc)) {
+        $headers .= "Cc: {$cc}\r\n";
+    }
+    
+    $headers .= "Subject: {$subject}\r\n";
+    $headers .= "Content-Type: multipart/mixed; boundary=\"{$boundary}\"\r\n\r\n";
+    
+    $body  = "--{$boundary}\r\n";
+    $body .= "Content-Type: text/html; charset=UTF-8\r\n\r\n";
+    $body .= "{$html_content}\r\n\r\n";
+    
+    if (!empty($filepath) && file_exists($filepath) && filesize($filepath) > 100) {
+        $pdfData = chunk_split(base64_encode(file_get_contents($filepath)));
+        $body .= "--{$boundary}\r\n";
+        $body .= "Content-Type: application/pdf; name=\"{$filename}\"\r\n";
+        $body .= "Content-Transfer-Encoding: base64\r\n";
+        $body .= "Content-Disposition: attachment; filename=\"{$filename}\"\r\n\r\n";
+        $body .= "{$pdfData}\r\n\r\n";
     }
 
-  function send_dispatch_report_to_admin($all_results_items) {
+    if (!empty($extra_attachment_path) && file_exists($extra_attachment_path)) {
+        $extraData = chunk_split(base64_encode(file_get_contents($extra_attachment_path)));
+        $exName = !empty($extra_attachment_name) ? $extra_attachment_name : basename($extra_attachment_path);
+        $body .= "--{$boundary}\r\n";
+        $body .= "Content-Type: text/csv; name=\"{$exName}\"\r\n";
+        $body .= "Content-Transfer-Encoding: base64\r\n";
+        $body .= "Content-Disposition: attachment; filename=\"{$exName}\"\r\n\r\n";
+        $body .= "{$extraData}\r\n\r\n";
+    }
+
+    $body .= "--{$boundary}--";
+
+    $socket = @fsockopen($smtp_host, $smtp_port, $errno, $errstr, 15);
+    if (!is_resource($socket)) return "Connection failed: $errstr";
+    
+    fgets($socket, 512);
+    
+    $run_cmd = function($cmd, $code) use ($socket) {
+        fwrite($socket, $cmd . "\r\n");
+        $res = ''; 
+        while ($s = fgets($socket, 512)) { 
+            $res .= $s; 
+            if (substr($s, 3, 1) == ' ') break; 
+        }
+        return (substr($res, 0, 3) == $code);
+    };
+
+    if (!$run_cmd("EHLO " . $_SERVER['SERVER_NAME'], 250) || !$run_cmd("STARTTLS", 220)) return "TLS handshake error";
+    
+    stream_socket_enable_crypto($socket, true, STREAM_CRYPTO_METHOD_TLS_CLIENT);
+    
+    // Gagamitin ang $auth_user at $auth_pass para maka-pass sa login ng Gmail
+    if (!$run_cmd("EHLO " . $_SERVER['SERVER_NAME'], 250) || 
+        !$run_cmd("AUTH LOGIN", 334) || 
+        !$run_cmd(base64_encode($auth_user), 334) || 
+        !$run_cmd(base64_encode($auth_pass), 235) || 
+        !$run_cmd("MAIL FROM: <{$from_email}>", 250)) {
+        return "SMTP Auth/Command error";
+    }
+    
+    $to_emails = explode(',', $to);
+    foreach ($to_emails as $to_email) {
+        $to_email = trim($to_email);
+        if (!empty($to_email)) {
+            @$run_cmd("RCPT TO: <{$to_email}>", 250);
+        }
+    }
+    
+    if (!empty($cc)) {
+        $cc_emails = explode(',', $cc);
+        foreach ($cc_emails as $cc_email) {
+            $cc_email = trim($cc_email);
+            if (!empty($cc_email)) {
+                @$run_cmd("RCPT TO: <{$cc_email}>", 250);
+            }
+        }
+    }
+
+    if (!$run_cmd("DATA", 354)) return "DATA command error";
+    
+    fwrite($socket, $headers . "\r\n" . $body . "\r\n.\r\n");
+    $result = fgets($socket, 512); 
+    $run_cmd("QUIT", 221);
+    fclose($socket);
+
+    return (substr($result, 0, 3) == '250') ? true : "Failed: " . trim($result);
+}
+
+function send_dispatch_report_to_admin($all_results_items) {
     if (empty($all_results_items)) return;
     global $pdo;
 
     $admin_emails = [];
+    $sender_fullname = isset($_SESSION['full_name']) ? $_SESSION['full_name'] : 'System Admin';
 
     if (isset($pdo)) {
         try {
@@ -198,11 +241,10 @@ try {
                 }
             }
         } catch (Exception $e) {
-            // Error handling kung kinakailangan
+            // Error handling
         }
     }
     
-    // Kung walang nahanap sa database para sa statement_dispatch, huwag nang magpatuloy
     if (empty($admin_emails)) {
         return;
     }
@@ -215,7 +257,8 @@ try {
     $csv_filepath = sys_get_temp_dir() . '/' . $csv_filename;
     
     $fp = fopen($csv_filepath, 'w');
-    fputcsv($fp, ['Timestamp', 'Status', 'Account Number', 'Telco', 'Mobile Number', 'Email', 'Billing Period', 'Total Charge', 'Filename', 'PDF Link', 'Message']);
+    // 1. Dinagdag ang 'Sent By' pagkatapos ng 'PDF Link' sa CSV headers
+    fputcsv($fp, ['Timestamp', 'Status', 'Account Number', 'Telco', 'Mobile Number', 'Email', 'Billing Period', 'Total Charge', 'Filename', 'PDF Link', 'Sent By', 'Message']);
     
     foreach ($all_results_items as $item) {
         fputcsv($fp, [
@@ -229,6 +272,7 @@ try {
             $item['total_charge'],
             $item['filename'],
             $item['file_link'],
+            $sender_fullname, // Nilagyan ng session full name value
             $item['message']
         ]);
     }
@@ -237,10 +281,11 @@ try {
     $html_body  = '<!DOCTYPE html><html><body style="font-family: Arial, sans-serif; color: #333333; line-height: 1.5; padding: 20px;">';
     $html_body .= '<p style="font-size: 14px; margin-bottom: 15px;">Good day Ma\'am/Sir,</p>';
     $html_body .= '<h2 style="color: #2563eb;">Statement Email Dispatch Report</h2>';
-    $html_body .= '<p>Here is the summary of the email dispatches conducted on <strong>' . htmlspecialchars($current_date) . '</strong>. Attached to this email is a CSV file containing the full details of successful and failed items.</p>';
+    $html_body .= '<p>Here is the summary of the email dispatches conducted on <strong>' . htmlspecialchars($current_date) . '</strong> by <strong>' . htmlspecialchars($sender_fullname) . '</strong>. Attached to this email is a CSV file containing the full details.</p>';
 
     $html_body .= '<table border="1" cellpadding="8" cellspacing="0" style="border-collapse: collapse; width: 100%; font-size: 11px; margin-top: 15px;">';
-    $html_body .= '<tr style="background-color: #f3f4f6;"><th>Status</th><th>Date</th><th>Account</th><th>Telco</th><th>Mobile Number</th><th>Email</th><th>Billing Period</th><th>Total Charge</th><th>Filename (Link)</th></tr>';
+    // 2. Dinagdag ang 'Sent By' column header sa HTML table pagkatapos ng Filename (Link)
+    $html_body .= '<tr style="background-color: #f3f4f6;"><th>Status</th><th>Date</th><th>Account</th><th>Telco</th><th>Mobile Number</th><th>Email</th><th>Billing Period</th><th>Total Charge</th><th>Filename (Link)</th><th>Sent By</th></tr>';
 
     foreach ($all_results_items as $item) {
         $status_color = ($item['status'] === 'success') ? 'color: #059669; font-weight: bold;' : 'color: #dc2626; font-weight: bold;';
@@ -263,13 +308,20 @@ try {
         $html_body .= '<td>' . htmlspecialchars($item['billing_period']) . '</td>';
         $html_body .= '<td style="font-weight: bold; text-align: right;">' . htmlspecialchars($item['total_charge']) . '</td>';
         $html_body .= '<td>' . $filename_html . '</td>';
+        $html_body .= '<td>' . htmlspecialchars($sender_fullname) . '</td>'; // Column value para sa Sent By
         $html_body .= '</tr>';
     }
     $html_body .= '</table>';
     $html_body .= '<p style="margin-top: 20px; font-size: 11px; color: #666;">This is an automated system report with attached CSV log.</p>';
     $html_body .= '</body></html>';
 
-    send_smtp_mail_with_html_body($admin_email_str, $subject, '', '', $html_body, '', $csv_filepath, $csv_filename);
+    // 3. Loop sending email para sa bawat admin recipient sa halip na sabay-sabay gamit ang iisang comma-separated string kung nais mong i-loop isa-isa
+    foreach ($admin_emails as $single_admin_email) {
+        $single_admin_email = trim($single_admin_email);
+        if (!empty($single_admin_email)) {
+            send_smtp_mail_with_html_body($single_admin_email, $subject, '', '', $html_body, '', $csv_filepath, $csv_filename);
+        }
+    }
     
     if (file_exists($csv_filepath)) {
         @unlink($csv_filepath);

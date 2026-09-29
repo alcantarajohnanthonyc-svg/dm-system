@@ -11,7 +11,7 @@ if (!isset($_SESSION['user_id'])) {
     exit;
 }
 
-session_start();
+
 require_once 'config.php';
 
 
@@ -46,15 +46,24 @@ $offset = ($page - 1) * $limit;
 
 // 2. Build Unified Subquery (Strict Inclusion)
 // Using >= and <= ensures only items within the specific range are summed
-$filteredSubQuery = "SELECT dm_id, 
-                            GROUP_CONCAT(DISTINCT carrier_name SEPARATOR '|') as carrier_names, 
-                            MIN(coverage_start) as start_date, 
-                            MAX(coverage_end) as end_date, 
-                            SUM(CAST(debit_memo_details AS DECIMAL(10,2))) as filtered_total
-                     FROM `debit_memo_items`
-                     WHERE coverage_start >= :where_start 
-                       AND coverage_end <= :where_end
-                     GROUP BY dm_id";
+$filteredSubQuery = "SELECT dmi.dm_id, 
+                            GROUP_CONCAT(DISTINCT dmi.carrier_name SEPARATOR '|') as carrier_names, 
+                            MIN(dmi.coverage_start) as start_date, 
+                            MAX(dmi.coverage_end) as end_date, 
+                            SUM(CAST(dmi.debit_memo_details AS DECIMAL(10,2))) as filtered_total,
+                            MIN(
+                                EXISTS (
+                                    SELECT 1 FROM pdf_extracted_details pdf 
+                                    JOIN debit_memos dm ON pdf.account_number = dm.account_number
+                                    WHERE dm.dm_id = dmi.dm_id 
+                                      AND pdf.mobile_number = dmi.mobile_number 
+                                      AND ABS(DATEDIFF(dmi.coverage_end, STR_TO_DATE(SUBSTRING_INDEX(pdf.billing_period, ' - ', -1), '%Y-%m-%d'))) <= 5
+                                )
+                            ) as has_soa
+                     FROM `debit_memo_items` dmi
+                     WHERE dmi.coverage_start >= :where_start 
+                       AND dmi.coverage_end <= :where_end
+                     GROUP BY dmi.dm_id";
 
 $params = [
     'where_start' => $eff_start,
@@ -116,10 +125,9 @@ $sort_map = [
 $order_col = isset($sort_map[$sort_by]) ? $sort_map[$sort_by] : 'dm.created_at';
 
 // 2. Update your Main Query
-$sql = "SELECT dm.*, sub.carrier_names, sub.start_date, sub.end_date, sub.filtered_total as sum_debit_memo_details
+$sql = "SELECT dm.*, sub.carrier_names, sub.start_date, sub.end_date, sub.filtered_total as sum_debit_memo_details, sub.has_soa
         FROM `debit_memos` AS dm
-        INNER JOIN ($filteredSubQuery) AS sub ON dm.dm_id = sub.dm_id
-        $whereClause";
+        INNER JOIN ($filteredSubQuery) AS sub ON dm.dm_id = sub.dm_id$whereClause";
 
 if ($carrier !== '') {
     $sql .= " AND sub.carrier_names LIKE :carrier";
@@ -157,60 +165,72 @@ ob_start();
 
     <div class="bg-white p-2 rounded-lg shadow-sm border border-gray-100 mb-0">
         <form method="GET" action="" class="flex flex-col md:flex-row gap-3 items-center justify-between">
-          <div class="flex gap-1">
-        <?php if ($_SESSION['role'] === 'superadmin' || $_SESSION['role'] === 'admin'): ?>
-            <button type="button" onclick="openAddEditModal(activeDmId || '')" class="px-3 py-1.5 bg-indigo-50 text-indigo-700 border border-indigo-200 rounded-md text-[10px] font-bold hover:bg-indigo-100">
-                <i class="las la-plus mr-1"></i> Add
-            </button>
-            <button type="button" onclick="window.location.href='import_dm.php'" class="px-3 py-1.5 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-md text-[10px] font-bold hover:bg-emerald-100">
-                <i class="las la-file-import mr-1"></i> Import
-            </button>
-        <?php endif; ?>
+          
+            <!-- Gear Icon Action Dropdown Menu -->
+            <div class="relative inline-block text-left">
+                <button type="button" onclick="toggleMainGearDropdown(event)" class="px-3 py-1.5 bg-slate-100 text-slate-700 border border-slate-300 rounded-md text-[10px] font-bold hover:bg-slate-200 flex items-center gap-1">
+                    <i class="las la-cog text-base"></i> Actions
+                </button>
 
-      <button type="button" onclick="bulkExportPDF()" class="px-3 py-1.5 bg-rose-50 text-rose-700 border border-rose-200 rounded-md text-[10px] font-bold hover:bg-rose-100">
-      <i class="las la-file-export mr-1"></i> Export
-  </button>
-    
-        <button type="button" 
-                onclick="document.getElementById('pasteExportModal').classList.remove('hidden')" 
-                class="px-3 py-1.5 bg-blue-50 text-blue-700 border border-blue-200 rounded-md text-[10px] font-bold hover:bg-blue-100">
-            <i class="las la-clipboard-list mr-1"></i> Paste Exp
-        </button>
+                <div id="mainGearDropdown" class="hidden absolute left-0 mt-1 w-44 bg-white border border-gray-200 rounded-md shadow-lg z-50 py-1">
+                    <?php if ($_SESSION['role'] === 'superadmin' || $_SESSION['role'] === 'admin'): ?>
+                        <button type="button" onclick="openAddEditModal(activeDmId || ''); closeMainGearDropdown();" class="w-full text-left px-4 py-2 text-xs text-indigo-700 hover:bg-indigo-50 flex items-center">
+                            <i class="las la-plus mr-2 text-sm"></i> Add
+                        </button>
+                        <button type="button" onclick="window.location.href='import_dm.php'" class="w-full text-left px-4 py-2 text-xs text-emerald-700 hover:bg-emerald-50 flex items-center">
+                            <i class="las la-file-import mr-2 text-sm"></i> Import
+                        </button>
+                    <?php endif; ?>
 
-        <?php if ($_SESSION['role'] === 'superadmin'): ?>
-        <button type="button" onclick="deleteSelected()" class="px-3 py-1.5 bg-red-50 text-red-700 border border-red-200 rounded-md text-[10px] font-bold hover:bg-red-100">
-            <i class="las la-trash mr-1"></i> Delete Selected
-        </button>
-    <?php endif; ?>
+                    <button type="button" onclick="bulkExportPDF(); closeMainGearDropdown();" class="w-full text-left px-4 py-2 text-xs text-rose-700 hover:bg-rose-50 flex items-center">
+                        <i class="las la-file-export mr-2 text-sm"></i> Export
+                    </button>
+                
+                    <button type="button" onclick="document.getElementById('pasteExportModal').classList.remove('hidden'); closeMainGearDropdown();" class="w-full text-left px-4 py-2 text-xs text-blue-700 hover:bg-blue-50 flex items-center">
+                        <i class="las la-clipboard-list mr-2 text-sm"></i> Paste Exp
+                    </button>
+
+                    <!-- Send Email Action Added Before Delete Selected -->
+                    <button type="button" onclick="sendEmailSelected(); closeMainGearDropdown();" class="w-full text-left px-4 py-2 text-xs text-amber-700 hover:bg-amber-50 flex items-center">
+                        <i class="las la-envelope mr-2 text-sm"></i> Send Email
+                    </button>
+
+                    <?php if ($_SESSION['role'] === 'superadmin'): ?>
+                        <button type="button" onclick="deleteSelected(); closeMainGearDropdown();" class="w-full text-left px-4 py-2 text-xs text-red-700 hover:bg-red-50 flex items-center">
+                            <i class="las la-trash mr-2 text-sm"></i> Delete Selected
+                        </button>
+                    <?php endif; ?>
+                </div>
+            </div>
+
+            <!-- Search and Filter Section -->
+            <div class="flex gap-1 w-full md:w-auto items-center">
+                <input type="text" name="search" value="<?= htmlspecialchars($search) ?>" class="px-2 py-1.5 border rounded-md text-[10px] w-full md:w-55 bg-gray-50" placeholder="Search by mobile number or details...">
+
+                <div class="flex items-center gap-1">
+                    <input type="date" name="start_date" value="<?= htmlspecialchars($start_date) ?>" class="px-2 py-1.5 border rounded-md text-[10px] bg-gray-50">
+                    <span class="text-[9px] font-bold text-gray-400">TO</span>
+                    <input type="date" name="end_date" value="<?= htmlspecialchars($end_date) ?>" class="px-2 py-1.5 border rounded-md text-[10px] bg-gray-50">
+                </div>
+
+                <!-- Dropdown for Search Field Selection -->
+                <select name="search_by" class="px-1 py-1.5 border rounded-md text-[10px] bg-gray-50">
+                    <option value="all" <?= (isset($search_by) && $search_by == 'all') ? 'selected' : '' ?>>All Fields</option>
+                    <option value="account_number" <?= (isset($search_by) && $search_by == 'account_number') ? 'selected' : '' ?>>Account Number</option>
+                    <option value="company" <?= (isset($search_by) && $search_by == 'company') ? 'selected' : '' ?>>Company</option>
+                    <option value="carrier" <?= (isset($search_by) && $search_by == 'carrier') ? 'selected' : '' ?>>Carrier</option>
+                    <option value="phone_number" <?= (isset($search_by) && $search_by == 'phone_number') ? 'selected' : '' ?>>Phone Number</option>
+                </select>
+
+                <button type="submit" class="bg-slate-800 text-white px-3 py-1.5 rounded-md text-[10px] font-bold hover:bg-slate-900">Apply</button>
+                
+                <a href="list_dm.php" title="Reset Filters" class="px-2 py-1.5 bg-gray-100 text-gray-600 border border-gray-300 rounded-md text-[10px] font-bold hover:bg-gray-200 flex items-center">
+                    <i class="las la-redo-alt text-base"></i>
+                </a>
+            </div>
+        </form>
     </div>
-
-<div class="flex gap-1 w-full md:w-auto items-center">
-    <input type="text" name="search" value="<?= htmlspecialchars($search) ?>" class="px-2 py-1.5 border rounded-md text-[10px] w-full md:w-55 bg-gray-50" placeholder="Search by mobile number or details...">
-
-    <div class="flex items-center gap-1">
-        <input type="date" name="start_date" value="<?= htmlspecialchars($start_date) ?>" class="px-2 py-1.5 border rounded-md text-[10px] bg-gray-50">
-        <span class="text-[9px] font-bold text-gray-400">TO</span>
-        <input type="date" name="end_date" value="<?= htmlspecialchars($end_date) ?>" class="px-2 py-1.5 border rounded-md text-[10px] bg-gray-50">
-    </div>
-
-<!-- Dropdown for Search Field Selection -->
-        <select name="search_by" class="px-1 py-1.5 border rounded-md text-[10px] bg-gray-50">
-            <option value="all" <?= (isset($search_by) && $search_by == 'all') ? 'selected' : '' ?>>All Fields</option>
-            <option value="account_number" <?= (isset($search_by) && $search_by == 'account_number') ? 'selected' : '' ?>>Account Number</option>
-            <option value="company" <?= (isset($search_by) && $search_by == 'company') ? 'selected' : '' ?>>Company</option>
-            <option value="carrier" <?= (isset($search_by) && $search_by == 'carrier') ? 'selected' : '' ?>>Carrier</option>
-            <option value="phone_number" <?= (isset($search_by) && $search_by == 'phone_number') ? 'selected' : '' ?>>Phone Number</option>
-        </select>
-
-    <button type="submit" class="bg-slate-800 text-white px-3 py-1.5 rounded-md text-[10px] font-bold hover:bg-slate-900">Apply</button>
-    
-    <a href="list_dm.php" title="Reset Filters" class="px-2 py-1.5 bg-gray-100 text-gray-600 border border-gray-300 rounded-md text-[10px] font-bold hover:bg-gray-200 flex items-center">
-        <i class="las la-redo-alt text-base"></i>
-    </a>
 </div>
-    </form>
-</div>
-
 
 <div class="flex flex-wrap justify-between items-center my-0 gap-0 bg-white p-1 rounded-lg border border-gray-100 shadow-sm">
     
@@ -306,7 +326,7 @@ $base_query = http_build_query($current_params);
             PROCESSED DM &uarr;&darr;
         </th>
 
-
+         <th class="py-3 px-2 sticky top-0 bg-gray-50 z-10 text-center">SOA</th>
         
         <th class="pr-3 py-3 sticky top-0 bg-gray-50 z-10 text-center">Actions</th>
     </tr>
@@ -379,7 +399,13 @@ function getCarrierBadge($carrierName) {
         echo '₱' . number_format($total, 2); 
     ?>
 </td>
-        
+     <td class="py-3 px-4 text-center">
+    <?php if (isset($row['has_soa']) && $row['has_soa'] == 1): ?>
+        <span class="px-2 py-0.5 rounded text-[9px] font-bold bg-green-100 text-green-700 border border-green-200">WITH SOA</span>
+    <?php else: ?>
+        <span class="px-2 py-0.5 rounded text-[9px] font-bold bg-gray-100 text-gray-500 border border-gray-200">-</span>
+    <?php endif; ?>
+</td>   
 <td class="pr-6 py-3 text-center">
     <div class="flex items-center justify-center gap-4">
         <button type="button" 
@@ -418,7 +444,10 @@ function getCarrierBadge($carrierName) {
                         <i class="las la-trash mr-1"></i> DELETE SELECTED
                     </button>
                 <?php endif; ?>
-                
+                <button type="button" onclick="downloadBothFiles()" class="px-3 py-1.5 bg-amber-50 text-amber-700 border border-amber-200 rounded-md text-[10px] font-bold hover:bg-amber-100">
+            <i class="las la-envelope mr-1"></i> Download Both (PDF & Excel)
+        </button>
+
                 <button type="button" onclick="exportSelectedItems()" class="bg-green-600 text-white px-4 py-2 rounded text-xs font-bold hover:bg-green-700">
                     EXPORT SELECTED
                 </button>
@@ -475,6 +504,8 @@ function getCarrierBadge($carrierName) {
     <br>
     <span class="text-[9px] font-normal">(PROCESSED DM - ADD ONS)</span>
 </th>
+<th class="p-2 border border-gray-300 whitespace-normal text-center" style="background-color: #93C47D;">SOA</th>
+
                 <th class="p-2 border border-gray-300 text-center">ACTION</th>
             </tr>
         </thead>
@@ -563,97 +594,7 @@ function submitPasteExport(type) {
 }
 </script>
 
-<div id="addEditModal" class="hidden fixed inset-0 bg-gray-600 bg-opacity-50 flex items-center justify-center z-50">
-    <div class="bg-white rounded-lg shadow-xl w-full max-w-5xl p-6 max-h-[90vh] overflow-y-auto">
-     <h3 id="modalFormTitle" class="font-bold text-xl">Add Debit Memo Item</h3>
-        
-<form id="addEditForm" method="POST" action="save_record.php" novalidate>
-<input type="hidden" id="form_dm_id" name="id" value="">
 
-            <div class="grid grid-cols-1 sm:grid-cols-3 md:grid-cols-5 gap-4 mb-6 bg-gray-50 p-4 rounded-md">
-                <div>
-                    <label class="block text-[10px] font-bold text-gray-500 uppercase">Account #</label>
-                   <input type="text" name="account_number" list="acc_list" 
-       class="w-full p-2 border rounded-md text-xs" 
-       onchange="fetchAccountDetails(this.value)" 
-       onblur="fetchAccountDetails(this.value)"
-       placeholder="Search/Select..." required>
-                    <div id="accFeedback" class="text-[9px] font-bold mt-1" placeholder="Select/Type..."></div>
-                </div>
-                <div>
-                    <label class="block text-[10px] font-bold text-gray-500 uppercase">Company</label>
-                    <input type="text" name="company" class="w-full p-2 border rounded-md text-xs" required>
-                </div>
-                <div>
-                    <label class="block text-[10px] font-bold text-gray-500 uppercase">Assignee</label>
-                    <input type="text" name="assignee" class="w-full p-2 border rounded-md text-xs">
-                </div>
-                <div>
-                    <label class="block text-[10px] font-bold text-gray-500 uppercase">Mobile #</label>
-                    <input type="text" name="mobile_number" class="w-full p-2 border rounded-md text-xs" required>
-                </div>
-                <div>
-                    <label class="block text-[10px] font-bold text-gray-500 uppercase">Carrier</label>
-                    <input type="text" name="carrier" list="carrier_input" class="w-full p-2 border rounded-md text-xs" required>
-                </div>
-            </div>
-
-            <div class="grid grid-cols-2 gap-4 mb-6">
-                <div><label class="block text-[10px] font-bold text-gray-500 uppercase">Start Date</label><input type="date" name="coverage_start" class="w-full p-2 border rounded-md text-xs" required></div>
-                <div><label class="block text-[10px] font-bold text-gray-500 uppercase">End Date</label><input type="date" name="coverage_end" class="w-full p-2 border rounded-md text-xs" required></div>
-            </div>
-
-            <div class="grid grid-cols-3 md:grid-cols-6 gap-3 border-t pt-4">
-                <?php 
-                $amounts = [
-                    'approve_plan' => 'Approved Plan',
-                    'phone_amort' => 'Phone Amortization', 
-                    'debit_adj' => 'Debit Adj',
-                    'credit_adj' => 'Credit Adj',
-                    'other_charges' => 'Other Charges', 
-                    'local' => 'Local(Call/Text)',
-                    'ndd' => 'NDD (NATIONAL)', 
-                    'idd' => 'IDD (INTERNATIONAL)', 
-                    'roam' => 'Roam', 
-                    'sms' => 'SMS',
-                    'gprs' => 'GPRS',
-                    'wiz_usage' => 'Wiz Usage', 
-                    'loading' => 'Loading CAHRGES',
-                   'vat' => 'VAT', 
-                   'oct' => 'Overseas communication Tax',
-                    'current_charges' => 'Current Charges', 
-                    'total_amount_due' => 'TTotal Amount Due', 
-                   'debit_memo_details'   => 'PROCESSED DM',
-    'system_generated_dm'  => 'System Generated DM',
-    'difference'           => 'Difference<br><span class="text-[9px] font-normal">(Processed - System)</span>',
-    'add_ons'              => 'Add Ons',          
-    'final_dm'             => 'Final DM<br><span class="text-[9px] font-normal">(Processed - Add Ons)</span>'
-                ];
-
-
-               foreach ($amounts as $name => $label): 
-    // Gawing readonly ang Difference at Final DM para hindi ma-typean nang manu-mano
-    $isReadOnly = in_array($name, ['difference', 'final_dm']) ? 'readonly style="background-color: #f1f5f9; cursor: not-allowed;"' : '';
-?>
-    <div>
-        <label class="block text-[9px] font-bold text-gray-400 uppercase"><?= $label ?></label>
-        <input type="number" step="0.01" name="<?= $name ?>" class="w-full p-1.5 border rounded-md text-xs" value="0.00" <?= $isReadOnly ?>>
-    </div>
-<?php endforeach; ?>
-            </div>
-
-          <div class="flex justify-center items-center gap-6 mt-8 border-t pt-6">
-    <button type="button" onclick="closeModal()" 
-            class="px-8 py-2 bg-gray-200 rounded-md text-xs font-bold hover:bg-gray-300 transition">
-            CANCEL
-    </button>
-    <button type="submit" 
-            class="px-8 py-2 bg-slate-800 text-white rounded-md text-xs font-bold hover:bg-slate-900 shadow-md transition">
-            SAVE ITEM
-    </button>
-</div>
-        </form>
-    </div>
 </div><div id="addEditModal" class="hidden fixed inset-0 bg-gray-600 bg-opacity-50 flex items-center justify-center z-50">
     <div class="bg-white rounded-lg shadow-xl w-full max-w-5xl p-6 max-h-[90vh] overflow-y-auto">
      <h3 id="modalFormTitle" class="font-bold text-xl">Add Debit Memo Item</h3>
@@ -772,6 +713,9 @@ function submitPasteExport(type) {
         </div>
     </div>
 </div>
+
+
+
 <script>
 
 ///EXPORT
@@ -1243,14 +1187,14 @@ function openAddEditModal(dm_id = '') {
 function editBreakdownItem(itemId) {
     hasChanges = true;
     fetch('get_item_data.php?id=' + itemId)
-    .then(res => res.text()) // First read as text to debug what is actually returning
+    .then(res => res.text())
     .then(text => {
         let data;
         try {
             data = JSON.parse(text);
         } catch (e) {
             console.error("Server returned invalid JSON:", text);
-            alert("Error: get_item_data.php did not return valid JSON. Check console for details.");
+            alert("Error: get_item_data.php did not return valid JSON.");
             return;
         }
 
@@ -1286,9 +1230,9 @@ function editBreakdownItem(itemId) {
             'current_charges': data.current_charges,
             'total_amount_due': data.total_amount_due,
             'debit_memo_details': data.debit_memo_details,
-            'add_ons': data.add_ons,          // Added mapping
-            'final_dm': data.final_dm         // Added mapping
-
+            'system_generated_dm': data.system_generated_dm, // <-- IDAGDAG ITO
+            'add_ons': data.add_ons,          
+            'final_dm': data.final_dm         
         };
 
         for (const [name, value] of Object.entries(mappings)) {
@@ -1303,6 +1247,9 @@ function editBreakdownItem(itemId) {
         accInput.readOnly = true;
 
         document.getElementById('addEditModal').classList.remove('hidden');
+
+        // Tawagin agad ang computation para mapuno ang mga computed fields pagka-load
+        calculateEditModalValues();
     })
     .catch(err => console.error("Fetch Error:", err));
 }
@@ -1419,6 +1366,186 @@ if (typeof existingEditFunc === 'function') {
         existingEditFunc(itemId);
         setTimeout(computeModalValues, 250); // slight delay para ma-load muna ang data sa inputs
     };
+}
+
+// Function para i-compute ang System Generated, Difference, at Final DM real-time habang nagta-type sa edit modal
+function calculateEditModalValues() {
+    const form = document.getElementById('addEditForm');
+    if (!form) return;
+
+    let approvedPlan = parseFloat(form.querySelector('input[name="approve_plan"]').value) || 0;
+    let currentCharges = parseFloat(form.querySelector('input[name="current_charges"]').value) || 0;
+    let processedDm = parseFloat(form.querySelector('input[name="debit_memo_details"]').value) || 0;
+    let addOns = parseFloat(form.querySelector('input[name="add_ons"]').value) || 0;
+
+    // Eksaktong formula mula sa PHP table view mo:
+    let systemGeneratedDm = Math.max(0, currentCharges - approvedPlan); // Column 1
+    let difference = Math.max(0, processedDm - systemGeneratedDm);      // Column 2 (Debit Memo - Column 1)
+    let finalDm = processedDm - addOns;                                 // Final DM
+
+    // Ilagay ang mga kinomputang halaga sa mga input fields
+    const sysGenInput = form.querySelector('input[name="system_generated_dm"]');
+    const diffInput = form.querySelector('input[name="difference"]');
+    const finalInput = form.querySelector('input[name="final_dm"]');
+
+    if (sysGenInput) sysGenInput.value = systemGeneratedDm.toFixed(2);
+    if (diffInput) diffInput.value = difference.toFixed(2);
+    if (finalInput) finalInput.value = finalDm.toFixed(2);
+}
+
+// 3. Mag-attach ng event listeners para mag-update habang nagta-type
+['approve_plan', 'current_charges', 'debit_memo_details', 'add_ons'].forEach(name => {
+    const el = document.querySelector(`input[name="${name}"]`);
+    if (el) {
+        // Alisin muna ang lumang listener para iwas duplicate, tapos idagdag ang bago
+        el.removeEventListener('input', calculateEditModalValues);
+        el.addEventListener('input', calculateEditModalValues);
+    }
+});
+
+// Mag-attach ng event listeners para mag-trigger ang kalkulasyon habang nagta-type
+['approve_plan', 'current_charges', 'debit_memo_details', 'add_ons'].forEach(name => {
+    const el = document.querySelector(`input[name="${name}"]`);
+    if (el) {
+        el.addEventListener('input', calculateEditModalValues);
+    }
+});
+
+// Atach di event listener dɛn
+['approve_plan', 'current_charges', 'debit_memo_details', 'add_ons'].forEach(name => {
+    const el = document.querySelector(`input[name="${name}"]`);
+    if (el) {
+        el.addEventListener('input', calculateEditModalValues);
+    }
+});
+
+// Maglagay ng event listeners sa mga input fields para mag-trigger tuwing magbabago ang value
+['edit_approved_plan', 'edit_current_charges', 'edit_debit_memo_details', 'edit_add_ons'].forEach(id => {
+    let el = document.getElementById(id);
+    if (el) {
+        el.addEventListener('input', calculateEditModalValues);
+    }
+});
+
+function toggleMainGearDropdown(event) {
+    if (event) {
+        event.preventDefault();
+        event.stopPropagation();
+    }
+    const dropdown = document.getElementById('mainGearDropdown');
+    if (dropdown) {
+        dropdown.classList.toggle('hidden');
+    }
+}
+
+function closeMainGearDropdown() {
+    const dropdown = document.getElementById('mainGearDropdown');
+    if (dropdown) {
+        dropdown.classList.add('hidden');
+    }
+}
+
+// Close the gear dropdown when clicking outside of it
+window.addEventListener('click', function(e) {
+    const dropdown = document.getElementById('mainGearDropdown');
+    if (dropdown && !dropdown.classList.contains('hidden')) {
+        if (!e.target.closest('.relative')) {
+            dropdown.classList.add('hidden');
+        }
+    }
+});
+
+
+
+function downloadGoogleDrivePDF() {
+    const checkedItems = document.querySelectorAll('.item-checkbox:checked');
+    
+    if (checkedItems.length === 0) {
+        alert("Mangyaring pumili muna ng kahit isang item.");
+        return;
+    }
+
+    checkedItems.forEach(checkedItem => {
+        const row = checkedItem.closest('tr');
+        const soaLink = row.querySelector('a[target="_blank"]');
+        
+        if (soaLink && soaLink.getAttribute('href')) {
+            let originalUrl = soaLink.getAttribute('href');
+            let downloadUrl = originalUrl;
+
+            // Kung Google Drive link ito, kunin natin ang File ID at gawing direct download link
+            if (originalUrl.includes('drive.google.com')) {
+                const match = originalUrl.match(/\/d\/([a-zA-Z0-9_-]+)/);
+                if (match && match[1]) {
+                    const fileId = match[1];
+                    downloadUrl = `https://drive.google.com/uc?export=download&id=${fileId}`;
+                }
+            }
+
+            // I-trigger ang pag-download gamit ang tamang direct download link
+            const a = document.createElement('a');
+            a.href = downloadUrl;
+            a.setAttribute('download', '');
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            
+        } else {
+            console.log("Nilaktawan ang item dahil walang Google Drive file link.");
+        }
+    });
+}
+// email test
+
+function sendEmailSelected() {
+    // 1. Collect checked account numbers / DM IDs from the main list table
+    const checkboxes = document.querySelectorAll('.dm-checkbox:checked');
+    if (checkboxes.length === 0) {
+        alert("Please select at least one account number to send emails.");
+        return;
+    }
+
+    const dmIds = Array.from(checkboxes).map(cb => cb.value);
+
+    // 2. Confirm action
+    if (!confirm(`Are you sure you want to send system-generated emails with attached exports for ${dmIds.length} account(s)?`)) {
+        return;
+    }
+
+    // 3. Optional: Get current date filters if applicable
+    const startDate = document.querySelector('input[name="start_date"]') ? document.querySelector('input[name="start_date"]').value : '';
+    const endDate = document.querySelector('input[name="end_date"]') ? document.querySelector('input[name="end_date"]').value : '';
+
+    // 4. Send asynchronous request to backend processor
+    let formData = new FormData();
+    formData.append('dm_ids', dmIds.join(','));
+    formData.append('start_date', startDate);
+    formData.append('end_date', endDate);
+
+    // Show loading indicator or change cursor if desired
+    const actionBtn = document.querySelector('button[onclick*="sendEmailSelected"]');
+    if (actionBtn) actionBtn.innerText = "Sending Emails...";
+
+    fetch('send_bulk_email.php', {
+        method: 'POST',
+        body: formData
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (actionBtn) actionBtn.innerHTML = '<i class="las la-envelope mr-2 text-sm"></i> Send Email';
+        
+        if (data.status === 'success') {
+            alert(data.message);
+            window.location.reload();
+        } else {
+            alert("Error: " + data.message);
+        }
+    })
+    .catch(error => {
+        if (actionBtn) actionBtn.innerHTML = '<i class="las la-envelope mr-2 text-sm"></i> Send Email';
+        console.error('Email Dispatch Error:', error);
+        alert("An unexpected error occurred while sending emails.");
+    });
 }
 </script>
 
