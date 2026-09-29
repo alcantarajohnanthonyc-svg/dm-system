@@ -714,7 +714,22 @@ function submitPasteExport(type) {
     </div>
 </div>
 
-
+<!-- DISPATCH PROGRESS MODAL -->
+<div id="dispatchProgressModal" style="display: none;" class="fixed inset-0 z-[99999] flex items-center justify-center bg-black/60 backdrop-blur-sm">
+    <div class="bg-white rounded-3xl shadow-2xl border border-gray-100 w-full max-w-2xl p-6 mx-4">
+        <h3 class="text-base font-bold text-gray-800 mb-4">Sending Statement Emails...</h3>
+        <div class="mb-4">
+            <div class="w-full bg-gray-200 rounded-full h-3 overflow-hidden">
+                <div id="dispatchProgressBar" class="bg-emerald-600 h-3 rounded-full transition-all duration-300" style="width: 0%"></div>
+            </div>
+            <p id="dispatchProgressText" class="text-xs font-semibold text-gray-600 mt-2">Starting dispatch process...</p>
+        </div>
+        <div id="dispatchProgressLog" class="bg-slate-900 text-white text-xs font-mono p-3 rounded-xl max-h-60 overflow-y-auto mb-4 space-y-1"></div>
+        <div class="text-right">
+            <button type="button" id="closeDispatchModalBtn" onclick="closeDispatchModal()" style="display:none;" class="bg-gray-700 text-white px-4 py-2 rounded-xl text-xs font-semibold">Close</button>
+        </div>
+    </div>
+</div>
 
 <script>
 
@@ -1498,7 +1513,6 @@ function downloadGoogleDrivePDF() {
 // email test
 
 function sendEmailSelected() {
-    // 1. Collect checked account numbers / DM IDs from the main list table
     const checkboxes = document.querySelectorAll('.dm-checkbox:checked');
     if (checkboxes.length === 0) {
         alert("Please select at least one account number to send emails.");
@@ -1507,46 +1521,95 @@ function sendEmailSelected() {
 
     const dmIds = Array.from(checkboxes).map(cb => cb.value);
 
-    // 2. Confirm action
     if (!confirm(`Are you sure you want to send system-generated emails with attached exports for ${dmIds.length} account(s)?`)) {
         return;
     }
 
-    // 3. Optional: Get current date filters if applicable
-    const startDate = document.querySelector('input[name="start_date"]') ? document.querySelector('input[name="start_date"]').value : '';
-    const endDate = document.querySelector('input[name="end_date"]') ? document.querySelector('input[name="end_date"]').value : '';
+    // Capture current date filter values safely
+    const startDate = document.querySelector('input[name="start_date"]')?.value || '';
+    const endDate = document.querySelector('input[name="end_date"]')?.value || '';
 
-    // 4. Send asynchronous request to backend processor
     let formData = new FormData();
     formData.append('dm_ids', dmIds.join(','));
     formData.append('start_date', startDate);
     formData.append('end_date', endDate);
 
-    // Show loading indicator or change cursor if desired
-    const actionBtn = document.querySelector('button[onclick*="sendEmailSelected"]');
-    if (actionBtn) actionBtn.innerText = "Sending Emails...";
+    // --- SHOW THE DISPATCH PROGRESS MODAL ---
+    const progressModal = document.getElementById('dispatchProgressModal');
+    const progressBar = document.getElementById('dispatchProgressBar');
+    const progressText = document.getElementById('dispatchProgressText');
+    const progressLog = document.getElementById('dispatchProgressLog');
+    const closeBtn = document.getElementById('closeDispatchModalBtn');
 
+    if (progressModal) progressModal.style.display = 'flex';
+    if (progressBar) progressBar.style.width = '15%';
+    if (progressText) progressText.innerText = `Preparing email dispatch for ${dmIds.length} account(s)...`;
+    if (progressLog) progressLog.innerHTML = `<div>Initializing connection and verifying recipients...</div>`;
+    if (closeBtn) closeBtn.style.display = 'none';
+
+    // Close the gear dropdown if open
+    closeMainGearDropdown();
+
+    // Execute the fetch request to send_bulk_email.php
     fetch('send_bulk_email.php', {
         method: 'POST',
         body: formData
     })
-    .then(response => response.json())
-    .then(data => {
-        if (actionBtn) actionBtn.innerHTML = '<i class="las la-envelope mr-2 text-sm"></i> Send Email';
-        
-        if (data.status === 'success') {
-            alert(data.message);
-            window.location.reload();
-        } else {
-            alert("Error: " + data.message);
+    .then(response => {
+        if (!response.ok) {
+            throw new Error(`HTTP error! Status: ${response.status}`);
         }
+        return response.json();
     })
+   .then(data => {
+    if (progressBar) progressBar.style.width = '100%';
+    
+    if (data.status === 'success') {
+        if (progressText) {
+            progressText.innerText = `Completed! Successful: ${data.success_count}, Failed: ${data.fail_count}`;
+        }
+        
+        let logHtml = '';
+
+        // Render successful items in green
+        if (data.success_details && data.success_details.length > 0) {
+            data.success_details.forEach(succ => {
+                logHtml += `<div class="text-emerald-400">+ ${succ}</div>`;
+            });
+        }
+        
+        // Render failed items (like missing email mappings) strictly in red/rose
+        if (data.failed_details && data.failed_details.length > 0) {
+            data.failed_details.forEach(err => {
+                logHtml += `<div class="text-rose-400">- ${err}</div>`;
+            });
+        }
+
+        if (progressLog) progressLog.innerHTML = logHtml;
+    } else {
+        if (progressText) progressText.innerText = "Dispatch encountered an error.";
+        if (progressLog) progressLog.innerHTML = `<div class="text-rose-400">Error: ${data.message}</div>`;
+    }
+
+    if (closeBtn) closeBtn.style.display = 'block';
+})
     .catch(error => {
-        if (actionBtn) actionBtn.innerHTML = '<i class="las la-envelope mr-2 text-sm"></i> Send Email';
         console.error('Email Dispatch Error:', error);
-        alert("An unexpected error occurred while sending emails.");
+        if (progressBar) progressBar.style.width = '100%';
+        if (progressText) progressText.innerText = "An unexpected error occurred.";
+        if (progressLog) progressLog.innerHTML = `<div class="text-rose-400">Fetch Exception: ${error.message}</div>`;
+        if (closeBtn) closeBtn.style.display = 'block';
     });
 }
+
+function closeDispatchModal() {
+    const modal = document.getElementById('dispatchProgressModal');
+    if (modal) {
+        modal.style.display = 'none';
+    }
+    window.location.reload();
+}
+
 </script>
 
 <?php

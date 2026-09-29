@@ -7,56 +7,51 @@
  * @param string|null $startDate 'YYYY-MM-DD' format
  * @param string|null $endDate 'YYYY-MM-DD' format
  */
-function createDebitMemoExcel($dm_id, $conn, $item_ids = null, $startDate = null, $endDate = null) {
+function createDebitMemoExcel($dm_id, $conn,$item_ids = null, $startDate = null,$endDate = null) {
     // 1. Fetch info
-    $stmt = $conn->prepare("SELECT account_number, company FROM debit_memos WHERE dm_id = :dm_id");
-    $stmt->execute(array(':dm_id' => $dm_id));
-    $info = $stmt->fetch(PDO::FETCH_ASSOC);
+    $stmt =$conn->prepare("SELECT account_number, company FROM debit_memos WHERE dm_id = :dm_id");
+    $stmt->execute(array(':dm_id' =>$dm_id));
+    $info =$stmt->fetch(PDO::FETCH_ASSOC);
     
-    $acc_num = isset($info['account_number']) ? $info['account_number'] : 'N/A';
-    $company = isset($info['company']) ? $info['company'] : 'N/A';
+    $acc_num = isset($info['account_number']) ? $info['account_number'] : 'N/A';$company = isset($info['company']) ?$info['company'] : 'N/A';
 
     // 2. Build Query and Data Fetching
     $sql = "SELECT * FROM `debit_memo_items` WHERE dm_id = :dm_id";
-    $params = array(':dm_id' => $dm_id);
+    $params = array(':dm_id' =>$dm_id);
 
-    if (!empty($item_ids)) {
-        $sql .= " AND id IN (" . implode(',', array_map('intval', $item_ids)) . ")";
+    if (!empty($item_ids)) {$sql .= " AND id IN (" . implode(',', array_map('intval', $item_ids)) . ")";
     }
 
     if (!empty($startDate) || !empty($endDate)) {
-        $effective_start = !empty($startDate) ? $startDate : '1900-01-01';
-        $effective_end   = !empty($endDate) ? $endDate : '2999-12-31';
+        $effective_start = !empty($startDate) ? $startDate : '1900-01-01';$effective_end   = !empty($endDate) ?$endDate : '2999-12-31';
 
-        $sql .= " AND (STR_TO_DATE(coverage_start, '%Y-%m-%d') <= :end_date 
-                      AND STR_TO_DATE(coverage_end, '%Y-%m-%d') >= :start_date)";
+        $sql .= " AND (STR_TO_DATE(coverage_start, '%Y-%m-%d') >= :start_date 
+                       AND STR_TO_DATE(coverage_end, '%Y-%m-%d') <= :end_date)";
         
-        $params[':start_date'] = $effective_start;
-        $params[':end_date']   = $effective_end;
+        $params[':start_date'] =$effective_start;
+        $params[':end_date']   =$effective_end;
     }
 
     $sql .= " ORDER BY coverage_start ASC";
 
     $stmtItems = $conn->prepare($sql);
     $stmtItems->execute($params);
-    $items = $stmtItems->fetchAll(PDO::FETCH_ASSOC);
+    $items =$stmtItems->fetchAll(PDO::FETCH_ASSOC);
 
     // Group items by year
     $grouped_by_year = array();
-    foreach ($items as $row) {
-        $year = 'Unknown';
+    foreach ($items as $row) {$year = 'Unknown';
         if (!empty($row['coverage_start'])) {
             $year = date('Y', strtotime($row['coverage_start']));
         }
-        $grouped_by_year[$year][] = $row;
+        $grouped_by_year[$year][] =$row;
     }
 
-    if (empty($grouped_by_year)) {
-        $grouped_by_year[date('Y')] = array();
+    if (empty($grouped_by_year)) {$grouped_by_year[date('Y')] = array();
     }
 
     // 3. Set Headers for Excel XML Download
-    $filename = 'Account_' . $acc_num . '.xls'; 
+    $filename = 'Account_' .$acc_num . '.xls'; 
     header('Content-Type: application/vnd.ms-excel');
     header('Content-Disposition: attachment; filename="' . $filename . '"');
     header('Pragma: no-cache');
@@ -71,24 +66,20 @@ function createDebitMemoExcel($dm_id, $conn, $item_ids = null, $startDate = null
     echo ' xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"';
     echo ' xmlns:html="http://www.w3.org/TR/REC-html40">';
 
-    // Define Styles (Dynamically generating XML tags for your exact colors)
+    // Define Styles
     echo '<Styles>';
-    
-    // Base data cells and warning styles
     echo '<Style ss:ID="DataCell"><Alignment ss:Horizontal="Center" ss:Vertical="Center"/><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1"/></Borders></Style>';
     echo '<Style ss:ID="RedCell"><Alignment ss:Horizontal="Center" ss:Vertical="Center"/><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1"/></Borders><Font ss:Bold="1" ss:Color="#dc2626"/></Style>';
-
     echo '<Style ss:ID="BlueCell"><Alignment ss:Horizontal="Center" ss:Vertical="Center"/><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1"/></Borders><Font ss:Bold="1" ss:Color="#2563eb"/></Style>';
     echo '<Style ss:ID="PurpleCell"><Alignment ss:Horizontal="Center" ss:Vertical="Center"/><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1"/></Borders><Font ss:Bold="1" ss:Color="#7c3aed"/></Style>';
-
     echo '<Style ss:ID="OrangeCell"><Alignment ss:Horizontal="Center" ss:Vertical="Center"/><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1"/></Borders><Font ss:Bold="1" ss:Color="#ea580c"/></Style>';
     echo '<Style ss:ID="GreenCell"><Alignment ss:Horizontal="Center" ss:Vertical="Center"/><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1"/></Borders><Font ss:Bold="1" ss:Color="#16a34a"/></Style>';
-    // Dynamic Header Styles mapping your requested colors
-    $unique_colors = ["#FFE599", "#93C47D", "#4A86E8","#F7F700"];
-    foreach ($unique_colors as $color) {
-        $style_id = 'Header_' . md5($color); // Generates a safe alphanumeric ID for XML
+    
+    $unique_colors = ["#FFE599", "#93C47D", "#4A86E8", "#F7F700"];
+    foreach ($unique_colors as$color) {
+        $style_id = 'Header_' . md5($color);
         echo '<Style ss:ID="' . $style_id . '">';
-       echo '<Alignment ss:Horizontal="Center" ss:Vertical="Center" ss:WrapText="1"/>';
+        echo '<Alignment ss:Horizontal="Center" ss:Vertical="Center" ss:WrapText="1"/>';
         echo '<Borders>';
         echo '<Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1"/>';
         echo '<Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1"/>';
@@ -102,13 +93,13 @@ function createDebitMemoExcel($dm_id, $conn, $item_ids = null, $startDate = null
     echo '</Styles>';
 
     // Loop through each year to create a separate sheet tab
-    foreach ($grouped_by_year as $year => $year_items) {
+    foreach ($grouped_by_year as $year =>$year_items) {
         echo '<Worksheet ss:Name="Year ' . htmlspecialchars($year) . '">';
         echo '<Table>';
 
-        // Explicit column widths to ensure long headers fit completely without truncation
-        $colWidths = [150, 130, 110, 130, 100, 100, 180, 130, 130, 140, 90, 80, 80, 90, 120, 80, 80, 130, 130, 100,140,140,120,120];
-        foreach ($colWidths as $w) {
+        // 24 Column widths
+        $colWidths = [130, 110, 100, 140, 90, 90, 160, 110, 110, 110, 80, 80, 80, 90, 110, 80, 80, 120, 120, 110, 130, 140, 100, 130];
+        foreach ($colWidths as$w) {
             echo '<Column ss:Width="' . $w . '"/>';
         }
 
@@ -125,93 +116,88 @@ function createDebitMemoExcel($dm_id, $conn, $item_ids = null, $startDate = null
         // Empty Spacer Row
         echo '<Row></Row>';
 
-      // Headers Row using your exact array structure
-       $headers = [
-    "COVERAGE DATE" => "#FFE599",
-    "MOBILE NUMBER" => "#93C47D",
-    "APPROVED PLAN" => "#93C47D",
-    "MSF (GLOBE / MRC (SMART)" => "#4A86E8",
-    "DEBIT ADJ" => "#93C47D",
-    "CREDIT ADJ" => "#93C47D",
-    "OTHER CHARGES / PHONE AMORTIZATION" => "#4A86E8",
-    "LOCAL (CALL/TEXT)" => "#4A86E8",
-    "NDD (NATIONAL)" => "#4A86E8",
-    "IDD (INTERNATIONAL)" => "#4A86E8",
-    "ROAM" => "#4A86E8",
-    "SMS" => "#4A86E8",
-    "GPRS" => "#4A86E8",
-    "WIZ USAGE" => "#4A86E8",
-    "LOADING CHARGES" => "#4A86E8",
-    "VAT" => "#4A86E8",
-    "OCT" => "#4A86E8",
-    "CURRENT CHARGES" => "#4A86E8",
-    "TOTAL AMOUNT DUE" => "#4A86E8",
-    "PROCESSED DM" => "#93C47D",
-    "SYSTEM GENERATED DM" => "#93C47D",
-    "DIFFERENCE\n(PROCESSED DM - SYSTEM GENERATED DM)" => "#F7F700",
-    "ADD ONS" => "#93C47D",
-    "FINAL DM\n(PROCESSED DM - ADD ONS)" => "#F7F700",
-];
+        // 24 Headers Row
+        $headers = [
+            "COVERAGE DATE" => "#FFE599",
+            "MOBILE NUMBER" => "#93C47D",
+            "APPROVED PLAN" => "#93C47D",
+            "MSF (GLOBE / MRC (SMART)" => "#4A86E8",
+            "DEBIT ADJ" => "#93C47D",
+            "CREDIT ADJ" => "#93C47D",
+            "OTHER CHARGES / PHONE AMORTIZATION" => "#4A86E8",
+            "LOCAL (CALL/TEXT)" => "#4A86E8",
+            "NDD (NATIONAL)" => "#4A86E8",
+            "IDD (INTERNATIONAL)" => "#4A86E8",
+            "ROAM" => "#4A86E8",
+            "SMS" => "#4A86E8",
+            "GPRS" => "#4A86E8",
+            "WIZ USAGE" => "#4A86E8",
+            "LOADING CHARGES" => "#4A86E8",
+            "VAT" => "#4A86E8",
+            "OCT" => "#4A86E8",
+            "CURRENT CHARGES" => "#4A86E8",
+            "TOTAL AMOUNT DUE" => "#4A86E8",
+            "PROCESSED DM" => "#93C47D",
+            "SYSTEM GENERATED DM" => "#93C47D",
+            "DIFFERENCE\n(PROCESSED DM - SYSTEM GENERATED DM)" => "#F7F700",
+            "ADD ONS" => "#93C47D",
+            "FINAL DM\n(PROCESSED DM - ADD ONS)" => "#F7F700"
+        ];
 
-      
-       echo '<Row>';
-        foreach($headers as $colTitle => $colorCode) {
+        echo '<Row>';
+        foreach($headers as $colTitle =>$colorCode) {
             $styleID = 'Header_' . md5($colorCode);
-            
-            // Hatiin ang title kung may newline (\n), i-escape ang bawat bahagi, tapos pagsamahin gamit ang tamang XML line break code
             $lines = explode("\n", $colTitle);
-            $escapedLines = array_map('htmlspecialchars', $lines);
+            $escapedLines = array_map('htmlspecialchars',$lines);
             $finalTitle = implode('&#10;', $escapedLines);
 
             echo '<Cell ss:StyleID="' . $styleID . '"><Data ss:Type="String">' . $finalTitle . '</Data></Cell>';
         }
         echo '</Row>';
-       
 
         // Data Rows
-        foreach ($year_items as $row) {
+        foreach ($year_items as$row) {
             $start = isset($row['coverage_start']) ? date('M d, Y', strtotime($row['coverage_start'])) : '';
-            $end = isset($row['coverage_end']) ? date('M d, Y', strtotime($row['coverage_end'])) : '';
-            $dateText = $start . ' to ' . $end;
+            $end = isset($row['coverage_end']) ? date('M d, Y', strtotime($row['coverage_end'])) : '';$dateText = $start . ' to ' .$end;
 
             echo '<Row>';
             echo '<Cell ss:StyleID="DataCell"><Data ss:Type="String">' . htmlspecialchars($dateText) . '</Data></Cell>';
             echo '<Cell ss:StyleID="DataCell"><Data ss:Type="String">' . htmlspecialchars($row['mobile_number']) . '</Data></Cell>';
 
+            // 17 Numeric fields bago ang Processed DM
             $numericFields = array(
                 'approved_plan', 'phone_amortization', 'debit_adj', 'credit_adj', 
                 'other_charges', 'local_call_text', 'ndd_charges', 'idd_charges', 
                 'roaming_charges', 'sms_charges', 'gprs_charges', 'wiz_usage', 
-                'loading_charges', 'vat', 'oct', 'current_charges', 'total_amount_due', 
-                'debit_memo_details'
+                'loading_charges', 'vat', 'oct', 'current_charges', 'total_amount_due'
             );
 
-            foreach ($numericFields as $field) {
-                $val = isset($row[$field]) ? (float)$row[$field] : 0.00;
-                $cellStyle = ($field === 'debit_memo_details') ? 'RedCell' : 'DataCell';
-                echo '<Cell ss:StyleID="' . $cellStyle . '"><Data ss:Type="Number">' . number_format($val, 2, '.', '') . '</Data></Cell>';
+            foreach ($numericFields as $field) {$val = isset($row[$field]) ? (float)$row[$field] : 0.00;
+                echo '<Cell ss:StyleID="DataCell"><Data ss:Type="Number">' . number_format($val, 2, '.', '') . '</Data></Cell>';
             }
 
+            // PROCESSED DM (Red)
+            $dm_val = isset($row['debit_memo_details']) ? (float)$row['debit_memo_details'] : 0.00;
+            echo '<Cell ss:StyleID="RedCell"><Data ss:Type="Number">' . number_format($dm_val, 2, '.', '') . '</Data></Cell>';
 
-            // Calculations for the 2 new columns matching your table logic
+            // Calculations
             $approved_plan_val = isset($row['approved_plan']) ? (float)$row['approved_plan'] : 0.00;
             $msf_mrc_val = isset($row['current_charges']) ? (float)$row['current_charges'] : 0.00;
-            $dm_val = isset($row['debit_memo_details']) ? (float)$row['debit_memo_details'] : 0.00;
 
-           // Column 1: Approved Plan - MSF/MRC (Cap to 0.00 if negative)
-            $col1_val = max(0, $msf_mrc_val - $approved_plan_val);
+            $col1_val = max(0,$msf_mrc_val - $approved_plan_val);$col2_val = max(0, $dm_val -$col1_val);
+
+            // SYSTEM GENERATED DM (Blue)
             echo '<Cell ss:StyleID="BlueCell"><Data ss:Type="Number">' . number_format($col1_val, 2, '.', '') . '</Data></Cell>';
 
-            // Column 2: Debit Memo - Column 1 (Cap to 0.00 if negative)
-            $col2_val = max(0, $dm_val - $col1_val);
+            // DIFFERENCE (Purple)
             echo '<Cell ss:StyleID="PurpleCell"><Data ss:Type="Number">' . number_format($col2_val, 2, '.', '') . '</Data></Cell>';
 
-            // Add Ons Column
+            // ADD ONS (Orange)
             $add_ons_val = isset($row['add_ons']) ? (float)$row['add_ons'] : 0.00;
             echo '<Cell ss:StyleID="OrangeCell"><Data ss:Type="Number">' . number_format($add_ons_val, 2, '.', '') . '</Data></Cell>';
 
-            // Final DM Column
-            $final_dm_val = isset($row['final_dm']) ? (float)$row['final_dm'] : ($dm_val - $add_ons_val);
+            // FINAL DM (Green)
+            $final_dm_val = isset($row['final_dm']) ? (float)$row['final_dm'] : ($dm_val -$add_ons_val);
             echo '<Cell ss:StyleID="GreenCell"><Data ss:Type="Number">' . number_format($final_dm_val, 2, '.', '') . '</Data></Cell>';
 
             echo '</Row>';

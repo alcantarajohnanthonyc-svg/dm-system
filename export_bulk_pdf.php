@@ -38,15 +38,18 @@ if ($type === 'excel') {
         $sql = "SELECT * FROM `debit_memo_items` WHERE dm_id = :dm_id";
         $params = array(':dm_id' => $dm_id);
 
-        if (!empty($start_date) || !empty($end_date)) {
-            $effective_start = !empty($start_date) ? $start_date : '1900-01-01';
-            $effective_end   = !empty($end_date) ? $end_date : '2999-12-31';
-
-            $sql .= " AND (STR_TO_DATE(coverage_start, '%Y-%m-%d') <= :end_date 
-                           AND STR_TO_DATE(coverage_end, '%Y-%m-%d') >= :start_date)";
+        if (!empty($start_date) && !empty($end_date)) {
+            $sql .= " AND (STR_TO_DATE(coverage_start, '%Y-%m-%d') >= :start_date 
+                          AND STR_TO_DATE(coverage_end, '%Y-%m-%d') <= :end_date)";
             
-            $params[':start_date'] = $effective_start;
-            $params[':end_date']   = $effective_end;
+            $params[':start_date'] = $start_date;
+            $params[':end_date']   = $end_date;
+        } elseif (!empty($start_date)) {
+            $sql .= " AND STR_TO_DATE(coverage_start, '%Y-%m-%d') >= :start_date";
+            $params[':start_date'] = $start_date;
+        } elseif (!empty($end_date)) {
+            $sql .= " AND STR_TO_DATE(coverage_end, '%Y-%m-%d') <= :end_date";
+            $params[':end_date'] = $end_date;
         }
 
         $stmtItems = $conn->prepare($sql);
@@ -65,19 +68,27 @@ if ($type === 'excel') {
 
         $htmlContent .= '<table border="1" style="border-collapse: collapse; font-size: 10pt; font-family: Arial, sans-serif;">';
         
-        $headers = array(
-            "COVERAGE DATE", "MOBILE NUMBER", "APPROVED PLAN", "PHONE AMORTIZATION", 
-            "DEBIT ADJ", "CREDIT ADJ", "OTHER CHARGES (PRE-TERM)", "LOCAL (CALL/TEXT)", 
+       $headers = array(
+            "COVERAGE DATE", "MOBILE NUMBER", "APPROVED PLAN", "MSF (GLOBE / MRC (SMART)", 
+            "DEBIT ADJ", "CREDIT ADJ", "OTHER CHARGES / PHONE AMORTIZATION", "LOCAL (CALL/TEXT)", 
             "NDD (NATIONAL)", "IDD (INTERNATIONAL)", "ROAM", "SMS", "GPRS", 
             "WIZ USAGE", "LOADING CHARGES", "VAT", "OCT", "CURRENT CHARGES", 
-            "TOTAL AMOUNT DUE", "DEBIT MEMO"
+            "TOTAL AMOUNT DUE", "PROCESSED DM", "SYSTEM GENERATED DM", "DIFFERENCE", 
+            "ADD ONS", "FINAL DM"
+        );
+
+        $headerColors = array(
+            "#FFE599", "#93C47D", "#93C47D", "#4A86E8", 
+            "#93C47D", "#93C47D", "#4A86E8", "#4A86E8", 
+            "#4A86E8", "#4A86E8", "#4A86E8", "#4A86E8", "#4A86E8", 
+            "#4A86E8", "#4A86E8", "#4A86E8", "#4A86E8", "#4A86E8", 
+            "#4A86E8", "#93C47D", "#93C47D", "#F7F700", 
+            "#93C47D", "#F7F700"
         );
 
         $htmlContent .= '<tr style="font-weight: bold; text-align: center;">';
         foreach($headers as $index => $col) {
-            $bgColor = '#93c5fd'; 
-            if ($index == 0) $bgColor = '#fde047'; 
-            elseif ($index == 1 || $index == 19) $bgColor = '#4ade80'; 
+            $bgColor = isset($headerColors[$index]) ? $headerColors[$index] : '#93c5fd';
 
             $htmlContent .= '<th style="background-color: ' . $bgColor . '; border: 1px solid #000000; padding: 6px;">' . htmlspecialchars($col) . '</th>';
         }
@@ -92,22 +103,39 @@ if ($type === 'excel') {
             $htmlContent .= '<td style="text-align: center; border: 1px solid #000000; mso-number-format:\@;">' . htmlspecialchars($dateText) . '</td>';
             $htmlContent .= '<td style="text-align: center; border: 1px solid #000000; mso-number-format:\@;">' . htmlspecialchars($row['mobile_number']) . '</td>';
             
-            $numericFields = array(
+           $numericFields = array(
                 'approved_plan', 'phone_amortization', 'debit_adj', 'credit_adj', 
                 'other_charges', 'local_call_text', 'ndd_charges', 'idd_charges', 
                 'roaming_charges', 'sms_charges', 'gprs_charges', 'wiz_usage', 
-                'loading_charges', 'vat', 'oct', 'current_charges', 'total_amount_due', 
-                'debit_memo_details'
+                'loading_charges', 'vat', 'oct', 'current_charges', 'total_amount_due'
             );
 
             foreach ($numericFields as $field) {
                 $val = isset($row[$field]) ? (float)$row[$field] : 0.00;
-                $style = 'text-align: right; border: 1px solid #000000; mso-number-format:"#,##0.00";';
-                if ($field === 'debit_memo_details') {
-                    $style .= ' color: #dc2626; font-weight: bold;';
-                }
-                $htmlContent .= '<td style="' . $style . '">' . number_format($val, 2) . '</td>';
+                $htmlContent .= '<td style="text-align: right; border: 1px solid #000000; mso-number-format:\'#,##0.00\';">' . number_format($val, 2) . '</td>';
             }
+
+            // PROCESSED DM (Red)
+            $dm_val = isset($row['debit_memo_details']) ? (float)$row['debit_memo_details'] : 0.00;
+            $htmlContent .= '<td style="text-align: right; border: 1px solid #000000; mso-number-format:\'#,##0.00\'; color: #dc2626; font-weight: bold;">' . number_format($dm_val, 2) . '</td>';
+
+            // Calculations para sa System Generated, Difference, Add Ons, at Final DM
+            $approved_plan_val = isset($row['approved_plan']) ? (float)$row['approved_plan'] : 0.00;
+            $msf_mrc_val = isset($row['current_charges']) ? (float)$row['current_charges'] : 0.00;
+
+            $col1_val = max(0, $msf_mrc_val - $approved_plan_val);
+            $col2_val = max(0, $dm_val - $col1_val);
+            $add_ons_val = isset($row['add_ons']) ? (float)$row['add_ons'] : 0.00;
+            $final_dm_val = isset($row['final_dm']) ? (float)$row['final_dm'] : ($dm_val - $add_ons_val);
+
+            // SYSTEM GENERATED DM (Blue)
+            $htmlContent .= '<td style="text-align: right; border: 1px solid #000000; mso-number-format:\'#,##0.00\'; color: #2563eb; font-weight: bold;">' . number_format($col1_val, 2) . '</td>';
+            // DIFFERENCE (Purple)
+            $htmlContent .= '<td style="text-align: right; border: 1px solid #000000; mso-number-format:\'#,##0.00\'; color: #7c3aed; font-weight: bold;">' . number_format($col2_val, 2) . '</td>';
+            // ADD ONS (Orange)
+            $htmlContent .= '<td style="text-align: right; border: 1px solid #000000; mso-number-format:\'#,##0.00\'; color: #ea580c; font-weight: bold;">' . number_format($add_ons_val, 2) . '</td>';
+            // FINAL DM (Green)
+            $htmlContent .= '<td style="text-align: right; border: 1px solid #000000; mso-number-format:\'#,##0.00\'; color: #16a34a; font-weight: bold;">' . number_format($final_dm_val, 2) . '</td>';
             $htmlContent .= '</tr>';
         }
         

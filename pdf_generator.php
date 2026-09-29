@@ -57,7 +57,7 @@ function createDebitMemoPDF($dm_id, $conn, $item_ids = null, $startDate = null, 
     $dateW = 26; // Fixed width for the date column
     $remainingColumns = count($headers) - 1; // 21 numerical/data columns
     $w = ($printableWidth - $dateW) / $remainingColumns; // Dynamically scales column width (~15.22 mm)
-    $h = 10;
+    $h = 14;
 
     // Helper closure to draw headers and title consistently across pages
     $drawPageHeader = function() use ($pdf, $acc_num, $company, $headers, $dateW, $w, $h) {
@@ -68,7 +68,7 @@ function createDebitMemoPDF($dm_id, $conn, $item_ids = null, $startDate = null, 
         $pdf->Cell(0, 7, 'COMPANY: ' . $company, 0, 1);
         $pdf->Ln(5);
 
-        $pdf->SetFont('Arial', 'B', 5.5); // Slightly smaller font to fit longer header labels
+        $pdf->SetFont('Arial', 'B', 5); // Slightly smaller font to fit longer header labels
         $startY = $pdf->GetY();
 
         $index = 0;
@@ -111,8 +111,9 @@ function createDebitMemoPDF($dm_id, $conn, $item_ids = null, $startDate = null, 
         $effective_start = !empty($startDate) ? $startDate : '1900-01-01';
         $effective_end   = !empty($endDate) ? $endDate : '2999-12-31';
 
-        $sql .= " AND (STR_TO_DATE(coverage_start, '%Y-%m-%d') <= :end_date 
-                       AND STR_TO_DATE(coverage_end, '%Y-%m-%d') >= :start_date)";
+        // Pinalitan mula sa overlapping range patungo sa eksaktong saklaw (strict matching)
+        $sql .= " AND (STR_TO_DATE(coverage_start, '%Y-%m-%d') >= :start_date 
+                       AND STR_TO_DATE(coverage_end, '%Y-%m-%d') <= :end_date)";
         
         $params[':start_date'] = $effective_start;
         $params[':end_date']   = $effective_end;

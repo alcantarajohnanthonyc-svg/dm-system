@@ -1,23 +1,25 @@
-<?php
-// Enable error reporting for debugging during tests
+﻿<?php
+// Enable error reporting for debugging
 error_reporting(E_ALL);
 ini_set('display_errors', 1);
 
+// Prevent timeouts and memory exhaustion for large batches
+set_time_limit(0);
+ini_set('memory_limit', '512M');
+
 header('Content-Type: application/json');
 
-// Database configuration
-$host = 'localhost';
-$db   = 'admin_dm';
-$user = 'root';
-$pass = '';
+// ----------------------------------------------------
+// DATABASE CONFIGURATION & DEPENDENCIES
+// ----------------------------------------------------
+require_once 'config.php'; 
+require_once 'fpdf/fpdf.php';
+require_once 'pdf_generator.php'; 
 
-try {
-    $pdo = new PDO("mysql:host=$host;dbname=$db;charset=utf8mb4", $user, $pass, [
-        PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-        PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-    ]);
-} catch (PDOException $e) {
-    echo json_encode(['status' => 'error', 'message' => 'Database connection failed: ' . $e->getMessage()]);
+if (isset($conn)) {
+    $pdo = $conn;
+} else {
+    echo json_encode(['status' => 'error', 'message' => 'Database connection not found in config.php']);
     exit;
 }
 
@@ -40,35 +42,43 @@ if (empty($dm_ids) || !is_array($dm_ids)) {
     exit;
 }
 
+$start_date = isset($_POST['start_date']) ? trim($_POST['start_date']) : '';
+$end_date   = isset($_POST['end_date']) ? trim($_POST['end_date']) : '';
+
 $success_count = 0;
 $fail_count = 0;
 $failed_items = [];
+$success_items = [];
+$admin_report_items = []; 
 
 foreach ($dm_ids as $dm_id) {
     $dm_id = trim($dm_id);
     
-    // 1. Fetch debit memo record to get account_number and dm_number
+    // 1. Fetch debit memo record
     $stmt = $pdo->prepare("SELECT * FROM debit_memos WHERE dm_id = ?");
     $stmt->execute([$dm_id]);
     $dm = $stmt->fetch();
 
     if (!$dm) {
         $fail_count++;
-        $failed_items[] = "ID {$dm_id}: Debit memo record not found.";
+        $error_msg = "ID {$dm_id}: Debit memo record not found.";
+        $failed_items[] = $error_msg;
+        $admin_report_items[] = get_failed_report_item('N/A', 'N/A', 'N/A', 'No Email', $error_msg);
         continue;
     }
 
     $account_number = $dm['account_number'];
 
-    // 2. Pull recipient email from 'account_emails' table using account_number
+    // 2. Pull recipient email from 'account_emails' table
     $email_stmt = $pdo->prepare("SELECT * FROM account_emails WHERE account_number = ?");
     $email_stmt->execute([$account_number]);
     $account_email_row = $email_stmt->fetch();
 
     if (!$account_email_row || empty($account_email_row['email_address'])) {
         $fail_count++;
-        $error_msg = "Account Number {$account_number} (DM ID: {$dm_id}) has no email mapping in account_emails table.";
+        $error_msg = "Account {$account_number} (DM ID: {$dm_id}) - No email mapping found.";
         $failed_items[] = $error_msg;
+        $admin_report_items[] = get_failed_report_item($account_number, $dm['telco'] ?? 'N/A', $dm['mobile_number'] ?? 'N/A', 'No Email', $error_msg);
         error_log($error_msg);
         continue;
     }
@@ -76,216 +86,387 @@ foreach ($dm_ids as $dm_id) {
     $recipient_email = $account_email_row['email_address'];
     $recipient_name  = !empty($account_email_row['full_name']) ? $account_email_row['full_name'] : 'Valued Client';
 
-    // 3. Generate Excel attachment safely for bulk emails
-    $excel_path = generate_dm_excel($dm_id, $pdo);
+    // 3. Pull details from debit_memo_items
+    $itemQuery = "SELECT * FROM debit_memo_items WHERE dm_id = ?";
+    $itemParams = [$dm_id];
+
+    if (!empty($start_date) && !empty($end_date)) {
+        $itemQuery .= " AND coverage_start >= ? AND coverage_end <= ?";
+        $itemParams[] = $start_date;
+        $itemParams[] = $end_date;
+    }
+    $itemQuery .= " ORDER BY coverage_start ASC";
+
+    $stmtItems = $pdo->prepare($itemQuery);
+    $stmtItems->execute($itemParams);
+    $items = $stmtItems->fetchAll(PDO::FETCH_ASSOC);
+
+    $total_final_dm = 0.00;
+    $total_approved_plan = 0.00;
+    $min_start = null;
+    $max_end = null;
+    $mobile_number_val = 'N/A';
+    $telco_val = 'N/A';
+
+    if (!empty($items)) {
+        foreach ($items as $it) {
+            $dm_v = isset($it['debit_memo_details']) ? (float)$it['debit_memo_details'] : 0.00;
+            $ao_v = isset($it['add_ons']) ? (float)$it['add_ons'] : 0.00;
+            $total_final_dm += isset($it['final_dm']) ? (float)$it['final_dm'] : ($dm_v - $ao_v);
+            
+            $total_approved_plan += isset($it['approved_plan']) ? (float)$it['approved_plan'] : 0.00;
+            if (!empty($it['mobile_number'])) $mobile_number_val = $it['mobile_number'];
+            if (!empty($it['telco'])) $telco_val = $it['telco'];
+        }
+        $min_start = $items[0]['coverage_start'] ?? null;
+        $max_end = end($items)['coverage_end'] ?? null;
+    }
+
+    $coverage_start = $min_start ?? ($start_date !== '' ? $start_date : null);
+    $coverage_end   = $max_end ?? ($end_date !== '' ? $end_date : null);
     
-    if (empty($excel_path) || !file_exists($excel_path)) {
+    $data_coverage = (!empty($coverage_start) && !empty($coverage_end)) ? date('M d, Y', strtotime($coverage_start)) . " to " . date('M d, Y', strtotime($coverage_end)) : "As of current billing";
+    $account_name_display = "{$recipient_name} / {$account_number}";
+    $approved_plan_display = number_format($total_approved_plan, 2, '.', ',');
+    $final_dm_val = number_format($total_final_dm, 2, '.', ',');
+
+    // 4. Generate Debit Memo PDF attachment
+    $pdf_result = createDebitMemoPDF($dm_id, $pdo, null, $start_date, $end_date);
+    
+    if (!is_array($pdf_result) || count($pdf_result) != 2) {
         $fail_count++;
-        $failed_items[] = "ID {$dm_id}: Failed to generate Excel attachment.";
+        $error_msg = "Account {$account_number} ({$recipient_email}) - Failed to generate PDF attachment.";
+        $failed_items[] = $error_msg;
+        $admin_report_items[] = get_failed_report_item($account_number, $telco_val, $mobile_number_val, $recipient_email, $error_msg, $data_coverage, number_format($total_final_dm, 2, '.', ','));
         continue;
     }
 
-    $filename = 'debit_memo_' . $dm_id . '.xls';
-    $html_content = "<h3>Statement of Account / Debit Memo</h3><p>Dear {$recipient_name},</p><p>Attached is your debit memo statement spreadsheet for account number <b>{$account_number}</b> for your review.</p>";
+    $pdf_obj = $pdf_result[0];
+    $acc_num = $pdf_result[1];
+    
+    $pdf_temp_path = tempnam(sys_get_temp_dir(), 'dm_pdf_');
+    $pdf_obj->Output('F', $pdf_temp_path);
 
-    // 4. Send email using SMTP parameters with Excel attachment
-    $subject = "Statement of Account / Debit Memo - " . ($dm['dm_number'] ?? $dm_id);
-    $mail_sent = send_smtp_mail_with_html_body($recipient_email, $subject, $excel_path, $filename, $html_content, 'application/vnd.ms-excel');
+    if (!file_exists($pdf_temp_path) || filesize($pdf_temp_path) < 50) {
+        $fail_count++;
+        $error_msg = "Account {$account_number} ({$recipient_email}) - Generated PDF file is empty or missing.";
+        $failed_items[] = $error_msg;
+        $admin_report_items[] = get_failed_report_item($account_number, $telco_val, $mobile_number_val, $recipient_email, $error_msg, $data_coverage, number_format($total_final_dm, 2, '.', ','));
+        if (file_exists($pdf_temp_path)) @unlink($pdf_temp_path);
+        continue;
+    }
+
+    $filename = 'Debit_Memo_' . $acc_num . '.pdf';
+    $dm_number_display = $dm['dm_number'] ?? $dm_id;
+    $subject = "Statement of Account / Debit Memo - " . $dm_number_display;
+
+    $html_content = "
+    <div style='font-family: Arial, sans-serif; font-size: 11pt; color: #333;'>
+        <p>Dear Ma'am/Sir,</p>
+        <p>Please find attached your Statement of Account (SOA) reflecting the applicable Debit Memo charges:</p>
+        <p><b>Summary Details:</b><br>
+        Period Covered: {$data_coverage}<br>
+        Account Name: {$account_name_display}<br>
+        Approved Plan (Company Share): ₱ {$approved_plan_display}<br>
+        Total Chargeable Amount: ₱ {$final_dm_val}</p>
+        <p>For any questions or concerns, please reply directly to this email.</p>
+        <p>Thank you,</p>
+        <p><b>IT Telco Admin Team</b></p>
+    </div>";
+
+    $attachments = [
+        [
+            'path' => $pdf_temp_path,
+            'name' => $filename,
+            'type' => 'application/pdf'
+        ]
+    ];
+
+    // 5. Dynamically attach matching PDFs from Google Drive
+    $soa_query = "
+        SELECT DISTINCT pdf.filename, pdf.file_link 
+        FROM debit_memo_items dmi
+        JOIN pdf_extracted_details pdf ON pdf.account_number = ?
+        WHERE dmi.dm_id = ?
+          AND ABS(DATEDIFF(dmi.coverage_end, STR_TO_DATE(SUBSTRING_INDEX(pdf.billing_period, ' - ', -1), '%Y-%m-%d'))) <= 5
+          AND (pdf.mobile_number IS NULL OR pdf.mobile_number = '' OR pdf.mobile_number = 'N/A' OR pdf.mobile_number = dmi.mobile_number)
+    ";
+    
+    $soa_params = [$account_number, $dm_id];
+    if (!empty($start_date) && !empty($end_date)) {
+        $soa_query .= " AND dmi.coverage_start >= ? AND dmi.coverage_end <= ?";
+        $soa_params[] = $start_date;
+        $soa_params[] = $end_date;
+    }
+
+    $soa_stmt = $pdo->prepare($soa_query);
+    $soa_stmt->execute($soa_params);
+    $soa_files = $soa_stmt->fetchAll(PDO::FETCH_ASSOC);
+
+    $downloaded_pdf_paths = [];
+    $primary_file_link = '';
+    foreach ($soa_files as $index => $soa) {
+        $pdf_filename = $soa['filename'];
+        if ($index === 0) $primary_file_link = $soa['file_link'] ?? '';
+        if (!empty($pdf_filename)) {
+            $downloaded_path = get_or_download_pdf_path($pdf_filename, $pdo);
+            if (!empty($downloaded_path) && file_exists($downloaded_path)) {
+                $downloaded_pdf_paths[] = $downloaded_path;
+                $attachments[] = [
+                    'path' => $downloaded_path,
+                    'name' => basename($pdf_filename),
+                    'type' => 'application/pdf'
+                ];
+            }
+        }
+    }
+
+    // 6. Send Email via SMTP
+    $mail_sent = send_smtp_mail_with_multi_attachments($recipient_email, $subject, $attachments, $html_content);
 
     if ($mail_sent === true) {
         $success_count++;
-
-        // 5. Record successful send into 'email_report' table
-        $report_stmt = $pdo->prepare("INSERT INTO email_report (report_type, recipient_email, full_name, created_at) VALUES (?, ?, ?, NOW())");
-        $report_stmt->execute(['statement_dispatch', $recipient_email, $recipient_name]);
+        $success_msg = "Account {$account_number} ({$recipient_email}) - Successfully sent.";
+        $success_items[] = $success_msg;
+        $admin_report_items[] = [
+            'status' => 'SUCCESS',
+            'date' => date('Y-m-d H:i:s'),
+            'account' => $account_number,
+            'telco' => $telco_val,
+            'mobile_number' => $mobile_number_val,
+            'email' => $recipient_email,
+            'billing_period' => $data_coverage,
+            'total_charge' => 'PHP ' . number_format($total_final_dm, 2, '.', ','),
+            'filename' => $filename,
+            'file_link' => $primary_file_link,
+            'sent_by' => 'System Administrator',
+            'details' => 'Email sent successfully with attachments.'
+        ];
     } else {
         $fail_count++;
-        $failed_items[] = "ID {$dm_id} ({$recipient_email}): SMTP dispatch failed. Details: " . $mail_sent;
+        $error_msg = "Account {$account_number} ({$recipient_email}) - SMTP failed: " . $mail_sent;
+        $failed_items[] = $error_msg;
+        $admin_report_items[] = get_failed_report_item($account_number, $telco_val, $mobile_number_val, $recipient_email, $error_msg, $data_coverage, number_format($total_final_dm, 2, '.', ','), $filename, $primary_file_link);
     }
 
-    // Clean up temporary Excel file
-    if (!empty($excel_path) && file_exists($excel_path)) {
-        @unlink($excel_path);
+    // Cleanup temporary generated PDF
+    if (!empty($pdf_temp_path) && file_exists($pdf_temp_path)) @unlink($pdf_temp_path);
+    foreach ($downloaded_pdf_paths as $temp_pdf) {
+        if (file_exists($temp_pdf)) @unlink($temp_pdf);
     }
+}
+
+// 7. Dispatch Summary Report to Admins
+send_dispatch_report_to_admins($pdo, $admin_report_items, $success_count, $fail_count);
+
+// Build structured detailed message for modal/response display
+$detailed_message = "Bulk PDF dispatch completed. Successful: {$success_count}, Failed: {$fail_count}.";
+if (!empty($success_items)) {
+    $detailed_message .= "\n\nSuccessful Accounts:\n- " . implode("\n- ", $success_items);
+}
+if (!empty($failed_items)) {
+    $detailed_message .= "\n\nFailed Accounts & Errors:\n- " . implode("\n- ", $failed_items);
 }
 
 echo json_encode([
     'status' => 'success',
-    'message' => "Bulk dispatch completed. Successful: {$success_count}, Failed: {$fail_count}.",
+    'message' => $detailed_message,
     'success_count' => $success_count,
     'fail_count' => $fail_count,
+    'success_details' => $success_items,
     'failed_details' => $failed_items
 ]);
 
 // --- Helper Functions ---
 
-/**
- * Generates an Excel file for the debit memo safely without triggering headers or exit,
- * ensuring 100% format consistency with the manual export generator.
- */
-function generate_dm_excel($dm_id, $pdo) {
-    $excel_path = sys_get_temp_dir() . '/debit_memo_' . $dm_id . '_' . uniqid() . '.xls';
+function get_failed_report_item($account, $telco, $mobile, $email, $details, $period = 'N/A', $charge = '0.00', $filename = 'N/A', $link = '') {
+    return [
+        'status' => 'FAILED',
+        'date' => date('Y-m-d H:i:s'),
+        'account' => $account,
+        'telco' => $telco,
+        'mobile_number' => $mobile,
+        'email' => $email,
+        'billing_period' => $period,
+        'total_charge' => $charge,
+        'filename' => $filename,
+        'file_link' => $link,
+        'sent_by' => 'System Administrator',
+        'details' => $details
+    ];
+}
 
-    // 1. Fetch info
-    $stmt = $pdo->prepare("SELECT account_number, company FROM debit_memos WHERE dm_id = ?");
-    $stmt->execute([$dm_id]);
-    $info = $stmt->fetch(PDO::FETCH_ASSOC);
+function send_dispatch_report_to_admins($pdo, $report_items, $success_count, $fail_count) {
+    // 1. Get admin emails from the email_report table
+    $stmt = $pdo->prepare("SELECT DISTINCT recipient_email FROM email_report WHERE report_type = ?");
+    $stmt->execute(['statement_dispatch']);
+    $admins = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+    $recipient_emails = [];
+    foreach ($admins as $admin) {
+        if (!empty($admin['recipient_email'])) {
+            $recipient_emails[] = trim($admin['recipient_email']);
+        }
+    }
+
+    // 2. Automatically include the currently logged-in user's email if available in session
+    // (Make sure session is started and you store the user's email or username upon login)
+    if (isset($_SESSION['user_email']) && !empty($_SESSION['user_email'])) {
+        $recipient_emails[] = trim($_SESSION['user_email']);
+    } elseif (isset($_SESSION['username']) && !empty($_SESSION['username'])) {
+        // Fallback: lookup email from the users table using the logged-in username
+        $user_stmt = $pdo->prepare("SELECT email FROM users WHERE username = ? LIMIT 1");
+        $user_stmt->execute([$_SESSION['username']]);
+        $user_row = $user_stmt->fetch(PDO::FETCH_ASSOC);
+        if ($user_row && !empty($user_row['email'])) {
+            $recipient_emails[] = trim($user_row['email']);
+        }
+    }
+
+    // 3. Remove duplicates so everyone gets exactly ONE copy only
+    $unique_recipients = array_unique(array_filter($recipient_emails));
+
+    if (empty($unique_recipients)) return; 
+
+    $current_timestamp = date('Y-m-d H:i:s');
+    $csv_filename = 'Statement_Dispatch_Report_' . date('Ymd_His') . '.csv';
+    $csv_temp_path = tempnam(sys_get_temp_dir(), 'csv_report_');
+    $csv_file = fopen($csv_temp_path, 'w');
     
-    $acc_num = isset($info['account_number']) ? $info['account_number'] : 'N/A';
-    $company = isset($info['company']) ? $info['company'] : 'N/A';
+    fputcsv($csv_file, ['Status', 'Date', 'Account', 'Telco', 'Mobile Number', 'Email', 'Billing Period', 'Total Charge', 'Filename', 'Sent By', 'Details']);
+    
+    $table_rows_html = '';
+    foreach ($report_items as $item) {
+        fputcsv($csv_file, [$item['status'], $item['date'], $item['account'], $item['telco'], $item['mobile_number'], $item['email'], $item['billing_period'], $item['total_charge'], $item['filename'], $item['sent_by'], $item['details']]);
 
-    // 2. Fetch items
-    $stmtItems = $pdo->prepare("SELECT * FROM debit_memo_items WHERE dm_id = ? ORDER BY coverage_start ASC");
-    $stmtItems->execute([$dm_id]);
-    $items = $stmtItems->fetchAll(PDO::FETCH_ASSOC);
+        $status_color = ($item['status'] === 'SUCCESS') ? 'green' : 'red';
+        $border_style = ($item['status'] === 'SUCCESS') ? 'border: 1px solid green;' : 'border: 1px solid red;';
+        $filename_display = !empty($item['file_link']) ? "<a href='" . htmlspecialchars($item['file_link']) . "' target='_blank'>" . htmlspecialchars($item['filename']) . "</a>" : htmlspecialchars($item['filename']);
 
-    // Group items by year
-    $grouped_by_year = [];
-    foreach ($items as $row) {
-        $year = !empty($row['coverage_start']) ? date('Y', strtotime($row['coverage_start'])) : 'Unknown';
-        $grouped_by_year[$year][] = $row;
+        $table_rows_html .= "
+        <tr>
+            <td style='padding: 6px; text-align: center; color: {$status_color}; font-weight: bold; {$border_style} word-break: break-word;'>" . htmlspecialchars($item['status']) . "</td>
+            <td style='padding: 6px; border: 1px solid #ddd; text-align: center; word-break: break-word;'>" . htmlspecialchars($item['date']) . "</td>
+            <td style='padding: 6px; border: 1px solid #ddd; text-align: center; word-break: break-all;'>" . htmlspecialchars($item['account']) . "</td>
+            <td style='padding: 6px; border: 1px solid #ddd; text-align: center;'>" . htmlspecialchars($item['telco']) . "</td>
+            <td style='padding: 6px; border: 1px solid #ddd; text-align: center; word-break: break-all;'>" . htmlspecialchars($item['mobile_number']) . "</td>
+            <td style='padding: 6px; border: 1px solid #ddd; word-break: break-all;'>" . htmlspecialchars($item['email']) . "</td>
+            <td style='padding: 6px; border: 1px solid #ddd; text-align: center;'>" . htmlspecialchars($item['billing_period']) . "</td>
+            <td style='padding: 6px; border: 1px solid #ddd; text-align: right; font-weight: bold;'>" . htmlspecialchars($item['total_charge']) . "</td>
+            <td style='padding: 6px; border: 1px solid #ddd; word-break: break-all;'>" . $filename_display . "</td>
+            <td style='padding: 6px; border: 1px solid #ddd; word-break: break-word;'>" . htmlspecialchars($item['sent_by']) . "</td>
+        </tr>";
     }
-    if (empty($grouped_by_year)) {
-        $grouped_by_year[date('Y')] = [];
-    }
+    fclose($csv_file);
 
-    // 3. Build the Excel XML content string
-    $output = '<?xml version="1.0" encoding="UTF-8"?>';
-    $output .= '<?mso-application progid="Excel.Sheet"?>';
-    $output .= '<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"';
-    $output .= ' xmlns:o="urn:schemas-microsoft-com:office:office"';
-    $output .= ' xmlns:x="urn:schemas-microsoft-com:office:excel"';
-    $output .= ' xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"';
-    $output .= ' xmlns:html="http://www.w3.org/TR/REC-html40">';
+    $html_body = "
+   <div style='font-family: Arial, sans-serif; font-size: 10pt; color: #333;'>
+        <h2 style='color: #0056b3; margin-bottom: 5px; font-size: 14pt;'>Debit Memo Email Dispatch Report</h2>
+        <p>Summary of debit memo email notifications sent on <b>{$current_timestamp}</b>. Attached to this email is a CSV file containing the full details.</p>
+        <table border='1' cellpadding='6' cellspacing='0' style='border-collapse: collapse; width: 100%; table-layout: fixed; border-color: #ddd; margin-top: 15px; font-size: 9pt;'>
+            <colgroup>
+                <col style='width: 7%;'>   <!-- Status -->
+                <col style='width: 11%;'>  <!-- Date -->
+                <col style='width: 8%;'>   <!-- Account -->
+                <col style='width: 5%;'>   <!-- Telco -->
+                <col style='width: 9%;'>   <!-- Mobile -->
+                <col style='width: 15%;'>  <!-- Email -->
+                <col style='width: 11%;'>  <!-- Billing Period -->
+                <col style='width: 8%;'>   <!-- Total Charge -->
+                <col style='width: 13%;'> <!-- Filename -->
+                <col style='width: 13%;'> <!-- Sent By -->
+            </colgroup>
+            <thead>
+                <tr style='background-color: #f8f9fa; text-align: center;'>
+                    <th style='padding: 6px;'>Status</th>
+                    <th style='padding: 6px;'>Date</th>
+                    <th style='padding: 6px;'>Account</th>
+                    <th style='padding: 6px;'>Telco</th>
+                    <th style='padding: 6px;'>Mobile</th>
+                    <th style='padding: 6px;'>Email</th>
+                    <th style='padding: 6px;'>Period</th>
+                    <th style='padding: 6px;'>Charge</th>
+                    <th style='padding: 6px;'>Filename</th>
+                    <th style='padding: 6px;'>Sent By</th>
+                </tr>
+            </thead>
+            <tbody>{$table_rows_html}</tbody>
+        </table>
+        <p style='margin-top: 15px; font-size: 8pt; color: #666;'>This is an automated system report with attached CSV log.</p>
+    </div>";
 
-    // Styles definitions
-    $output .= '<Styles>';
-    $output .= '<Style ss:ID="DataCell"><Alignment ss:Horizontal="Center" ss:Vertical="Center"/><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1"/></Borders></Style>';
-    $output .= '<Style ss:ID="RedCell"><Alignment ss:Horizontal="Center" ss:Vertical="Center"/><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1"/></Borders><Font ss:Bold="1" ss:Color="#dc2626"/></Style>';
-    $output .= '<Style ss:ID="BlueCell"><Alignment ss:Horizontal="Center" ss:Vertical="Center"/><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1"/></Borders><Font ss:Bold="1" ss:Color="#2563eb"/></Style>';
-    $output .= '<Style ss:ID="PurpleCell"><Alignment ss:Horizontal="Center" ss:Vertical="Center"/><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1"/></Borders><Font ss:Bold="1" ss:Color="#7c3aed"/></Style>';
-    $output .= '<Style ss:ID="OrangeCell"><Alignment ss:Horizontal="Center" ss:Vertical="Center"/><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1"/></Borders><Font ss:Bold="1" ss:Color="#ea580c"/></Style>';
-    $output .= '<Style ss:ID="GreenCell"><Alignment ss:Horizontal="Center" ss:Vertical="Center"/><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1"/></Borders><Font ss:Bold="1" ss:Color="#16a34a"/></Style>';
-
-    $unique_colors = ["#FFE599", "#93C47D", "#4A86E8", "#F7F700"];
-    foreach ($unique_colors as $color) {
-        $style_id = 'Header_' . md5($color);
-        $output .= '<Style ss:ID="' . $style_id . '">';
-        $output .= '<Alignment ss:Horizontal="Center" ss:Vertical="Center" ss:WrapText="1"/>';
-        $output .= '<Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1"/></Borders>';
-        $output .= '<Interior ss:Color="' . htmlspecialchars($color) . '" ss:Pattern="Solid"/><Font ss:Bold="1"/>';
-        $output .= '</Style>';
-    }
-    $output .= '</Styles>';
-
-    // Worksheets per year
-    foreach ($grouped_by_year as $year => $year_items) {
-        $output .= '<Worksheet ss:Name="Year ' . htmlspecialchars($year) . '"><Table>';
-        
-        $colWidths = [150, 130, 110, 130, 100, 100, 180, 130, 130, 140, 90, 80, 80, 90, 120, 80, 80, 130, 130, 100, 140, 140, 120, 120];
-        foreach ($colWidths as $w) {
-            $output .= '<Column ss:Width="' . $w . '"/>';
+    $admin_attachments = [['path' => $csv_temp_path, 'name' => $csv_filename, 'type' => 'text/csv']];
+    
+    // 4. Send email to each unique recipient only once
+    foreach ($unique_recipients as $recipient_email) {
+        if (filter_var($recipient_email, FILTER_VALIDATE_EMAIL)) {
+            send_smtp_mail_with_multi_attachments($recipient_email, "Summary Report - " . $current_timestamp, $admin_attachments, $html_body);
         }
+    }
+    if (file_exists($csv_temp_path)) @unlink($csv_temp_path);
+}
 
-        $output .= '<Row><Cell ss:Index="1" ss:MergeAcross="3"><Data ss:Type="String">ACCOUNT NUMBER: ' . htmlspecialchars($acc_num) . '</Data></Cell></Row>';
-        $output .= '<Row><Cell ss:Index="1" ss:MergeAcross="3"><Data ss:Type="String">COMPANY: ' . htmlspecialchars($company) . '</Data></Cell></Row>';
-        $output .= '<Row></Row>';
-
-        $headers = [
-            "COVERAGE DATE" => "#FFE599", "MOBILE NUMBER" => "#93C47D", "APPROVED PLAN" => "#93C47D",
-            "MSF (GLOBE / MRC (SMART)" => "#4A86E8", "DEBIT ADJ" => "#93C47D", "CREDIT ADJ" => "#93C47D",
-            "OTHER CHARGES / PHONE AMORTIZATION" => "#4A86E8", "LOCAL (CALL/TEXT)" => "#4A86E8",
-            "NDD (NATIONAL)" => "#4A86E8", "IDD (INTERNATIONAL)" => "#4A86E8", "ROAM" => "#4A86E8",
-            "SMS" => "#4A86E8", "GPRS" => "#4A86E8", "WIZ USAGE" => "#4A86E8", "LOADING CHARGES" => "#4A86E8",
-            "VAT" => "#4A86E8", "OCT" => "#4A86E8", "CURRENT CHARGES" => "#4A86E8", "TOTAL AMOUNT DUE" => "#4A86E8",
-            "PROCESSED DM" => "#93C47D", "SYSTEM GENERATED DM" => "#93C47D",
-            "DIFFERENCE\n(PROCESSED DM - SYSTEM GENERATED DM)" => "#F7F700",
-            "ADD ONS" => "#93C47D", "FINAL DM\n(PROCESSED DM - ADD ONS)" => "#F7F700"
-        ];
-
-        $output .= '<Row>';
-        foreach($headers as $colTitle => $colorCode) {
-            $styleID = 'Header_' . md5($colorCode);
-            $finalTitle = implode('&#10;', array_map('htmlspecialchars', explode("\n", $colTitle)));
-            $output .= '<Cell ss:StyleID="' . $styleID . '"><Data ss:Type="String">' . $finalTitle . '</Data></Cell>';
-        }
-        $output .= '</Row>';
-
-        foreach ($year_items as $row) {
-            $start = isset($row['coverage_start']) ? date('M d, Y', strtotime($row['coverage_start'])) : '';
-            $end = isset($row['coverage_end']) ? date('M d, Y', strtotime($row['coverage_end'])) : '';
-            $dateText = $start . ' to ' . $end;
-
-            $output .= '<Row>';
-            $output .= '<Cell ss:StyleID="DataCell"><Data ss:Type="String">' . htmlspecialchars($dateText) . '</Data></Cell>';
-            $output .= '<Cell ss:StyleID="DataCell"><Data ss:Type="String">' . htmlspecialchars($row['mobile_number']) . '</Data></Cell>';
-
-            $numericFields = [
-                'approved_plan', 'phone_amortization', 'debit_adj', 'credit_adj', 
-                'other_charges', 'local_call_text', 'ndd_charges', 'idd_charges', 
-                'roaming_charges', 'sms_charges', 'gprs_charges', 'wiz_usage', 
-                'loading_charges', 'vat', 'oct', 'current_charges', 'total_amount_due', 
-                'debit_memo_details'
-            ];
-
-            foreach ($numericFields as $field) {
-                $val = isset($row[$field]) ? (float)$row[$field] : 0.00;
-                $cellStyle = ($field === 'debit_memo_details') ? 'RedCell' : 'DataCell';
-                $output .= '<Cell ss:StyleID="' . $cellStyle . '"><Data ss:Type="Number">' . number_format($val, 2, '.', '') . '</Data></Cell>';
+function get_or_download_pdf_path($filename, $pdo = null) {
+    $filename = basename($filename);
+    $temp_file_path = sys_get_temp_dir() . '/' . md5($filename) . '.pdf';
+      
+    if (file_exists($temp_file_path) && filesize($temp_file_path) > 100) return $temp_file_path;
+    usleep(500000); 
+      
+    if ($pdo) {
+        try {
+            $stmtFile = $pdo->prepare("SELECT file_link FROM pdf_extracted_details WHERE filename = ? LIMIT 1");
+            $stmtFile->execute([$filename]);
+            if ($fRow = $stmtFile->fetch(PDO::FETCH_ASSOC)) {
+                $link = $fRow['file_link'] ?? '';
+                if (!empty($link)) {
+                    $gdrive_id = '';
+                    if (preg_match('/\/d\/([a-zA-Z0-9_-]+)/', $link, $m)) $gdrive_id = $m[1];
+                    elseif (preg_match('/[?&]id=([a-zA-Z0-9_-]+)/', $link, $m)) $gdrive_id = $m[1];
+                      
+                    if (!empty($gdrive_id)) {
+                        $download_url = "https://drive.google.com/uc?export=download&id=" . $gdrive_id;
+                        $ch = curl_init();
+                        curl_setopt($ch, CURLOPT_URL, $download_url);
+                        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+                        curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+                        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+                        curl_setopt($ch, CURLOPT_USERAGENT, 'Mozilla/5.0');
+                        curl_setopt($ch, CURLOPT_TIMEOUT, 30);
+                        $response = curl_exec($ch);
+                          
+                        if (strpos($response, 'confirm=') !== false && preg_match('/confirm=([a-zA-Z0-9_\-]+)/', $response, $matches)) {
+                            curl_setopt($ch, CURLOPT_URL, "https://drive.google.com/uc?export=download&confirm=" . $matches[1] . "&id=" . $gdrive_id);
+                            $response = curl_exec($ch);
+                        }
+                        curl_close($ch);
+                          
+                        if (!empty($response) && strlen($response) > 500 && stripos($response, '<html') === false) {
+                            file_put_contents($temp_file_path, $response);
+                            if (file_exists($temp_file_path) && filesize($temp_file_path) > 100) return $temp_file_path;
+                        }
+                    }
+                }
             }
-
-            $approved_plan_val = isset($row['approved_plan']) ? (float)$row['approved_plan'] : 0.00;
-            $msf_mrc_val = isset($row['current_charges']) ? (float)$row['current_charges'] : 0.00;
-            $dm_val = isset($row['debit_memo_details']) ? (float)$row['debit_memo_details'] : 0.00;
-
-            $col1_val = max(0, $msf_mrc_val - $approved_plan_val);
-            $output .= '<Cell ss:StyleID="BlueCell"><Data ss:Type="Number">' . number_format($col1_val, 2, '.', '') . '</Data></Cell>';
-
-            $col2_val = max(0, $dm_val - $col1_val);
-            $output .= '<Cell ss:StyleID="PurpleCell"><Data ss:Type="Number">' . number_format($col2_val, 2, '.', '') . '</Data></Cell>';
-
-            $add_ons_val = isset($row['add_ons']) ? (float)$row['add_ons'] : 0.00;
-            $output .= '<Cell ss:StyleID="OrangeCell"><Data ss:Type="Number">' . number_format($add_ons_val, 2, '.', '') . '</Data></Cell>';
-
-            $final_dm_val = isset($row['final_dm']) ? (float)$row['final_dm'] : ($dm_val - $add_ons_val);
-            $output .= '<Cell ss:StyleID="GreenCell"><Data ss:Type="Number">' . number_format($final_dm_val, 2, '.', '') . '</Data></Cell>';
-
-            $output .= '</Row>';
-        }
-
-        $output .= '</Table></Worksheet>';
+        } catch (Exception $e) {}
     }
-
-    $output .= '</Workbook>';
-
-    if (file_put_contents($excel_path, $output) !== false && filesize($excel_path) > 50) {
-        return $excel_path;
-    }
-
     return '';
 }
 
-function send_smtp_mail_with_html_body($to, $subject, $filepath, $filename, $html_content, $contentType = 'application/vnd.ms-excel', $cc = '') {
+function send_smtp_mail_with_multi_attachments($to, $subject, $attachments, $html_content, $cc = '') {
     $smtp_host = 'tcp://smtp.gmail.com'; 
     $smtp_port = 587;                    
-    
     $auth_user = 'jcalcantara@bounty.com.ph';
     $auth_pass = str_replace(' ', '', 'kowg yhnc dryb uumq'); 
-
     $from_email = 'testgrp@bounty.com.ph';
     $from_name  = 'Admin Telco';
-
     $boundary = md5(time());
 
     $headers  = "MIME-Version: 1.0\r\n";
     $headers .= "From: {$from_name} <{$from_email}>\r\n";
     $headers .= "Reply-To: {$from_name} <{$from_email}>\r\n";
     $headers .= "To: {$to}\r\n";
-    
-    if (!empty($cc)) {
-        $headers .= "Cc: {$cc}\r\n";
-    }
-    
+    if (!empty($cc)) $headers .= "Cc: {$cc}\r\n";
     $headers .= "Subject: {$subject}\r\n";
     $headers .= "Content-Type: multipart/mixed; boundary=\"{$boundary}\"\r\n\r\n";
     
@@ -293,23 +474,22 @@ function send_smtp_mail_with_html_body($to, $subject, $filepath, $filename, $htm
     $body .= "Content-Type: text/html; charset=UTF-8\r\n\r\n";
     $body .= "{$html_content}\r\n\r\n";
     
-    // Attach File
-    if (!empty($filepath) && file_exists($filepath) && filesize($filepath) > 50) {
-        $fileData = chunk_split(base64_encode(file_get_contents($filepath)));
-        $body .= "--{$boundary}\r\n";
-        $body .= "Content-Type: {$contentType}; name=\"{$filename}\"\r\n";
-        $body .= "Content-Transfer-Encoding: base64\r\n";
-        $body .= "Content-Disposition: attachment; filename=\"{$filename}\"\r\n\r\n";
-        $body .= "{$fileData}\r\n\r\n";
+    foreach ($attachments as $att) {
+        if (!empty($att['path']) && file_exists($att['path']) && filesize($att['path']) > 50) {
+            $fileData = chunk_split(base64_encode(file_get_contents($att['path'])));
+            $body .= "--{$boundary}\r\n";
+            $body .= "Content-Type: {$att['type']}; name=\"{$att['name']}\"\r\n";
+            $body .= "Content-Transfer-Encoding: base64\r\n";
+            $body .= "Content-Disposition: attachment; filename=\"{$att['name']}\"\r\n\r\n";
+            $body .= "{$fileData}\r\n\r\n";
+        }
     }
-
     $body .= "--{$boundary}--";
 
     $socket = @fsockopen($smtp_host, $smtp_port, $errno, $errstr, 15);
     if (!is_resource($socket)) return "Connection failed: $errstr";
     
     fgets($socket, 512);
-    
     $run_cmd = function($cmd, $code) use ($socket) {
         fwrite($socket, $cmd . "\r\n");
         $res = ''; 
@@ -321,10 +501,9 @@ function send_smtp_mail_with_html_body($to, $subject, $filepath, $filename, $htm
     };
 
     if (!$run_cmd("EHLO " . $_SERVER['SERVER_NAME'], 250) || !$run_cmd("STARTTLS", 220)) return "TLS handshake error";
-    
     stream_socket_enable_crypto($socket, true, STREAM_CRYPTO_METHOD_TLS_CLIENT);
     
-    if (!$run_cmd("EHLO " . $_SERVER['SERVER_NAME'], 250) || 
+    if ((!$run_cmd("EHLO " . $_SERVER['SERVER_NAME'], 250)) || 
         !$run_cmd("AUTH LOGIN", 334) || 
         !$run_cmd(base64_encode($auth_user), 334) || 
         !$run_cmd(base64_encode($auth_pass), 235) || 
@@ -335,13 +514,10 @@ function send_smtp_mail_with_html_body($to, $subject, $filepath, $filename, $htm
     $to_emails = explode(',', $to);
     foreach ($to_emails as $to_email) {
         $to_email = trim($to_email);
-        if (!empty($to_email)) {
-            @$run_cmd("RCPT TO: <{$to_email}>", 250);
-        }
+        if (!empty($to_email)) @$run_cmd("RCPT TO: <{$to_email}>", 250);
     }
 
-    if (!$run_cmd("DATA", 354)) return "DATA command data error";
-    
+    if (!$run_cmd("DATA", 354)) return "DATA command error";
     fwrite($socket, $headers . "\r\n" . $body . "\r\n.\r\n");
     $result = fgets($socket, 512); 
     $run_cmd("QUIT", 221);

@@ -1534,6 +1534,8 @@ function send_dispatch_report_to_admin($all_results_items) {
     function escapeHtml(str) {
         return (str + '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;');
     }
+
+
 </script>
     <?php
     $content = ob_get_clean();
