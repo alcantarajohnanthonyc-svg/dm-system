@@ -45,6 +45,10 @@ if (empty($dm_ids) || !is_array($dm_ids)) {
 $start_date = isset($_POST['start_date']) ? trim($_POST['start_date']) : '';
 $end_date   = isset($_POST['end_date']) ? trim($_POST['end_date']) : '';
 
+// Kunin ang item_ids mula sa POST kung galing sa breakdown modal
+$item_ids_input = isset($_POST['item_ids']) ? trim($_POST['item_ids']) : '';
+$breakdown_item_ids = !empty($item_ids_input) ? array_filter(explode(',', $item_ids_input)) : [];
+
 $success_count = 0;
 $fail_count = 0;
 $failed_items = [];
@@ -86,15 +90,22 @@ foreach ($dm_ids as $dm_id) {
     $recipient_email = $account_email_row['email_address'];
     $recipient_name  = !empty($account_email_row['full_name']) ? $account_email_row['full_name'] : 'Valued Client';
 
-    // 3. Pull details from debit_memo_items
+    // 3. Pull details from debit_memo_items (Optional filtering via breakdown checkboxes or date range)[cite: 21]
     $itemQuery = "SELECT * FROM debit_memo_items WHERE dm_id = ?";
     $itemParams = [$dm_id];
 
-    if (!empty($start_date) && !empty($end_date)) {
+    if (!empty($breakdown_item_ids)) {
+        $placeholders = implode(',', array_fill(0, count($breakdown_item_ids), '?'));
+        $itemQuery .= " AND id IN ($placeholders)";
+        foreach ($breakdown_item_ids as $iid) {
+            $itemParams[] = $iid;
+        }
+    } elseif (!empty($start_date) && !empty($end_date)) {
         $itemQuery .= " AND coverage_start >= ? AND coverage_end <= ?";
         $itemParams[] = $start_date;
         $itemParams[] = $end_date;
     }
+    
     $itemQuery .= " ORDER BY coverage_start ASC";
 
     $stmtItems = $pdo->prepare($itemQuery);
@@ -103,10 +114,11 @@ foreach ($dm_ids as $dm_id) {
 
     $total_final_dm = 0.00;
     $total_approved_plan = 0.00;
-    $min_start = null;
-    $max_end = null;
     $mobile_number_val = 'N/A';
     $telco_val = 'N/A';
+    
+    $raw_start_dates = [];
+    $raw_end_dates = [];
 
     if (!empty($items)) {
         foreach ($items as $it) {
@@ -117,21 +129,27 @@ foreach ($dm_ids as $dm_id) {
             $total_approved_plan += isset($it['approved_plan']) ? (float)$it['approved_plan'] : 0.00;
             if (!empty($it['mobile_number'])) $mobile_number_val = $it['mobile_number'];
             if (!empty($it['telco'])) $telco_val = $it['telco'];
+
+            if (!empty($it['coverage_start'])) $raw_start_dates[] = $it['coverage_start'];
+            if (!empty($it['coverage_end'])) $raw_end_dates[] = $it['coverage_end'];
         }
-        $min_start = $items[0]['coverage_start'] ?? null;
-        $max_end = end($items)['coverage_end'] ?? null;
     }
 
-    $coverage_start = $min_start ?? ($start_date !== '' ? $start_date : null);
-    $coverage_end   = $max_end ?? ($end_date !== '' ? $end_date : null);
-    
-    $data_coverage = (!empty($coverage_start) && !empty($coverage_end)) ? date('M d, Y', strtotime($coverage_start)) . " to " . date('M d, Y', strtotime($coverage_end)) : "As of current billing";
+    // Kunin ang pinakauna at pinakahuling petsa para maging isang malinis na range na lang
+    if (!empty($raw_start_dates) && !empty($raw_end_dates)) {
+        $earliest_start = date('M d, Y', strtotime(min($raw_start_dates)));
+        $latest_end = date('M d, Y', strtotime(max($raw_end_dates)));
+        $data_coverage = "{$earliest_start} to {$latest_end}";
+    } else {
+        $data_coverage = "As of current billing";
+    }
+
     $account_name_display = "{$recipient_name} / {$account_number}";
     $approved_plan_display = number_format($total_approved_plan, 2, '.', ',');
     $final_dm_val = number_format($total_final_dm, 2, '.', ',');
 
-    // 4. Generate Debit Memo PDF attachment
-    $pdf_result = createDebitMemoPDF($dm_id, $pdo, null, $start_date, $end_date);
+    // 4. Generate Debit Memo PDF attachment (Itinama ang pagpasa ng $breakdown_item_ids sa pangatlong parameter)[cite: 21]
+    $pdf_result = createDebitMemoPDF($dm_id, $pdo, $breakdown_item_ids, $start_date, $end_date);
     
     if (!is_array($pdf_result) || count($pdf_result) != 2) {
         $fail_count++;
@@ -182,22 +200,30 @@ foreach ($dm_ids as $dm_id) {
         ]
     ];
 
-    // 5. Dynamically attach matching PDFs from Google Drive
+    // 5. Dynamically attach matching PDFs from Google Drive[cite: 21]
     $soa_query = "
         SELECT DISTINCT pdf.filename, pdf.file_link 
         FROM debit_memo_items dmi
         JOIN pdf_extracted_details pdf ON pdf.account_number = ?
         WHERE dmi.dm_id = ?
-          AND ABS(DATEDIFF(dmi.coverage_end, STR_TO_DATE(SUBSTRING_INDEX(pdf.billing_period, ' - ', -1), '%Y-%m-%d'))) <= 5
-          AND (pdf.mobile_number IS NULL OR pdf.mobile_number = '' OR pdf.mobile_number = 'N/A' OR pdf.mobile_number = dmi.mobile_number)
     ";
     
     $soa_params = [$account_number, $dm_id];
-    if (!empty($start_date) && !empty($end_date)) {
+
+    if (!empty($breakdown_item_ids)) {
+        $placeholders = implode(',', array_fill(0, count($breakdown_item_ids), '?'));
+        $soa_query .= " AND dmi.id IN ($placeholders)";
+        foreach ($breakdown_item_ids as $iid) {
+            $soa_params[] = $iid;
+        }
+    } elseif (!empty($start_date) && !empty($end_date)) {
         $soa_query .= " AND dmi.coverage_start >= ? AND dmi.coverage_end <= ?";
         $soa_params[] = $start_date;
         $soa_params[] = $end_date;
     }
+
+    $soa_query .= " AND ABS(DATEDIFF(dmi.coverage_end, STR_TO_DATE(SUBSTRING_INDEX(pdf.billing_period, ' - ', -1), '%Y-%m-%d'))) <= 5
+                    AND (pdf.mobile_number IS NULL OR pdf.mobile_number = '' OR pdf.mobile_number = 'N/A' OR pdf.mobile_number = dmi.mobile_number)";
 
     $soa_stmt = $pdo->prepare($soa_query);
     $soa_stmt->execute($soa_params);
@@ -297,7 +323,6 @@ function get_failed_report_item($account, $telco, $mobile, $email, $details, $pe
 }
 
 function send_dispatch_report_to_admins($pdo, $report_items, $success_count, $fail_count) {
-    // 1. Get admin emails from the email_report table
     $stmt = $pdo->prepare("SELECT DISTINCT recipient_email FROM email_report WHERE report_type = ?");
     $stmt->execute(['statement_dispatch']);
     $admins = $stmt->fetchAll(PDO::FETCH_ASSOC);
@@ -309,12 +334,9 @@ function send_dispatch_report_to_admins($pdo, $report_items, $success_count, $fa
         }
     }
 
-    // 2. Automatically include the currently logged-in user's email if available in session
-    // (Make sure session is started and you store the user's email or username upon login)
     if (isset($_SESSION['user_email']) && !empty($_SESSION['user_email'])) {
         $recipient_emails[] = trim($_SESSION['user_email']);
     } elseif (isset($_SESSION['username']) && !empty($_SESSION['username'])) {
-        // Fallback: lookup email from the users table using the logged-in username
         $user_stmt = $pdo->prepare("SELECT email FROM users WHERE username = ? LIMIT 1");
         $user_stmt->execute([$_SESSION['username']]);
         $user_row = $user_stmt->fetch(PDO::FETCH_ASSOC);
@@ -323,9 +345,7 @@ function send_dispatch_report_to_admins($pdo, $report_items, $success_count, $fa
         }
     }
 
-    // 3. Remove duplicates so everyone gets exactly ONE copy only
     $unique_recipients = array_unique(array_filter($recipient_emails));
-
     if (empty($unique_recipients)) return; 
 
     $current_timestamp = date('Y-m-d H:i:s');
@@ -397,7 +417,6 @@ function send_dispatch_report_to_admins($pdo, $report_items, $success_count, $fa
 
     $admin_attachments = [['path' => $csv_temp_path, 'name' => $csv_filename, 'type' => 'text/csv']];
     
-    // 4. Send email to each unique recipient only once
     foreach ($unique_recipients as $recipient_email) {
         if (filter_var($recipient_email, FILTER_VALIDATE_EMAIL)) {
             send_smtp_mail_with_multi_attachments($recipient_email, "Summary Report - " . $current_timestamp, $admin_attachments, $html_body);
@@ -525,3 +544,4 @@ function send_smtp_mail_with_multi_attachments($to, $subject, $attachments, $htm
 
     return (substr($result, 0, 3) == '250') ? true : "Failed: " . trim($result);
 }
+?>

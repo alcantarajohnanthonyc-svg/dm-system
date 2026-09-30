@@ -444,8 +444,8 @@ function getCarrierBadge($carrierName) {
                         <i class="las la-trash mr-1"></i> DELETE SELECTED
                     </button>
                 <?php endif; ?>
-                <button type="button" onclick="downloadBothFiles()" class="px-3 py-1.5 bg-amber-50 text-amber-700 border border-amber-200 rounded-md text-[10px] font-bold hover:bg-amber-100">
-            <i class="las la-envelope mr-1"></i> Download Both (PDF & Excel)
+                <button type="button" onclick="sendEmailFromBreakdown()" class="px-3 py-1.5 bg-amber-50 text-amber-700 border border-amber-200 rounded-md text-[10px] font-bold hover:bg-amber-100">
+            <i class="las la-envelope mr-1"></i> Send email
         </button>
 
                 <button type="button" onclick="exportSelectedItems()" class="bg-green-600 text-white px-4 py-2 rounded text-xs font-bold hover:bg-green-700">
@@ -1602,6 +1602,108 @@ function sendEmailSelected() {
     });
 }
 
+
+function sendEmailFromBreakdown() {
+    const breakdownModal = document.getElementById('breakdownModal');
+    
+    // Siguraduhing bukas ang modal at may active account ID
+    if (!breakdownModal || breakdownModal.classList.contains('hidden') || !activeDmId) {
+        alert("Breakdown modal is not open or no active account selected.");
+        return;
+    }
+
+    let itemIds = [];
+    let selectedCoverages = [];
+
+    // Kolektahin ang mga naka-check na items sa loob ng breakdown table
+    const modalCheckboxes = breakdownModal.querySelectorAll('tbody input.item-checkbox:checked');
+    
+    modalCheckboxes.forEach(cb => {
+        itemIds.push(cb.value); // Debit memo item ID
+        const row = cb.closest('tr');
+        if (row) {
+            const coverageCell = row.cells[1]; // Coverage Date column (i-adjust kung iba ang index)
+            if (coverageCell) {
+                selectedCoverages.push(coverageCell.innerText.trim());
+            }
+        }
+    });
+
+    if (itemIds.length === 0) {
+        alert("Please select at least one coverage row from the breakdown to send.");
+        return;
+    }
+
+    // Confirmation message
+    let confirmationMsg = `Are you sure you want to send the email for Account ${activeDmId} covering: ${selectedCoverages.join(', ')}?`;
+    if (!confirm(confirmationMsg)) {
+        return;
+    }
+
+    // I-setup ang FormData para sa breakdown items lamang
+    let formData = new FormData();
+    formData.append('dm_ids', activeDmId);
+    formData.append('item_ids', itemIds.join(',')); // Pinapasa ang mga specific item IDs
+
+    // --- PROGRESS MODAL HANDLING ---
+    const progressModal = document.getElementById('dispatchProgressModal');
+    const progressBar = document.getElementById('dispatchProgressBar');
+    const progressText = document.getElementById('dispatchProgressText');
+    const progressLog = document.getElementById('dispatchProgressLog');
+    const closeBtn = document.getElementById('closeDispatchModalBtn');
+
+    if (progressModal) progressModal.style.display = 'flex';
+    if (progressBar) progressBar.style.width = '15%';
+    if (progressText) progressText.innerText = `Preparing breakdown email...`;
+    if (progressLog) progressLog.innerHTML = `<div>Initializing connection for selected coverage...</div>`;
+    if (closeBtn) closeBtn.style.display = 'none';
+
+    // Execute ang fetch request sa backend handler
+    fetch('send_bulk_email.php', {
+        method: 'POST',
+        body: formData
+    })
+    .then(response => {
+        if (!response.ok) {
+            throw new Error(`HTTP error! Status: ${response.status}`);
+        }
+        return response.json();
+    })
+    .then(data => {
+        if (progressBar) progressBar.style.width = '100%';
+        
+        if (data.status === 'success') {
+            if (progressText) {
+                progressText.innerText = `Sent successfully! Successful: ${data.success_count}, Failed: ${data.fail_count}`;
+            }
+            
+            let logHtml = '';
+            if (data.success_details) {
+                data.success_details.forEach(succ => {
+                    logHtml += `<div class="text-emerald-400">+ ${succ}</div>`;
+                });
+            }
+            if (data.failed_details) {
+                data.failed_details.forEach(err => {
+                    logHtml += `<div class="text-rose-400">- ${err}</div>`;
+                });
+            }
+            if (progressLog) progressLog.innerHTML = logHtml;
+        } else {
+            if (progressText) progressText.innerText = "Dispatch encountered an error.";
+            if (progressLog) progressLog.innerHTML = `<div class="text-rose-400">Error: ${data.message}</div>`;
+        }
+
+        if (closeBtn) closeBtn.style.display = 'block';
+    })
+    .catch(error => {
+        console.error('Breakdown Email Error:', error);
+        if (progressBar) progressBar.style.width = '100%';
+        if (progressText) progressText.innerText = "An unexpected error occurred.";
+        if (progressLog) progressLog.innerHTML = `<div class="text-rose-400">Fetch Exception: ${error.message}</div>`;
+        if (closeBtn) closeBtn.style.display = 'block';
+    });
+}
 function closeDispatchModal() {
     const modal = document.getElementById('dispatchProgressModal');
     if (modal) {

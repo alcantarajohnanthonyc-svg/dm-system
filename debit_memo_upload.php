@@ -16,7 +16,8 @@ if (!defined('ALLOW_ACCESS')) {
 }
 
 // Safe inclusions relative to script directory
-$config_file = __DIR__ . '/config.php';$main_file = __DIR__ . '/main.php';
+$config_file = __DIR__ . '/config.php';
+$main_file = __DIR__ . '/main.php';
 
 if (file_exists($config_file)) {
     require_once $config_file;
@@ -35,7 +36,8 @@ $google_drive_folder_id = '1nB2cAYdR4LVLTBcbop2nldVU6pcXTD_a';
 
 // Helper Functions for Filename Fallbacks
 if (!function_exists('detect_telco')) {
-    function detect_telco($filename, $text = '') {$upper = strtoupper($filename . ' ' .$text);
+    function detect_telco($filename, $text = '') {
+        $upper = strtoupper($filename . ' ' . $text);
         if (strpos($upper, 'SMT') !== false || strpos($upper, 'SMART') !== false) {
             return 'Smart';
         }
@@ -49,85 +51,121 @@ if (!function_exists('detect_telco')) {
 if (!function_exists('parse_flexible_date')) {
     function parse_flexible_date($date_str) {
         $date_str = trim($date_str);
-        $dt = DateTime::createFromFormat('M d, Y',$date_str);
-        if ($dt) return$dt->format('Y-m-d');
+        $dt = DateTime::createFromFormat('M d, Y', $date_str);
+        if ($dt) return $dt->format('Y-m-d');
         
-        $dt = DateTime::createFromFormat('m/d/y',$date_str);
-        if ($dt) return$dt->format('Y-m-d');
+        $dt = DateTime::createFromFormat('m/d/y', $date_str);
+        if ($dt) return $dt->format('Y-m-d');
 
-        $dt = DateTime::createFromFormat('m/d/Y',$date_str);
-        if ($dt) return$dt->format('Y-m-d');
+        $dt = DateTime::createFromFormat('m/d/Y', $date_str);
+        if ($dt) return $dt->format('Y-m-d');
 
         return 'N/A';
     }
 }
 
 if (!function_exists('extract_pdf_statement_details')) {
-    function extract_pdf_statement_details($filepath,$filename) {
-        $text = '';$page1_text = '';
+    function extract_pdf_statement_details($filepath, $filename) {
+        $text = ''; 
+        $page1_text = '';
         
         if (class_exists('Smalot\PdfParser\Parser')) {
             try {
-                $parser = new \Smalot\PdfParser\Parser();$pdf = $parser->parseFile($filepath);
-                $text =$pdf->getText();
-                $pages =$pdf->getPages();
+                $parser = new \Smalot\PdfParser\Parser();
+                $pdf = $parser->parseFile($filepath);
+                $text = $pdf->getText();
+                $pages = $pdf->getPages();
                 if (!empty($pages[0])) {
-                    $page1_text =$pages[0]->getText();
+                    $page1_text = $pages[0]->getText();
                 }
             } catch (Exception $e) {
                 $text = @file_get_contents($filepath);
-                $page1_text =$text;
+                $page1_text = $text;
             }
         } else {
             $text = @file_get_contents($filepath);
-            $page1_text =$text;
+            $page1_text = $text;
         }
 
         $result = [
             'account_number' => 'N/A',
             'mobile_number'  => 'N/A',
-            'telco'          => detect_telco($filename,$text),
+            'telco'          => detect_telco($filename, $text),
             'amount_due'     => '0.00',
             'billing_period' => 'N/A',
             'invoice_date'   => 'N/A',
             'due_date'       => 'N/A'
         ];
 
-        $clean_text = preg_replace('/\s+/', ' ',$text);
-        $clean_page1 = preg_replace('/\s+/', ' ',$page1_text);
+        $clean_text = preg_replace('/\s+/', ' ', $text);
+        $clean_page1 = preg_replace('/\s+/', ' ', $page1_text);
 
         // 1. Extract Account Number
-        if (preg_match('/Account\s*Number\s*[:|]?\s*(\d{8,12})/i', $text,$m)) {
+        if (preg_match('/Account\s*Number\s*[:|]?\s*(\d{8,12})/i', $text, $m)) {
             $result['account_number'] = trim($m[1]);
-        } elseif (preg_match('/(\d{10})/i', $filename,$m)) {
+        } elseif (preg_match('/(\d{10})/i', $filename, $m)) {
             $result['account_number'] = trim($m[1]);
         }
 
-// 2. Extract Mobile Number / Primary Number (Supports both Smart and Globe PDFs)
-$result['mobile_number'] = 'N/A'; // Default value kung walang makita
+// 2. Extract Mobile Number / Primary Number (Sinusuportahan na ang 10-digits o may 0/63)
+        $result['mobile_number'] = 'N/A';
+        $phone_pattern = '/(?:Primary\s*Number|Mobile\s*Number|Mobile\s*No\.?)\D*?(\+?(?:63|0)?9\d{9}|9\d{9})/is';
 
-// Sinusuportahan na nito ang "Mobile Number" / "Mobile No." (Smart) at "Primary Number" (Globe) 
-// kahit may mga newline, spaces, o table symbols sa pagitan ng label at ng numero.
-$phone_pattern = '/(?:Primary\s*Number|Mobile\s*Number|Mobile\s*No\.?)\D*?(\+?(?:63|0)?9\d{9}|9\d{9})/is';
+        if (preg_match($phone_pattern, $text, $m)) {
+            $result['mobile_number'] = trim(preg_replace('/[^\d\+]+/', '', $m[1]));
+        } elseif (preg_match($phone_pattern, $clean_text, $m)) {
+            $result['mobile_number'] = trim(preg_replace('/[^\d\+]+/', '', $m[1]));
+        } else {
+            // SAFE FALLBACK: Sinusubukan ang table lines, spacing, o 10-digit na numero na nagsisimula sa 9
+            $fallback_patterns = [
+                '/Mobile\s*Number\D*?[\|\:]\D*?(\+?(?:63|0)?9\d{9}|9\d{9})/is',
+                '/Mobile\s*Number\s*[\|\:]\s*[\s\|]*(\+?(?:63|0)?9\d{9}|9\d{9})/is',
+                '/Mobile\s*Number\D{1,30}(\+?(?:63|0)?9\d{9}|9\d{9})/is',
+                // Partikular para sa mga format na tulad ng 9998852166 (10 digits)
+                '/Mobile\s*Number\s*[:|]?\s*([0-9\s]{10,})/is'
+            ];
 
-if (preg_match($phone_pattern, $text, $m)) {
-    $result['mobile_number'] = trim(preg_replace('/[^\d\+]+/', '', $m[1]));
-} elseif (preg_match($phone_pattern, $clean_text, $m)) {
-    $result['mobile_number'] = trim(preg_replace('/[^\d\+]+/', '', $m[1]));
-}
-        // 3. Extract Amount Due
-        if (preg_match('/(?:TOTAL\s+AMOUNT\s+DUE|Amount\s+to\s+Pay)\s*(?:\(total\s+amount\s+due\))?\s*([A-Z]{3}|Php|P)?\s*([\d,\.\(\)]+)\s*(CR)?/i', $text,$m)) {
+            foreach ($fallback_patterns as $fb_pattern) {
+                if (preg_match($fb_pattern, $text, $m) || preg_match($fb_pattern, $clean_text, $m)) {
+                    $cleaned_phone = trim(preg_replace('/[^\d\+]+/', '', $m[1]));
+                    if (strlen($cleaned_phone) >= 10) {
+                        $result['mobile_number'] = $cleaned_phone;
+                        break;
+                    }
+                }
+            }
+        }
+
+      // 3. Extract Amount Due
+        $raw_val = null;
+        if (preg_match('/(?:TOTAL\s+AMOUNT\s+DUE|Amount\s+to\s+Pay)\s*(?:\(total\s+amount\s+due\))?\s*([A-Z]{3}|Php|P)?\s*([\d,\.\(\)]+)\s*(CR)?/i', $text, $m)) {
             $raw_val = trim($m[2]);
+        } else {
+            // SAFE FALLBACK: Para sa bagong format kung saan nakahiwalay ang TOTAL AMOUNT DUE sa linya
+            if (preg_match('/TOTAL\s+AMOUNT\s+DUE\s*[:|]?\s*(?:[A-Z]{3}|Php|P|₱)?\s*([\d,\.\(\)]+)\s*(CR)?/i', $text, $m)) {
+                $raw_val = trim($m[1]);
+            } else {
+                // KARAGDAGANG SAFE FALLBACK: Para sa mga may table lines, newline separator, at ₱ sign (tulad ng 0793729456)
+                if (preg_match('/TOTAL\s+AMOUNT\s+DUE\s*[:|]?\s*[\s\|]*([₱P]?)\s*([\d,\.\(\)]+)/is', $text, $m)) {
+                    $raw_val = trim($m[2]);
+                } elseif (preg_match('/TOTAL\s+AMOUNT\s+DUE\D*?([₱P]?\s*[\d,\.]+)/is', $text, $m)) {
+                    $raw_val = trim($m[1]);
+                }
+            }
+        }
+
+        if ($raw_val !== null) {
+            // Linisin ang mga currency symbol bago i-process
+            $raw_val = str_replace(['Php', 'P', '₱', ' '], '', $raw_val);
             if (strpos($raw_val, '(') !== false) {
                 $raw_val = '-' . str_replace(['(', ')', ','], '', $raw_val);
             } else {
-                $raw_val = str_replace(',', '',$raw_val);
+                $raw_val = str_replace(',', '', $raw_val);
             }
             if (is_numeric($raw_val)) {
                 $result['amount_due'] = number_format((float)$raw_val, 2, '.', '');
             }
         }
-
         // 4. Telco-Specific Parsing
         if ($result['telco'] === 'Smart') {
             if (preg_match('/Invoice\s*Date\s*[:|]?\s*([A-Za-z]{3}\s+\d{1,2},\s+\d{4}|\d{2}\/\d{2}\/\d{2})/i', $text,$m)) {
@@ -136,10 +174,13 @@ if (preg_match($phone_pattern, $text, $m)) {
             if (preg_match('/DUE\s*DATE\s*:\s*AMOUNT\s*DUE\s*:.*?([A-Za-z]{3}\s+\d{1,2},\s+\d{4})/is', $clean_text,$m)) {
                 $result['due_date'] = parse_flexible_date($m[1]);
             }
-            if (preg_match('/Billing\s*Period\s*[:|]?\s*([A-Za-z]{3}\s+\d{1,2},\s+\d{4}|\d{2}\/\d{2}\/\d{2})\s*(?:to|\-)?\s*([A-Za-z]{3}\s+\d{1,2},\s+\d{4}|\d{2}\/\d{2}\/\d{2})/i', $text,$m)) {
-                $result['billing_period'] = trim($m[1]) . ' - ' . trim($m[2]);
+            // BAGUHIN ITO: Gamitan ng parse_flexible_date ang parehong simula at dulo ng billing period
+           if (preg_match('/Billing\s*Period(?:\s*Covering)?\s*[:|]?\s*([A-Za-z]{3}\s+\d{1,2},\s+\d{4}|\d{2}\/\d{2}\/\d{2})\s*(?:to|\-)?\s*([A-Za-z]{3}\s+\d{1,2},\s+\d{4}|\d{2}\/\d{2}\/\d{2})/i', $text,$m)) {
+                $result['billing_period'] = parse_flexible_date($m[1]) . ' - ' . parse_flexible_date($m[2]);
             }
-        } elseif ($result['telco'] === 'Globe') {
+        }
+        
+        elseif ($result['telco'] === 'Globe') {
             if (preg_match('/Billing\s*Period[^\d]*(\d{2}\/\d{2}\/\d{2})\s*(?:to|\-)\s*(\d{2}\/\d{2}\/\d{2})/i', $clean_page1, $m)) {$result['billing_period'] = parse_flexible_date($m[1]) . ' - ' . parse_flexible_date($m[2]);
             }
             if (preg_match('/Invoice\s*Date\b.*?(\d{3}\-\d{3}\-\d{3}\-\d{5})\D+(\d{2}\/\d{2}\/\d{2})/i', $clean_page1,$m)) {
@@ -330,7 +371,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['pdf_files'])) {
                     $details['due_date'],$file_link, 
                     $file_id,$db_file_path
                 ]);
-                $success_files[] = "$basename (Saved to DB | Telco: {$details['telco']} \vert{} {$gdrive_status})";
+                $success_files[] = "$basename (Saved to DB | Telco: {$details['telco']} | {$gdrive_status})";
             } catch (Exception $e) {
                 $failed_files[] = "$basename (DB Error: " . $e->getMessage() . ")";
             }
@@ -352,17 +393,33 @@ ob_start();
 <div class="bg-white shadow-lg rounded-2xl p-6 border border-gray-100 max-w-5xl mx-auto mt-6">
     <div class="mb-6">
         <h2 class="text-lg font-bold text-gray-800">Upload Statements (Batch Size: 10)</h2>
-        <p class="text-xs text-gray-500 mt-0.5">Drag and drop thousands of files safely. Files sync to Google Drive in batches of 10 to speed up processing without server timeouts.</p>
+        <p class="text-xs text-gray-500 mt-0.5">Drag and drop folders or PDF files safely. All PDF files inside dropped folders/subfolders will be automatically queued and synced to Google Drive in batches of 10.</p>
     </div>
 
-    <div id="dropZone" class="border-2 border-dashed border-gray-300 rounded-2xl p-8 text-center bg-gray-50/50 hover:bg-gray-50 transition-colors cursor-pointer mb-6 relative">
-        <input type="file" id="pdf_files" name="pdf_files[]" multiple class="absolute inset-0 opacity-0 cursor-pointer w-full h-full">
-        <div class="flex flex-col items-center pointer-events-none">
+   <div id="dropZone" class="border-2 border-dashed border-gray-300 rounded-2xl p-8 text-center bg-gray-50/50 hover:bg-gray-50 transition-colors mb-6 relative">
+        <div class="flex flex-col items-center">
             <div class="w-10 h-10 mb-3 text-gray-400 flex items-center justify-center bg-white rounded-full shadow-sm border border-gray-100">
-                📄
+                📁
             </div>
-            <p class="text-sm font-medium text-gray-700 mb-1">Drag & drop PDF files here, or <span class="text-blue-600 underline font-semibold">browse</span></p>
-            <p class="text-xs text-gray-400">Optimized for fast batch cloud syncing</p>
+            <p class="text-sm font-medium text-gray-700 mb-3">Drag & drop folders or PDF files here, or choose an option below:</p>
+            
+            <div class="flex flex-wrap justify-center gap-3">
+                <!-- Button para sa Folder Selection -->
+                <label class="cursor-pointer bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold py-2.5 px-4 rounded-xl shadow transition-colors inline-flex items-center space-x-2">
+                    <span>📂</span>
+                    <span>Browse Folder</span>
+                    <input type="file" id="folder_input" name="folder_input[]" webkitdirectory directory class="hidden">
+                </label>
+
+                <!-- Button para sa Individual/Multiple PDF Files Selection -->
+                <label class="cursor-pointer bg-gray-700 hover:bg-gray-800 text-white text-xs font-semibold py-2.5 px-4 rounded-xl shadow transition-colors inline-flex items-center space-x-2">
+                    <span>📄</span>
+                    <span>Select PDF Files</span>
+                    <input type="file" id="file_input" name="file_input[]" multiple accept=".pdf" class="hidden">
+                </label>
+            </div>
+
+            <p class="text-xs text-gray-400 mt-3">Supports bulk folder drop/selection or individual PDF file selection</p>
         </div>
     </div>
     
@@ -443,7 +500,8 @@ let isUploading = false;
 let abortUpload = false;
 
 document.addEventListener('DOMContentLoaded', function () {
-    const fileInput = document.getElementById('pdf_files');
+    const folderInput = document.getElementById('folder_input');
+    const fileInput = document.getElementById('file_input');
     const dropZone = document.getElementById('dropZone');
     const clearBtn = document.getElementById('clearBtn');
 
@@ -464,8 +522,29 @@ document.addEventListener('DOMContentLoaded', function () {
             }, false);
         });
 
-        dropZone.addEventListener('drop', function (e) {
-            handleFiles(e.dataTransfer.files);
+        dropZone.addEventListener('drop', async function (e) {
+            e.preventDefault();
+            e.stopPropagation();
+            dropZone.classList.remove('border-blue-500', 'bg-blue-50/30');
+
+            const items = e.dataTransfer.items;
+            if (items && items.length > 0) {
+                for (let i = 0; i < items.length; i++) {
+                    const entry = items[i].webkitGetAsEntry ? items[i].webkitGetAsEntry() : null;
+                    if (entry) {
+                        await traverseFileTree(entry);
+                    }
+                }
+            } else if (e.dataTransfer.files) {
+                handleFiles(e.dataTransfer.files);
+            }
+        });
+    }
+
+    if (folderInput) {
+        folderInput.addEventListener('change', function (e) {
+            handleFiles(Array.from(e.target.files));
+            folderInput.value = ''; 
         });
     }
 
@@ -485,11 +564,40 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 });
 
+async function traverseFileTree(item) {
+    if (item.isFile) {
+        await new Promise((resolve) => {
+            item.file((file) => {
+                if (file.name.toLowerCase().endsWith('.pdf')) {
+                    const exists = fileQueue.some(f => f.name === file.name && f.size === file.size);
+                    if (!exists) {
+                        fileQueue.push(file);
+                    }
+                }
+                resolve();
+            });
+        });
+    } else if (item.isDirectory) {
+        const dirReader = item.createReader();
+        await new Promise((resolve) => {
+            dirReader.readEntries(async (entries) => {
+                for (let i = 0; i < entries.length; i++) {
+                    await traverseFileTree(entries[i]);
+                }
+                resolve();
+            });
+        });
+    }
+    updateQueueUI();
+}
+
 function handleFiles(files) {
     if (!files || files.length === 0) return;
     Array.from(files).forEach(file => {
-        const exists = fileQueue.some(f => f.name === file.name && f.size === file.size);
-        if (!exists) fileQueue.push(file);
+        if (file.name.toLowerCase().endsWith('.pdf')) {
+            const exists = fileQueue.some(f => f.name === file.name && f.size === file.size);
+            if (!exists) fileQueue.push(file);
+        }
     });
     updateQueueUI();
 }
@@ -556,7 +664,7 @@ async function startUploadProcess() {
     if(logContent) logContent.innerHTML = '';
     if(modalSpinnerIcon) modalSpinnerIcon.style.display = 'inline-block';
 
-    const chunkSize = 10; // Batch size set to 10 files per HTTP request
+    const chunkSize = 10; 
     const totalFiles = fileQueue.length;
     let processedFiles = 0;
     let successTotal = 0;

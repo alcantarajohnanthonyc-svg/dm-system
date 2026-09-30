@@ -116,6 +116,8 @@ if (empty($items)) {
         echo "<td class='p-2 border'>";
         echo "<div class='flex items-center justify-center gap-4'>"; 
 
+
+
         // Only show the Edit button to Admin/Superadmin
         if ($_SESSION['role'] === 'superadmin' || $_SESSION['role'] === 'admin') {
             echo "<button type='button' onclick='editBreakdownItem(" . $id_val . ")' class='text-blue-600 hover:text-blue-800 text-2xl' title='Edit Record'>";
