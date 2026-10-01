@@ -456,6 +456,9 @@ function getCarrierBadge($carrierName) {
         class="bg-red-500 hover:bg-red-600 text-white px-4 py-2 rounded text-xs font-bold">
     CLOSE
 </button>
+
+
+
             </div>
         </div>
 
@@ -575,6 +578,10 @@ function getCarrierBadge($carrierName) {
         </div>
     </div>
 </div>
+
+
+
+
 
 <script>
 function openPasteChoiceModal() {
@@ -1711,6 +1718,7 @@ function closeDispatchModal() {
     }
     window.location.reload();
 }
+
 
 </script>
 
