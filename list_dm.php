@@ -5,6 +5,7 @@ header("Pragma: no-cache");
 session_start();
 require_once 'config.php';
 require_once 'main.php';
+include_once 'emailhub.php';
 
 if (!isset($_SESSION['user_id'])) {
     header("Location: login.php");
@@ -85,7 +86,7 @@ if (isset($_GET['action']) && $_GET['action'] === 'get_email_preview') {
     }
 
     $dm_number_display = $dm['dm_number'] ?? $dm_id;
-    $subject = "Statement of Account / Debit Memo - " . $dm_number_display;
+    $subject = "Statement of Account / Debit Memo - " . $account_number;
     $account_name_display = "{$recipient_name} / {$account_number}";
     $approved_plan_display = number_format($total_approved_plan, 2, '.', ',');
     $final_dm_val = number_format($total_final_dm, 2, '.', ',');
@@ -380,36 +381,39 @@ ob_start();
                     <i class="las la-cog text-base"></i> Actions
                 </button>
 
-                <div id="mainGearDropdown" class="hidden absolute left-0 mt-1 w-44 bg-white border border-gray-200 rounded-md shadow-lg z-50 py-1">
-                    <?php if ($_SESSION['role'] === 'superadmin' || $_SESSION['role'] === 'admin'): ?>
-                        <button type="button" onclick="openAddEditModal(activeDmId || ''); closeMainGearDropdown();" class="w-full text-left px-4 py-2 text-xs text-indigo-700 hover:bg-indigo-50 flex items-center">
-                            <i class="las la-plus mr-2 text-sm"></i> Add
-                        </button>
-                        <button type="button" onclick="window.location.href='import_dm.php'" class="w-full text-left px-4 py-2 text-xs text-emerald-700 hover:bg-emerald-50 flex items-center">
-                            <i class="las la-file-import mr-2 text-sm"></i> Import
-                        </button>
-                    <?php endif; ?>
+               <div id="mainGearDropdown" class="hidden absolute left-0 mt-1 w-48 bg-white border border-gray-200 rounded-xl shadow-xl z-50 py-1.5 overflow-hidden">
+    <?php if ($_SESSION['role'] === 'superadmin' || $_SESSION['role'] === 'admin'): ?>
+        <button type="button" onclick="openAddEditModal(activeDmId || ''); closeMainGearDropdown();" class="w-full text-left px-4 py-2.5 text-xs text-indigo-700 font-semibold hover:bg-indigo-50 hover:text-indigo-900 flex items-center transition-colors border-l-4 border-transparent hover:border-indigo-600">
+            <i class="las la-plus mr-2.5 text-base text-indigo-500"></i> Add New Entry
+        </button>
+        <button type="button" onclick="window.location.href='import_dm.php'" class="w-full text-left px-4 py-2.5 text-xs text-emerald-700 font-semibold hover:bg-emerald-50 hover:text-emerald-900 flex items-center transition-colors border-l-4 border-transparent hover:border-emerald-600">
+            <i class="las la-file-import mr-2.5 text-base text-emerald-500"></i> Import Data
+        </button>
+    <?php endif; ?>
 
-                    <button type="button" onclick="bulkExportPDF(); closeMainGearDropdown();" class="w-full text-left px-4 py-2 text-xs text-rose-700 hover:bg-rose-50 flex items-center">
-                        <i class="las la-file-export mr-2 text-sm"></i> Export
-                    </button>
-                
-                    <button type="button" onclick="document.getElementById('pasteExportModal').classList.remove('hidden'); closeMainGearDropdown();" class="w-full text-left px-4 py-2 text-xs text-blue-700 hover:bg-blue-50 flex items-center">
-                        <i class="las la-clipboard-list mr-2 text-sm"></i> Paste Exp
-                    </button>
-                    <button type="button" onclick="openEmailHubModal(); closeMainGearDropdown();" class="w-full text-left px-4 py-2 text-xs text-amber-700 hover:bg-amber-50 flex items-center">
-                        <i class="las la-envelope mr-2 text-sm"></i> Email Hub
-                    </button>
-                    <button type="button" onclick="sendEmailSelected(); closeMainGearDropdown();" class="w-full text-left px-4 py-2 text-xs text-amber-700 hover:bg-amber-50 flex items-center">
-                        <i class="las la-envelope mr-2 text-sm"></i> Send Email
-                    </button>
+    <button type="button" onclick="bulkExportPDF(); closeMainGearDropdown();" class="w-full text-left px-4 py-2.5 text-xs text-rose-700 font-semibold hover:bg-rose-50 hover:text-rose-900 flex items-center transition-colors border-l-4 border-transparent hover:border-rose-600">
+        <i class="las la-file-export mr-2.5 text-base text-rose-500"></i> Export PDF
+    </button>
+ 
+    <button type="button" onclick="document.getElementById('pasteExportModal').classList.remove('hidden'); closeMainGearDropdown();" class="w-full text-left px-4 py-2.5 text-xs text-blue-700 font-semibold hover:bg-blue-50 hover:text-blue-900 flex items-center transition-colors border-l-4 border-transparent hover:border-blue-600">
+        <i class="las la-clipboard-list mr-2.5 text-base text-blue-500"></i> Paste Export
+    </button>
 
-                    <?php if ($_SESSION['role'] === 'superadmin'): ?>
-                        <button type="button" onclick="deleteSelected(); closeMainGearDropdown();" class="w-full text-left px-4 py-2 text-xs text-red-700 hover:bg-red-50 flex items-center">
-                            <i class="las la-trash mr-2 text-sm"></i> Delete Selected
-                        </button>
-                    <?php endif; ?>
-                </div>
+    <button type="button" onclick="window.location.href='email_hub.php'; closeMainGearDropdown();" class="w-full text-left px-4 py-2.5 text-xs text-amber-700 font-semibold hover:bg-amber-50 hover:text-amber-900 flex items-center transition-colors border-l-4 border-transparent hover:border-amber-600">
+        <i class="las la-envelope mr-2.5 text-base text-amber-500"></i> Email Hub
+    </button>
+
+    <button type="button" onclick="sendEmailSelected(); closeMainGearDropdown();" class="w-full text-left px-4 py-2.5 text-xs text-amber-700 font-semibold hover:bg-amber-50 hover:text-amber-900 flex items-center transition-colors border-l-4 border-transparent hover:border-amber-600">
+        <i class="las la-paper-plane mr-2.5 text-base text-amber-500"></i> Send Selected Email
+    </button>
+
+    <?php if ($_SESSION['role'] === 'superadmin'): ?>
+        <div class="border-t border-gray-100 my-1"></div>
+        <button type="button" onclick="deleteSelected(); closeMainGearDropdown();" class="w-full text-left px-4 py-2.5 text-xs text-red-700 font-semibold hover:bg-red-50 hover:text-red-900 flex items-center transition-colors border-l-4 border-transparent hover:border-red-600">
+            <i class="las la-trash mr-2.5 text-base text-red-500"></i> Delete Selected
+        </button>
+    <?php endif; ?>
+</div>
             </div>
 
             <div class="flex gap-1 w-full md:w-auto items-center">

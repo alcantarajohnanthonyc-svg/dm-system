@@ -42,15 +42,20 @@ if (empty($dm_ids) || !is_array($dm_ids)) {
     exit;
 }
 
-$start_date = isset($_POST['start_date']) ? trim($_POST['start_date']) : '';
-$end_date   = isset($_POST['end_date']) ? trim($_POST['end_date']) : '';
+// Kunin ang bulk overrides mula sa POST galing sa cache/modals kung meron man
+$bulk_recipients  = isset($_POST['bulk_recipients']) ? json_decode($_POST['bulk_recipients'], true) : [];
+$bulk_ccs         = isset($_POST['bulk_ccs']) ? json_decode($_POST['bulk_ccs'], true) : [];
+$bulk_start_dates = isset($_POST['bulk_start_dates']) ? json_decode($_POST['bulk_start_dates'], true) : [];
+$bulk_end_dates   = isset($_POST['bulk_end_dates']) ? json_decode($_POST['bulk_end_dates'], true) : [];
+$bulk_subjects    = isset($_POST['bulk_subjects']) ? json_decode($_POST['bulk_subjects'], true) : [];
+$bulk_bodies      = isset($_POST['bulk_bodies']) ? json_decode($_POST['bulk_bodies'], true) : [];
+
+$global_start     = isset($_POST['start_date']) ? trim($_POST['start_date']) : '';
+$global_end       = isset($_POST['end_date']) ? trim($_POST['end_date']) : '';
 
 // Kunin ang item_ids mula sa POST kung galing sa breakdown modal
 $item_ids_input = isset($_POST['item_ids']) ? trim($_POST['item_ids']) : '';
 $breakdown_item_ids = !empty($item_ids_input) ? array_filter(explode(',', $item_ids_input)) : [];
-
-$bulk_recipients = isset($_POST['bulk_recipients']) ? json_decode($_POST['bulk_recipients'], true) : [];
-$bulk_ccs = isset($_POST['bulk_ccs']) ? json_decode($_POST['bulk_ccs'], true) : [];
 
 $success_count = 0;
 $fail_count = 0;
@@ -75,9 +80,16 @@ foreach ($dm_ids as $index => $dm_id) {
     }
 
     $account_number = $dm['account_number'];
-$recipient_email = isset($bulk_recipients[$index]) ? trim($bulk_recipients[$index]) : '';
-    $cc_emails = isset($bulk_ccs[$index]) ? trim($bulk_ccs[$index]) : '';
-    $recipient_name = 'Valued Client';
+    
+    // Kunin ang per-account custom overrides kung meron
+    $recipient_email = isset($bulk_recipients[$index]) ? trim($bulk_recipients[$index]) : '';
+    $cc_emails       = isset($bulk_ccs[$index]) ? trim($bulk_ccs[$index]) : '';
+    $custom_start    = isset($bulk_start_dates[$index]) ? trim($bulk_start_dates[$index]) : $global_start;
+    $custom_end      = isset($bulk_end_dates[$index]) ? trim($bulk_end_dates[$index]) : $global_end;
+    $custom_subject  = isset($bulk_subjects[$index]) ? trim($bulk_subjects[$index]) : '';
+    $custom_body     = isset($bulk_bodies[$index]) ? trim($bulk_bodies[$index]) : '';
+    
+    $recipient_name  = 'Valued Client';
 
     // 2. Kunin ang impormasyon mula sa 'account_emails' table para sa pangalan o fallback ng email
     $email_stmt = $pdo->prepare("SELECT * FROM account_emails WHERE account_number = ?");
@@ -96,16 +108,30 @@ $recipient_email = isset($bulk_recipients[$index]) ? trim($bulk_recipients[$inde
         $recipient_name = $account_email_row['full_name'];
     }
 
-    // 3. Kung pagkatapos nito ay wala pa ring email (wala sa modal at wala sa database), saka lamang mag-fail
+    // 3. Kung pagkatapos nito ay wala pa ring email, mag-fail
     if (empty($recipient_email)) {
         $fail_count++;
-        $error_msg = "Account {$account_number} (DM ID: {$dm_id}) - No email mapping found.";
+        $error_msg = "Account {$account_number} (DM ID: {$dm_id}) - Failed: No email address provided or mapped.";
         $failed_items[] = $error_msg;
-        $admin_report_items[] = get_failed_report_item($account_number, $dm['telco'] ?? 'N/A', $dm['mobile_number'] ?? 'N/A', 'No Email', $error_msg);
-        error_log($error_msg);
+        
+        $admin_report_items[] = [
+            'status' => 'FAILED', 
+            'date' => date('Y-m-d H:i:s'), 
+            'account' => $account_number,
+            'telco' => $dm['telco'] ?? 'N/A', 
+            'mobile_number' => $dm['mobile_number'] ?? 'N/A', 
+            'email' => 'No Email Provided',
+            'billing_period' => 'N/A', 
+            'total_charge' => '0.00',
+            'filename' => 'N/A', 
+            'file_link' => '', 
+            'sent_by' => 'System Administrator', 
+            'details' => $error_msg
+        ];
         continue;
     }
-    // 3. Pull details from debit_memo_items (Optional filtering via breakdown checkboxes or date range)[cite: 21]
+
+    // 3.5 Pull details from debit_memo_items gamit ang custom date range kung naka-specify
     $itemQuery = "SELECT * FROM debit_memo_items WHERE dm_id = ?";
     $itemParams = [$dm_id];
 
@@ -115,10 +141,10 @@ $recipient_email = isset($bulk_recipients[$index]) ? trim($bulk_recipients[$inde
         foreach ($breakdown_item_ids as $iid) {
             $itemParams[] = $iid;
         }
-    } elseif (!empty($start_date) && !empty($end_date)) {
+    } elseif (!empty($custom_start) && !empty($custom_end)) {
         $itemQuery .= " AND coverage_start >= ? AND coverage_end <= ?";
-        $itemParams[] = $start_date;
-        $itemParams[] = $end_date;
+        $itemParams[] = $custom_start;
+        $itemParams[] = $custom_end;
     }
     
     $itemQuery .= " ORDER BY coverage_start ASC";
@@ -150,7 +176,6 @@ $recipient_email = isset($bulk_recipients[$index]) ? trim($bulk_recipients[$inde
         }
     }
 
-    // Kunin ang pinakauna at pinakahuling petsa para maging isang malinis na range na lang
     if (!empty($raw_start_dates) && !empty($raw_end_dates)) {
         $earliest_start = date('M d, Y', strtotime(min($raw_start_dates)));
         $latest_end = date('M d, Y', strtotime(max($raw_end_dates)));
@@ -163,8 +188,8 @@ $recipient_email = isset($bulk_recipients[$index]) ? trim($bulk_recipients[$inde
     $approved_plan_display = number_format($total_approved_plan, 2, '.', ',');
     $final_dm_val = number_format($total_final_dm, 2, '.', ',');
 
-    // 4. Generate Debit Memo PDF attachment (Itinama ang pagpasa ng $breakdown_item_ids sa pangatlong parameter)[cite: 21]
-$pdf_result = createDebitMemoPDF($dm_id, $pdo, $breakdown_item_ids, $start_date, $end_date);
+    // 4. Generate Debit Memo PDF attachment
+    $pdf_result = createDebitMemoPDF($dm_id, $pdo, $breakdown_item_ids, $custom_start, $custom_end);
 
     if (!is_array($pdf_result) || count($pdf_result) != 2) {
         $fail_count++;
@@ -190,22 +215,29 @@ $pdf_result = createDebitMemoPDF($dm_id, $pdo, $breakdown_item_ids, $start_date,
     }
 
     $filename = 'Debit_Memo_' . $acc_num . '.pdf';
-    $dm_number_display = $dm['dm_number'] ?? $dm_id;
-    $subject = "Statement of Account / Debit Memo - " . $dm_number_display;
+    
+    // Gamitin ang custom subject kung mayroon, kung wala ay default
+    $subject = !empty($custom_subject) ? $custom_subject : "Statement of Account / Debit Memo - " . $account_number;
 
-    $html_content = "
-    <div style='font-family: Arial, sans-serif; font-size: 11pt; color: #333;'>
-        <p>Dear Ma'am/Sir,</p>
-        <p>Please find attached your Statement of Account (SOA) reflecting the applicable Debit Memo charges:</p>
-        <p><b>Summary Details:</b><br>
-        Period Covered: {$data_coverage}<br>
-        Account Name: {$account_name_display}<br>
-        Approved Plan (Company Share): ₱ {$approved_plan_display}<br>
-        Total Chargeable Amount: ₱ {$final_dm_val}</p>
-        <p>For any questions or concerns, please reply directly to this email.</p>
-        <p>Thank you,</p>
-        <p><b>IT Telco Admin Team</b></p>
-    </div>";
+    // Gamitin ang custom body kung mayroon, kung wala ay default HTML format
+    if (!empty($custom_body)) {
+        // Palitan ang newline ng <br> para sa maayos na email formatting
+        $html_content = nl2br(htmlspecialchars($custom_body));
+    } else {
+        $html_content = "
+        <div style='font-family: Arial, sans-serif; font-size: 11pt; color: #333;'>
+            <p>Dear Ma'am/Sir,</p>
+            <p>Please find attached your Statement of Account (SOA) reflecting the applicable Debit Memo charges:</p>
+            <p><b>Summary Details:</b><br>
+            Period Covered: {$data_coverage}<br>
+            Account Name: {$account_name_display}<br>
+            Approved Plan (Company Share): ₱ {$approved_plan_display}<br>
+            Total Chargeable Amount: ₱ {$final_dm_val}</p>
+            <p>For any questions or concerns, please reply directly to this email.</p>
+            <p>Thank you,</p>
+            <p><b>IT Telco Admin Team</b></p>
+        </div>";
+    }
 
     $attachments = [
         [
@@ -215,7 +247,7 @@ $pdf_result = createDebitMemoPDF($dm_id, $pdo, $breakdown_item_ids, $start_date,
         ]
     ];
 
-    // 5. Dynamically attach matching PDFs from Google Drive[cite: 21]
+    // 5. Dynamically attach matching PDFs from Google Drive
     $soa_query = "
         SELECT DISTINCT pdf.filename, pdf.file_link 
         FROM debit_memo_items dmi
@@ -231,10 +263,10 @@ $pdf_result = createDebitMemoPDF($dm_id, $pdo, $breakdown_item_ids, $start_date,
         foreach ($breakdown_item_ids as $iid) {
             $soa_params[] = $iid;
         }
-    } elseif (!empty($start_date) && !empty($end_date)) {
+    } elseif (!empty($custom_start) && !empty($custom_end)) {
         $soa_query .= " AND dmi.coverage_start >= ? AND dmi.coverage_end <= ?";
-        $soa_params[] = $start_date;
-        $soa_params[] = $end_date;
+        $soa_params[] = $custom_start;
+        $soa_params[] = $custom_end;
     }
 
     $soa_query .= " AND ABS(DATEDIFF(dmi.coverage_end, STR_TO_DATE(SUBSTRING_INDEX(pdf.billing_period, ' - ', -1), '%Y-%m-%d'))) <= 5
@@ -246,9 +278,9 @@ $pdf_result = createDebitMemoPDF($dm_id, $pdo, $breakdown_item_ids, $start_date,
 
     $downloaded_pdf_paths = [];
     $primary_file_link = '';
-    foreach ($soa_files as $index => $soa) {
+    foreach ($soa_files as $idx_f => $soa) {
         $pdf_filename = $soa['filename'];
-        if ($index === 0) $primary_file_link = $soa['file_link'] ?? '';
+        if ($idx_f === 0) $primary_file_link = $soa['file_link'] ?? '';
         if (!empty($pdf_filename)) {
             $downloaded_path = get_or_download_pdf_path($pdf_filename, $pdo);
             if (!empty($downloaded_path) && file_exists($downloaded_path)) {
@@ -261,7 +293,8 @@ $pdf_result = createDebitMemoPDF($dm_id, $pdo, $breakdown_item_ids, $start_date,
             }
         }
     }
-      if (isset($_FILES['additional_attachments']) && !empty($_FILES['additional_attachments']['name'][0])) {
+
+    if (isset($_FILES['additional_attachments']) && !empty($_FILES['additional_attachments']['name'][0])) {
         $file_count = count($_FILES['additional_attachments']['name']);
         for ($i = 0; $i < $file_count; $i++) {
             if ($_FILES['additional_attachments']['error'][$i] === UPLOAD_ERR_OK) {
@@ -269,7 +302,6 @@ $pdf_result = createDebitMemoPDF($dm_id, $pdo, $breakdown_item_ids, $start_date,
                 $orig_name = $_FILES['additional_attachments']['name'][$i];
                 $file_type = $_FILES['additional_attachments']['type'][$i];
                 
-                // Ilipat ang temporary file para mabasa ng email attachment loop
                 $new_temp_path = tempnam(sys_get_temp_dir(), 'user_att_');
                 if (move_uploaded_file($tmp_name, $new_temp_path)) {
                     $attachments[] = [
@@ -283,7 +315,6 @@ $pdf_result = createDebitMemoPDF($dm_id, $pdo, $breakdown_item_ids, $start_date,
     }
 
     // 6. Send Email via SMTP
-// 6. Send Email via SMTP (Isinama ang $cc_emails)
     $mail_sent = send_smtp_mail_with_multi_attachments($recipient_email, $subject, $attachments, $html_content, $cc_emails);
     if ($mail_sent === true) {
         $success_count++;
@@ -310,7 +341,6 @@ $pdf_result = createDebitMemoPDF($dm_id, $pdo, $breakdown_item_ids, $start_date,
         $admin_report_items[] = get_failed_report_item($account_number, $telco_val, $mobile_number_val, $recipient_email, $error_msg, $data_coverage, number_format($total_final_dm, 2, '.', ','), $filename, $primary_file_link);
     }
 
-    // Cleanup temporary generated PDF
     if (!empty($pdf_temp_path) && file_exists($pdf_temp_path)) @unlink($pdf_temp_path);
     foreach ($downloaded_pdf_paths as $temp_pdf) {
         if (file_exists($temp_pdf)) @unlink($temp_pdf);
@@ -320,7 +350,6 @@ $pdf_result = createDebitMemoPDF($dm_id, $pdo, $breakdown_item_ids, $start_date,
 // 7. Dispatch Summary Report to Admins
 send_dispatch_report_to_admins($pdo, $admin_report_items, $success_count, $fail_count);
 
-// Build structured detailed message for modal/response display
 $detailed_message = "Bulk PDF dispatch completed. Successful: {$success_count}, Failed: {$fail_count}.";
 if (!empty($success_items)) {
     $detailed_message .= "\n\nSuccessful Accounts:\n- " . implode("\n- ", $success_items);
@@ -565,7 +594,7 @@ function send_smtp_mail_with_multi_attachments($to, $subject, $attachments, $htm
         return "SMTP Auth/Command error";
     }
     
- $all_recipients = explode(',', $to);
+    $all_recipients = explode(',', $to);
     if (!empty($cc)) {
         $cc_emails_array = explode(',', $cc);
         $all_recipients = array_merge($all_recipients, $cc_emails_array);
