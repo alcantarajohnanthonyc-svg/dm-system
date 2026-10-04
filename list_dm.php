@@ -18,6 +18,10 @@ if (isset($_GET['action']) && $_GET['action'] === 'get_email_preview') {
     $item_ids_str = isset($_GET['item_ids']) ? trim($_GET['item_ids']) : '';
     $breakdown_item_ids = !empty($item_ids_str) ? array_filter(explode(',', $item_ids_str)) : [];
 
+    // Kunin ang start_date at end_date filter mula sa request
+    $start_date = isset($_GET['start_date']) ? trim($_GET['start_date']) : '';
+    $end_date   = isset($_GET['end_date']) ? trim($_GET['end_date']) : '';
+
     $stmt = $conn->prepare("SELECT * FROM debit_memos WHERE dm_id = ?");
     $stmt->execute([$dm_id]);
     $dm = $stmt->fetch(PDO::FETCH_ASSOC);
@@ -45,6 +49,14 @@ if (isset($_GET['action']) && $_GET['action'] === 'get_email_preview') {
         $itemQuery .= " AND id IN ($placeholders)";
         foreach ($breakdown_item_ids as $iid) { $itemParams[] = $iid; }
     }
+
+    // Isama ang date filter kung meron man
+    if (!empty($start_date) && !empty($end_date)) {
+        $itemQuery .= " AND coverage_start >= ? AND coverage_end <= ?";
+        $itemParams[] = $start_date;
+        $itemParams[] = $end_date;
+    }
+
     $itemQuery .= " ORDER BY coverage_start ASC";
 
     $stmtItems = $conn->prepare($itemQuery);
@@ -78,10 +90,11 @@ if (isset($_GET['action']) && $_GET['action'] === 'get_email_preview') {
     $approved_plan_display = number_format($total_approved_plan, 2, '.', ',');
     $final_dm_val = number_format($total_final_dm, 2, '.', ',');
 
-    $html_content = "Dear Ma'am/Sir,\n\nPlease find attached your Statement of Account (SOA) reflecting the applicable Debit Memo charges:\n\nSummary Details:\nPeriod Covered: {$data_coverage}\nAccount Name: {$account_name_display}\nApproved Plan (Company Share): ₱ {$approved_plan_display}\nTotal Chargeable Amount: ₱ {$final_dm_val}\n\nFor any questions or concerns, please reply directly to this email.\n\nThank you,\nIT Telco Admin Team";
+    $html_content = "Dear Ma'am/Sir,\n\nPlease find attached your Statement of Account (SOA) reflecting the applicable Debit Memo charges:\n\nSummary Details:\nPeriod Covered: {$data_coverage}\nAccount Name: {$account_name_display}\nApproved Plan (Company Share): ₱ {$approved_plan_display}\nTotal Excess Charges Amount: ₱ {$final_dm_val}\n\nFor any questions or concerns, please reply directly to this email.\n\nThank you,\nIT Telco Admin Team";
 
     require_once 'pdf_generator.php';
-    $pdf_result = createDebitMemoPDF($dm_id, $conn, $breakdown_item_ids, '', '');
+    // Ipasa ang petsa sa PDF generator function mo kung kinakailangan
+    $pdf_result = createDebitMemoPDF($dm_id, $conn, $breakdown_item_ids, $start_date, $end_date);
     $attachments = [];
 
     if (is_array($pdf_result) && count($pdf_result) == 2) {
@@ -95,6 +108,7 @@ if (isset($_GET['action']) && $_GET['action'] === 'get_email_preview') {
         ];
     }
 
+    // Query para sa mga SOA files na pasok sa date range at items
     $soa_query = "SELECT DISTINCT pdf.filename, pdf.file_link FROM debit_memo_items dmi JOIN pdf_extracted_details pdf ON pdf.account_number = ? WHERE dmi.dm_id = ?";
     $soa_params = [$account_number, $dm_id];
     if (!empty($breakdown_item_ids)) {
@@ -102,6 +116,14 @@ if (isset($_GET['action']) && $_GET['action'] === 'get_email_preview') {
         $soa_query .= " AND dmi.id IN ($placeholders)";
         foreach ($breakdown_item_ids as $iid) { $soa_params[] = $iid; }
     }
+    
+    // Idagdag din ang date filter dito kung meron
+    if (!empty($start_date) && !empty($end_date)) {
+        $soa_query .= " AND dmi.coverage_start >= ? AND dmi.coverage_end <= ?";
+        $soa_params[] = $start_date;
+        $soa_params[] = $end_date;
+    }
+
     $soa_query .= " AND ABS(DATEDIFF(dmi.coverage_end, STR_TO_DATE(SUBSTRING_INDEX(pdf.billing_period, ' - ', -1), '%Y-%m-%d'))) <= 5";
     
     $soa_stmt = $conn->prepare($soa_query);
@@ -165,6 +187,55 @@ if (isset($_GET['action']) && $_GET['action'] === 'get_bulk_email_preview') {
     } catch (Exception $e) {
         echo json_encode(['status' => 'error', 'message' => $e->getMessage()]);
     }
+    exit;
+}
+
+// === 3. API HANDLER PARA SA PASTE EMAIL HUB MAPPING ===
+if (isset($_GET['action']) && $_GET['action'] === 'get_dm_ids_by_paste') {
+    header('Content-Type: application/json');
+    $input = json_decode(file_get_contents('php://input'), true);
+    $raw_text = isset($input['pasted_text']) ? $input['pasted_text'] : '';
+    
+    // Kunin ang start_date at end_date mula sa request
+    $start_date = isset($input['start_date']) ? $input['start_date'] : '';
+    $end_date = isset($input['end_date']) ? $input['end_date'] : '';
+    
+    $lines = preg_split('/\r\n|\r|\n/', $raw_text);
+    $tokens = [];
+    foreach ($lines as $line) {
+        $parts = preg_split('/\s+/', trim($line));
+        foreach ($parts as $part) {
+            $clean = trim($part);
+            if (!empty($clean)) {
+                $tokens[] = $clean;
+            }
+        }
+    }
+    
+    $dm_ids = [];
+    if (!empty($tokens)) {
+        $placeholders = implode(',', array_fill(0, count($tokens), '?'));
+        
+        // Buuin ang base query
+        $sql = "SELECT DISTINCT dm.dm_id 
+                FROM debit_memos dm 
+                LEFT JOIN account_emails ae ON dm.account_number = ae.account_number 
+                WHERE (dm.account_number IN ($placeholders) OR ae.email_address IN ($placeholders))";
+        
+        $params = array_merge($tokens, $tokens);
+        
+        // Idagdag ang petsa sa filter kung ito ay naka-set
+        if (!empty($start_date) && !empty($end_date)) {
+            $sql .= " AND dm.created_at BETWEEN ? AND ?"; // Palitan ang 'created_at' ng tamang column name ng petsa sa iyong database kung kinakailangan
+            array_push($params, $start_date . ' 00:00:00', $end_date . ' 23:59:59');
+        }
+                
+        $stmt = $conn->prepare($sql);
+        $stmt->execute($params);
+        $dm_ids = $stmt->fetchAll(PDO::FETCH_COLUMN);
+    }
+    
+    echo json_encode(['status' => 'success', 'dm_ids' => $dm_ids]);
     exit;
 }
 
@@ -326,7 +397,9 @@ ob_start();
                     <button type="button" onclick="document.getElementById('pasteExportModal').classList.remove('hidden'); closeMainGearDropdown();" class="w-full text-left px-4 py-2 text-xs text-blue-700 hover:bg-blue-50 flex items-center">
                         <i class="las la-clipboard-list mr-2 text-sm"></i> Paste Exp
                     </button>
-
+                    <button type="button" onclick="openEmailHubModal(); closeMainGearDropdown();" class="w-full text-left px-4 py-2 text-xs text-amber-700 hover:bg-amber-50 flex items-center">
+                        <i class="las la-envelope mr-2 text-sm"></i> Email Hub
+                    </button>
                     <button type="button" onclick="sendEmailSelected(); closeMainGearDropdown();" class="w-full text-left px-4 py-2 text-xs text-amber-700 hover:bg-amber-50 flex items-center">
                         <i class="las la-envelope mr-2 text-sm"></i> Send Email
                     </button>
@@ -794,7 +867,8 @@ $base_query = http_build_query($current_params);
             
             <input type="hidden" id="preview_dm_id" name="dm_ids" value="">
             <input type="hidden" id="preview_item_ids" name="item_ids" value="">
-
+            <input type="hidden" id="preview_start_date" name="start_date" value="">
+    <input type="hidden" id="preview_end_date" name="end_date" value="">
             <!-- To Email -->
             <div>
                 <label class="block text-[10px] font-bold text-gray-500 uppercase">To Email</label>
@@ -859,6 +933,83 @@ $base_query = http_build_query($current_params);
         <div class="text-right">
             <button type="button" id="closeDispatchModalBtn" onclick="closeDispatchModal()" style="display:none;" class="bg-gray-700 text-white px-4 py-2 rounded-xl text-xs font-semibold">Close</button>
         </div>
+    </div>
+</div>
+
+<!-- EMAIL HUB MODAL -->
+<div id="emailHubModal" style="display: none;" class="fixed inset-0 z-[99999] flex items-center justify-center bg-black/60 backdrop-blur-sm">
+    <div class="bg-white rounded-3xl shadow-2xl border border-gray-100 w-full max-w-xl p-6 mx-4 flex flex-col">
+        
+        <!-- Header -->
+        <div class="flex justify-between items-center mb-4 pb-3 border-b">
+            <div>
+                <h3 class="text-lg font-bold text-gray-800" id="emailHubTitle">Email Hub</h3>
+                <p class="text-xs text-gray-500 font-medium" id="emailHubSubtitle">Paste accounts/emails or upload a CSV to send emails.</p>
+            </div>
+            <button type="button" onclick="closeEmailHubModal()" class="text-gray-400 hover:text-gray-600 text-lg font-bold">✕</button>
+        </div>
+
+        <!-- Tabs Navigation -->
+        <div class="flex border-b border-gray-200 mb-4">
+            <button type="button" onclick="switchEmailHubTab(1)" id="tabBtn1" class="flex-1 pb-2 text-xs font-bold text-amber-600 border-b-2 border-amber-600 transition-all">
+                Paste Accounts / Emails
+            </button>
+            <button type="button" onclick="switchEmailHubTab(2)" id="tabBtn2" class="flex-1 pb-2 text-xs font-bold text-gray-400 border-b-2 border-transparent hover:text-gray-600 transition-all">
+                Upload CSV
+            </button>
+        </div>
+
+        <!-- TAB 1 CONTENT: Paste Accounts -->
+        <div id="emailHubTab1" class="space-y-4">
+            <div>
+                <span id="pasteItemCount" class="text-xs font-semibold text-blue-600 block mb-1">0 items found</span>
+                <textarea id="pasteAccountInput" rows="5" class="w-full p-3 border border-gray-200 rounded-xl text-xs focus:ring-2 focus:ring-amber-500 focus:outline-none resize-none" placeholder="Paste account numbers or email addresses here..."></textarea>
+            </div>
+
+            <div class="grid grid-cols-2 gap-3">
+                <div>
+                    <label class="block text-[11px] font-bold text-gray-600 uppercase mb-1">Start Date</label>
+                    <input type="date" class="w-full p-2.5 border border-gray-200 rounded-xl text-xs bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-amber-500">
+                </div>
+                <div>
+                    <label class="block text-[11px] font-bold text-gray-600 uppercase mb-1">End Date</label>
+                    <input type="date" class="w-full p-2.5 border border-gray-200 rounded-xl text-xs bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-amber-500">
+                </div>
+            </div>
+
+            <button type="button" onclick="processPasteEmailHub()" class="w-full py-3 bg-[#1e293b] text-white rounded-xl text-xs font-bold hover:bg-[#0f172a] shadow-md transition-all mt-2">
+                Process and Send Records
+            </button>
+        </div>
+
+        <!-- TAB 2 CONTENT: Upload CSV & Download Template -->
+        <div id="emailHubTab2" class="space-y-4" style="display: none;">
+            <div class="p-4 border-2 border-dashed border-gray-300 rounded-2xl bg-gray-50 text-center flex flex-col items-center justify-center py-8">
+                <i class="las la-cloud-upload-alt text-3xl text-amber-600 mb-2"></i>
+                <h4 class="font-bold text-xs text-gray-700 mb-1">Upload CSV File</h4>
+                <p class="text-[11px] text-gray-500 mb-4">Drag your CSV file here or click to browse from your computer.</p>
+                <input type="file" id="csvEmailFile" accept=".csv" class="hidden" onchange="handleCsvFileSelect(this)">
+                <button type="button" onclick="document.getElementById('csvEmailFile').click()" class="px-4 py-2 bg-white border border-gray-300 text-gray-700 rounded-xl text-xs font-semibold hover:bg-gray-100 shadow-sm">
+                    Browse File
+                </button>
+                <span id="selectedCsvFileName" class="text-[11px] text-emerald-600 font-medium mt-2"></span>
+            </div>
+
+            <div class="flex items-center justify-between p-3 bg-amber-50 border border-amber-200 rounded-xl">
+                <div>
+                    <h5 class="text-xs font-bold text-amber-900">Need a template?</h5>
+                    <p class="text-[10px] text-amber-700">Download the CSV template for the correct email/accounts format.</p>
+                </div>
+                <button type="button" onclick="downloadEmailCsvTemplate()" class="px-3 py-2 bg-amber-600 text-white rounded-xl text-xs font-bold hover:bg-amber-700 shadow-sm whitespace-nowrap">
+                    Download Template
+                </button>
+            </div>
+
+            <button type="button" onclick="processCsvEmailHub()" class="w-full py-3 bg-[#1e293b] text-white rounded-xl text-xs font-bold hover:bg-[#0f172a] shadow-md transition-all mt-2">
+                Upload and Send CSV
+            </button>
+        </div>
+
     </div>
 </div>
 
@@ -1623,11 +1774,15 @@ function proceedBulkDispatchFromModal() {
         alert("No accounts selected for dispatch.");
         return;
     }
+    let startDate = document.querySelector('input[name="start_date"]') ? document.querySelector('input[name="start_date"]').value : '';
+    let endDate = document.querySelector('input[name="end_date"]') ? document.querySelector('input[name="end_date"]').value : '';
 
     let formData = new FormData();
     formData.append('dm_ids', dmIds.join(','));
     formData.append('bulk_recipients', JSON.stringify(recipients));
     formData.append('bulk_ccs', JSON.stringify(ccs));
+    formData.append('start_date', startDate);
+    formData.append('end_date', endDate);
 
     executeDispatchFetch(formData, dmIds.length);
 }
@@ -1652,7 +1807,12 @@ function sendEmailFromBreakdown() {
 }
 
 function previewEmailBeforeSend(dmId, itemIds = '') {
-    fetch(`list_dm.php?action=get_email_preview&dm_id=${dmId}&item_ids=${itemIds}`)
+   const startDate = document.querySelector('input[name="start_date"]') ? document.querySelector('input[name="start_date"]').value : '';
+    const endDate = document.querySelector('input[name="end_date"]') ? document.querySelector('input[name="end_date"]').value : '';
+
+    let url = `list_dm.php?action=get_email_preview&dm_id=${dmId}&item_ids=${itemIds}&start_date=${startDate}&end_date=${endDate}`;
+
+    fetch(url)
     .then(res => res.json())
     .then(data => {
         if (data.status === 'success') {
@@ -1697,6 +1857,15 @@ function submitConfirmedEmail() {
     const form = document.getElementById('emailPreviewForm');
     const formData = new FormData(form);
 
+    const mainStartDate = document.querySelector('input[name="start_date"]') ? document.querySelector('input[name="start_date"]').value : '';
+    const mainEndDate = document.querySelector('input[name="end_date"]') ? document.querySelector('input[name="end_date"]').value : '';
+
+    if (!formData.get('start_date') && mainStartDate) {
+        formData.append('start_date', mainStartDate);
+    }
+    if (!formData.get('end_date') && mainEndDate) {
+        formData.append('end_date', mainEndDate);
+    }
     // Siguraduhing nasasama ang mga bagong file na in-upload kung mayroon man
     const fileInput = document.getElementById('additional_attachments');
     if (fileInput && fileInput.files.length > 0) {
@@ -1766,6 +1935,124 @@ function closeDispatchModal() {
     }
     window.location.reload();
 }
+//email Hub
+
+function openEmailHubModal() {
+    const modal = document.getElementById('emailHubModal');
+    if (modal) {
+        modal.style.display = 'flex';
+        switchEmailHubTab(1); // Default to Tab 1 on open
+    }
+}
+
+function closeEmailHubModal() {
+    const modal = document.getElementById('emailHubModal');
+    if (modal) {
+        modal.style.display = 'none';
+    }
+}
+
+function switchEmailHubTab(tabNumber) {
+    const tab1 = document.getElementById('emailHubTab1');
+    const tab2 = document.getElementById('emailHubTab2');
+    const btn1 = document.getElementById('tabBtn1');
+    const btn2 = document.getElementById('tabBtn2');
+
+    if (tabNumber === 1) {
+        tab1.style.display = 'block';
+        tab2.style.display = 'none';
+        
+        btn1.className = "flex-1 pb-2 text-xs font-bold text-amber-600 border-b-2 border-amber-600 transition-all";
+        btn2.className = "flex-1 pb-2 text-xs font-bold text-gray-400 border-b-2 border-transparent hover:text-gray-600 transition-all";
+    } else {
+        tab1.style.display = 'none';
+        tab2.style.display = 'block';
+        
+        btn2.className = "flex-1 pb-2 text-xs font-bold text-amber-600 border-b-2 border-amber-600 transition-all";
+        btn1.className = "flex-1 pb-2 text-xs font-bold text-gray-400 border-b-2 border-transparent hover:text-gray-600 transition-all";
+    }
+}
+
+// Auto count items in Tab 1 textarea
+document.addEventListener('DOMContentLoaded', () => {
+    const textarea = document.getElementById('pasteAccountInput');
+    if (textarea) {
+        textarea.addEventListener('input', function() {
+            const lines = this.value.trim().split(/\r*\n/).filter(line => line.trim() !== '');
+            document.getElementById('pasteItemCount').innerText = `${lines.length} items found`;
+        });
+    }
+});
+
+function handleCsvFileSelect(input) {
+    if (input.files && input.files[0]) {
+        document.getElementById('selectedCsvFileName').innerText = `Selected file: ${input.files[0].name}`;
+    }
+}
+
+function downloadEmailCsvTemplate() {
+    // Generate the CSV template based on the custom headers and format discussed
+    const csvContent = "data:text/csv;charset=utf-8,account_number,start_date,end_date,custom_to,custom_cc,custom_subject,custom_body\n" +
+        "123456,2026-01-01,2026-01-31,clientA@email.com,boss@clientA.com,Notice for Account 123456,\"Hello Client A, eto po ang SOA niyo...\"\n" +
+        "789012,2026-01-01,2026-01-31,clientB@email.com,,,\"ito yung napagusapan nten knina on nakalimutan mona\"";
+    
+    const encodedUri = encodeURI(csvContent);
+    const link = document.createElement("a");
+    link.setAttribute("href", encodedUri);
+    link.setAttribute("download", "email_hub_custom_template.csv");
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+}
+
+function processPasteEmailHub() {
+    const textarea = document.getElementById('pasteAccountInput');
+    const pastedText = textarea ? textarea.value.trim() : '';
+    
+    // Kunin ang value ng start date at end date mula sa UI elements (palitan ang IDs ayon sa iyong HTML)
+    const startDate = document.getElementById('startDateFilter') ? document.getElementById('startDateFilter').value : '';
+    const endDate = document.getElementById('endDateFilter') ? document.getElementById('endDateFilter').value : '';
+    
+    if (!pastedText) {
+        alert('Please paste account numbers or email addresses first.');
+        return;
+    }
+
+    // Ipasa ang pasted_text pati na rin ang start_date at end_date sa API
+    fetch('list_dm.php?action=get_dm_ids_by_paste', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ 
+            pasted_text: pastedText,
+            start_date: startDate,
+            end_date: endDate
+        })
+    })
+    .then(res => res.json())
+    .then(data => {
+        if (data.status === 'success' && data.dm_ids && data.dm_ids.length > 0) {
+            closeEmailHubModal();
+            openBulkEmailReviewModal(data.dm_ids);
+        } else {
+            alert('No matching debit memo accounts found for the pasted list within the selected date range.');
+        }
+    })
+    .catch(err => {
+        console.error('Paste email hub error:', err);
+        alert('An error occurred while processing the pasted accounts.');
+    });
+}
+
+function processCsvEmailHub() {
+    const fileInput = document.getElementById('csvEmailFile');
+    if (!fileInput.files || fileInput.files.length === 0) {
+        alert('Please select a CSV file to upload first.');
+        return;
+    }
+    alert('CSV file successfully uploaded for the Email Hub.');
+    closeEmailHubModal();
+}
+
 </script>
 
 <?php
