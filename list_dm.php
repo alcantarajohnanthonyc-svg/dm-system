@@ -85,15 +85,13 @@ if (isset($_GET['action']) && $_GET['action'] === 'get_email_preview') {
         $data_coverage = "As of current billing";
     }
 
-    $dm_number_display = $dm['dm_number'] ?? $dm_id;
+   $dm_number_display = $dm['dm_number'] ?? $dm_id;
     $subject = "Statement of Account / Debit Memo - " . $account_number;
     $account_name_display = "{$recipient_name} / {$account_number}";
     $approved_plan_display = number_format($total_approved_plan, 2, '.', ',');
     $final_dm_val = number_format($total_final_dm, 2, '.', ',');
 
-    $html_content = "Dear Ma'am/Sir,\n\nPlease find attached your Statement of Account (SOA) reflecting the applicable Debit Memo charges:\n\nSummary Details:\nPeriod Covered: {$data_coverage}\nAccount Name: {$account_name_display}\nApproved Plan (Company Share): ₱ {$approved_plan_display}\nTotal Excess Charges Amount: ₱ {$final_dm_val}\n\nFor any questions or concerns, please reply directly to this email.\n\nThank you,\nIT Telco Admin Team";
-
-    require_once 'pdf_generator.php';
+$html_content = "Dear Ma'am/Sir,\n\nPlease find attached your Statement of Account (SOA) reflecting the applicable Debit Memo charges:\n\nSummary Details:\nPeriod Covered: " . $data_coverage . "\nAccount Name: " . $account_name_display . "\nApproved Plan (Company Share): ₱ " . $approved_plan_display . "\nTotal Excess Charges Amount: ₱ " . $final_dm_val . "\n\nThis statement outlines the specific breakdown and descriptions of the charges applied to your telco account for your information.\n\nNote: This email provides a detailed breakdown and description of your telco account charges for your reference. If your excess charges is zero (₱0.00), no action is required and you may disregard this notification.\n\nPlease review the attached SOA for full details.\n\nThis is an automated email, please do not reply.\n\nThank you,\nIT Telco Admin Team";    require_once 'pdf_generator.php';
     // Ipasa ang petsa sa PDF generator function mo kung kinakailangan
     $pdf_result = createDebitMemoPDF($dm_id, $conn, $breakdown_item_ids, $start_date, $end_date);
     $attachments = [];
@@ -269,11 +267,19 @@ $limit  = ($limit_input === 'ALL') ? 999999 : (in_array((int)$limit_input, [20, 
 $offset = ($page - 1) * $limit;
 
 // 2. Build Unified Subquery (Strict Inclusion)
+// 2. Build Unified Subquery (Strict Inclusion)
 $filteredSubQuery = "SELECT dmi.dm_id, 
                             GROUP_CONCAT(DISTINCT dmi.carrier_name SEPARATOR '|') as carrier_names, 
                             MIN(dmi.coverage_start) as start_date, 
                             MAX(dmi.coverage_end) as end_date, 
                             SUM(CAST(dmi.debit_memo_details AS DECIMAL(10,2))) as filtered_total,
+                            (
+                                SELECT SUM(CAST(dmi_inner.approved_plan AS DECIMAL(10,2)))
+                                FROM debit_memo_items dmi_inner
+                                WHERE dmi_inner.dm_id = dmi.dm_id
+                                  AND dmi_inner.coverage_start >= :where_start 
+                                  AND dmi_inner.coverage_end <= :where_end
+                            ) as approved_plan_company_share,
                             MIN(
                                 EXISTS (
                                     SELECT 1 FROM pdf_extracted_details pdf 
@@ -342,7 +348,7 @@ $sort_map = [
 ];
 $order_col = isset($sort_map[$sort_by]) ? $sort_map[$sort_by] : 'dm.created_at';
 
-$sql = "SELECT dm.*, sub.carrier_names, sub.start_date, sub.end_date, sub.filtered_total as sum_debit_memo_details, sub.has_soa
+$sql = "SELECT dm.*, sub.carrier_names, sub.start_date, sub.end_date, sub.filtered_total as sum_debit_memo_details, sub.approved_plan_company_share, sub.has_soa
         FROM `debit_memos` AS dm
         INNER JOIN ($filteredSubQuery) AS sub ON dm.dm_id = sub.dm_id$whereClause";
 
@@ -908,7 +914,7 @@ $base_query = http_build_query($current_params);
                 
                 <!-- Karagdagang File Input para sa pag-upload ng bagong attachment -->
                 <div class="mt-2 pt-2 border-t border-gray-200">
-                    <label class="block text-[9px] font-bold text-emerald-600 uppercase mb-1">+ Mag-upload ng Bagong File (Opsyonal)</label>
+                    <label class="block text-[9px] font-bold text-emerald-600 uppercase mb-1">+ Upload addtional attached file (Opsyonal)</label>
                     <input type="file" name="additional_attachments[]" id="additional_attachments" multiple class="w-full p-1 border rounded-lg text-xs bg-white text-gray-600 file:mr-2 file:py-1 file:px-2 file:rounded-md file:border-0 file:text-[10px] file:font-semibold file:bg-emerald-50 file:text-emerald-700 hover:file:bg-emerald-100">
                 </div>
             </div>
@@ -1861,6 +1867,16 @@ function submitConfirmedEmail() {
     const form = document.getElementById('emailPreviewForm');
     const formData = new FormData(form);
 
+    // Kunin ang mga minanong type sa preview modal
+    const recipientVal = document.getElementById('preview_to').value;
+    const ccVal = document.getElementById('preview_cc').value;
+    const dmId = document.getElementById('preview_dm_id').value;
+
+    // I-format para tanggapin ng backend handler kahit walang email mapping sa database
+    formData.set('dm_ids', dmId);
+    formData.set('bulk_recipients', JSON.stringify([recipientVal]));
+    formData.set('bulk_ccs', JSON.stringify([ccVal]));
+
     const mainStartDate = document.querySelector('input[name="start_date"]') ? document.querySelector('input[name="start_date"]').value : '';
     const mainEndDate = document.querySelector('input[name="end_date"]') ? document.querySelector('input[name="end_date"]').value : '';
 
@@ -1870,7 +1886,8 @@ function submitConfirmedEmail() {
     if (!formData.get('end_date') && mainEndDate) {
         formData.append('end_date', mainEndDate);
     }
-    // Siguraduhing nasasama ang mga bagong file na in-upload kung mayroon man
+
+    // Isama ang mga karagdagang in-upload na file kung meron man
     const fileInput = document.getElementById('additional_attachments');
     if (fileInput && fileInput.files.length > 0) {
         for (let i = 0; i < fileInput.files.length; i++) {
@@ -2010,41 +2027,27 @@ function downloadEmailCsvTemplate() {
 }
 
 function processPasteEmailHub() {
-    const textarea = document.getElementById('pasteAccountInput');
-    const pastedText = textarea ? textarea.value.trim() : '';
-    
-    // Kunin ang value ng start date at end date mula sa UI elements (palitan ang IDs ayon sa iyong HTML)
-    const startDate = document.getElementById('startDateFilter') ? document.getElementById('startDateFilter').value : '';
-    const endDate = document.getElementById('endDateFilter') ? document.getElementById('endDateFilter').value : '';
-    
-    if (!pastedText) {
-        alert('Please paste account numbers or email addresses first.');
+    const rawText = document.getElementById('pasteAccountInput').value;
+    if (!rawText.trim()) {
+        alert("Mangyaring mag-lagay ng account numbers o emails.");
         return;
     }
 
-    // Ipasa ang pasted_text pati na rin ang start_date at end_date sa API
     fetch('list_dm.php?action=get_dm_ids_by_paste', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ 
-            pasted_text: pastedText,
-            start_date: startDate,
-            end_date: endDate
-        })
+        body: JSON.stringify({ pasted_text: rawText })
     })
     .then(res => res.json())
     .then(data => {
-        if (data.status === 'success' && data.dm_ids && data.dm_ids.length > 0) {
+        if (data.status === 'success' && data.dm_ids.length > 0) {
             closeEmailHubModal();
             openBulkEmailReviewModal(data.dm_ids);
         } else {
-            alert('No matching debit memo accounts found for the pasted list within the selected date range.');
+            alert("Walang nakitang tumutugmang account sa iyong listahan.");
         }
     })
-    .catch(err => {
-        console.error('Paste email hub error:', err);
-        alert('An error occurred while processing the pasted accounts.');
-    });
+    .catch(err => console.error("Error:", err));
 }
 
 function processCsvEmailHub() {
@@ -2056,6 +2059,7 @@ function processCsvEmailHub() {
     alert('CSV file successfully uploaded for the Email Hub.');
     closeEmailHubModal();
 }
+
 
 </script>
 

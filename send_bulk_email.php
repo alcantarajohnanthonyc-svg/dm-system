@@ -233,7 +233,10 @@ foreach ($dm_ids as $index => $dm_id) {
             Account Name: {$account_name_display}<br>
             Approved Plan (Company Share): ₱ {$approved_plan_display}<br>
             Total Chargeable Amount: ₱ {$final_dm_val}</p>
-            <p>For any questions or concerns, please reply directly to this email.</p>
+            <p>This statement outlines the specific breakdown and descriptions of the charges applied to your telco account for your information.</p>
+            <p>Note: This email provides a detailed breakdown and description of your telco account charges for your reference. If your excess charges is zero (₱0.00), no action is required and you may disregard this notification.</p>
+            <p>Please review the attached SOA for full details.</p>
+            <p>This is an automated email, please do not reply.</p>
             <p>Thank you,</p>
             <p><b>IT Telco Admin Team</b></p>
         </div>";

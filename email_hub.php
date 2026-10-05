@@ -33,13 +33,12 @@ if (isset($_GET['action'])) {
     header('Content-Type: application/json; charset=utf-8');
     $action = $_GET['action'];
 
-    // Standard Default Email Subject and Body Generator (Gaya ng List DM)
-    function getDefaultEmailContent($account_number, $company, $final_start, $final_end, $approved_plan = 0.00, $final_dm = 0.00) {
+    // Standard Default Email Subject and Body Generator (Updated para sa dynamic summary details)
+    function getDefaultEmailContent($account_number, $company, $recipient_name = 'Valued Client', $data_coverage = 'As of current billing', $approved_plan_display = '0.00', $final_dm_val = '0.00') {
         $default_subject = "Statement of Account / Debit Memo - " . $account_number;
-        $period_display = (!empty($final_start) && !empty($final_end)) ? "{$final_start} to {$final_end}" : "As of current billing";
-        $account_name_display = (!empty($company) ? $company : 'Valued Client') . " / " . $account_number;
+        $account_name_display = "{$recipient_name} / {$account_number}";
         
-        $default_body = "Dear Ma'am/Sir,\n\nPlease find attached your Statement of Account (SOA) reflecting the applicable Debit Memo charges:\n\nSummary Details:\nPeriod Covered: " . $period_display . "\nAccount Name: " . $account_name_display . "\n\nFor any questions or concerns, please reply directly to this email.\n\nThank you,\nIT Telco Admin Team";
+        $default_body = "Dear Ma'am/Sir,\n\nPlease find attached your Statement of Account (SOA) reflecting the applicable Debit Memo charges:\n\nSummary Details:\nPeriod Covered: " . $data_coverage . "\nAccount Name: " . $account_name_display . "\nApproved Plan (Company Share):" . $approved_plan_display . "\nTotal Excess Charges Amount: ₱ " . $final_dm_val . "\n\nThis statement outlines the specific breakdown and descriptions of the charges applied to your telco account for your information.\n\nNote: This email provides a detailed breakdown and description of your telco account charges for your reference. If your excess charges is zero (₱0.00), no action is required and you may disregard this notification.\n\nPlease review the attached SOA for full details.\n\nThis is an automated email, please do not reply.\n\nThank you,\nIT Telco Admin Team";
 
         return [
             'subject' => $default_subject,
@@ -47,7 +46,116 @@ if (isset($_GET['action'])) {
         ];
     }
 
-    // 1. Paste Handler na may Standard Subject/Body at Date Parsers
+    // Helper function para i-check kung may Shared Drive SOA
+    function checkSharedDriveSOA($conn, $account_number, $dm_id, $start_date, $end_date) {
+        if (empty($dm_id) || $dm_id == 0) return false;
+        
+        $soa_query = "SELECT COUNT(*) as cnt 
+                      FROM debit_memo_items dmi 
+                      JOIN pdf_extracted_details pdf ON pdf.account_number = ? 
+                      WHERE dmi.dm_id = ?";
+        $soa_params = [$account_number, $dm_id];
+        
+        if (!empty($start_date) && !empty($end_date)) {
+            $soa_query .= " AND dmi.coverage_start >= ? AND dmi.coverage_end <= ?";
+            array_push($soa_params, $start_date, $end_date);
+        }
+
+        $soa_query .= " AND ABS(DATEDIFF(dmi.coverage_end, STR_TO_DATE(SUBSTRING_INDEX(pdf.billing_period, ' - ', -1), '%Y-%m-%d'))) <= 5";
+
+        $stmt = $conn->prepare($soa_query);
+        $stmt->execute($soa_params);
+        $res = $stmt->fetch(PDO::FETCH_ASSOC);
+        
+        return ($res && $res['cnt'] > 0);
+    }
+
+    // Helper function para ma-check kung may actual data items para sa given dates
+    function checkDataCoverageExists($conn, $dm_id, $start_date, $end_date) {
+        if (empty($dm_id) || $dm_id == 0) return false;
+        
+        $query = "SELECT COUNT(*) as cnt FROM debit_memo_items WHERE dm_id = ?";
+        $params = [$dm_id];
+        
+        if (!empty($start_date) && !empty($end_date)) {
+            $query .= " AND coverage_start >= ? AND coverage_end <= ?";
+            array_push($params, $start_date, $end_date);
+        }
+        
+        $stmt = $conn->prepare($query);
+        $stmt->execute($params);
+        $res = $stmt->fetch(PDO::FETCH_ASSOC);
+        
+        return ($res && $res['cnt'] > 0);
+    }
+
+    // Helper function para kalkulahin ang summary metrics (Period, Approved Plan na may comma separation kung marami, at Total Final DM)
+    // Helper function para kalkulahin ang summary metrics at i-group ang magkakaparehong Approved Plan
+    // Helper function para kalkulahin ang summary metrics kung saan iisa na lang ang approved plan base sa Period Covered
+    function calculateAccountSummaryMetrics($conn, $dm_id, $start_date = '', $end_date = '') {
+        $itemQuery = "SELECT * FROM debit_memo_items WHERE dm_id = ?";
+        $itemParams = [$dm_id];
+
+        if (!empty($start_date) && !empty($end_date)) {
+            $itemQuery .= " AND coverage_start >= ? AND coverage_end <= ?";
+            $itemParams[] = $start_date;
+            $itemParams[] = $end_date;
+        }
+        $itemQuery .= " ORDER BY coverage_start ASC";
+
+        $stmtItems = $conn->prepare($itemQuery);
+        $stmtItems->execute($itemParams);
+        $items = $stmtItems->fetchAll(PDO::FETCH_ASSOC);
+
+        $total_final_dm = 0.00;
+        $raw_start_dates = [];
+        $raw_end_dates = [];
+        $sample_approved_plan = 0.00;
+
+        foreach ($items as $it) {
+            $dm_v = isset($it['debit_memo_details']) ? (float)$it['debit_memo_details'] : 0.00;
+            $ao_v = isset($it['add_ons']) ? (float)$it['add_ons'] : 0.00;
+            $final_dm_val = isset($it['final_dm']) ? (float)$it['final_dm'] : ($dm_v - $ao_v);
+            $total_final_dm += $final_dm_val;
+
+            // Kunin ang approved plan (kinukuha natin ang huli o unang makitang may halaga)
+            if ($sample_approved_plan == 0.00 && isset($it['approved_plan'])) {
+                $sample_approved_plan = (float)$it['approved_plan'];
+            }
+
+            $c_start = $it['coverage_start'] ?? '';
+            $c_end = $it['coverage_end'] ?? '';
+
+            if (!empty($c_start) && !empty($c_end)) {
+                $raw_start_dates[] = $c_start;
+                $raw_end_dates[] = $c_end;
+            }
+        }
+
+        // Period Covered
+        if (!empty($raw_start_dates) && !empty($raw_end_dates)) {
+            $data_coverage = date('M d, Y', strtotime(min($raw_start_dates))) . " to " . date('M d, Y', strtotime(max($raw_end_dates)));
+        } else {
+            $data_coverage = "As of current billing";
+        }
+
+        // I-display ang Approved Plan nang iisa na lang base sa kabuuang Period Covered
+        if ($sample_approved_plan > 0) {
+            $approved_plan_display = "₱ " . number_format($sample_approved_plan, 2, '.', ',');
+        } else {
+            $approved_plan_display = "₱ 0.00";
+        }
+
+        $total_final_dm_display = number_format($total_final_dm, 2, '.', ',');
+
+        return [
+            'data_coverage' => $data_coverage,
+            'approved_plan_display' => $approved_plan_display,
+            'total_final_dm' => $total_final_dm_display
+        ];
+    }
+
+    // 1. Paste Handler
     if ($action === 'get_dm_ids_by_paste_advanced' || $action === 'get_dm_ids_by_paste') {
         $input = json_decode(file_get_contents('php://input'), true);
         
@@ -123,7 +231,11 @@ if (isset($_GET['action'])) {
                             $final_start = !empty($line_start) ? $line_start : (!empty($global_start) ? $global_start : ($memo['min_start'] ?? ''));
                             $final_end = !empty($line_end) ? $line_end : (!empty($global_end) ? $global_end : ($memo['max_end'] ?? ''));
 
-                            $defaults = getDefaultEmailContent($memo['account_number'], $memo['company'], $final_start, $final_end);
+                            $metrics = calculateAccountSummaryMetrics($conn, $memo['dm_id'], $final_start, $final_end);
+                            $defaults = getDefaultEmailContent($memo['account_number'], $memo['company'], 'Valued Client', $metrics['data_coverage'], $metrics['approved_plan_display'], $metrics['total_final_dm']);
+                            
+                            $has_soa = checkSharedDriveSOA($conn, $memo['account_number'], $memo['dm_id'], $final_start, $final_end);
+                            $has_data = checkDataCoverageExists($conn, $memo['dm_id'], $final_start, $final_end);
 
                             $resolved_accounts[] = [
                                 'dm_id' => $memo['dm_id'] ?? 0,
@@ -134,11 +246,14 @@ if (isset($_GET['action'])) {
                                 'subject' => $defaults['subject'],
                                 'html_content' => $defaults['body'],
                                 'start_date' => $final_start,
-                                'end_date' => $final_end
+                                'end_date' => $final_end,
+                                'has_soa' => $has_soa,
+                                'has_data' => $has_data,
+                                'has_dm' => true
                             ];
                         }
                     } else {
-                        $defaults = getDefaultEmailContent($account_number, 'Not Found in Database', $line_start, $line_end);
+                        $defaults = getDefaultEmailContent($account_number, 'Not Found in Database', 'Valued Client', 'As of current billing', '0.00', '0.00');
                         $resolved_accounts[] = [
                             'dm_id' => 0,
                             'account_number' => $account_number,
@@ -148,7 +263,10 @@ if (isset($_GET['action'])) {
                             'subject' => $defaults['subject'],
                             'html_content' => $defaults['body'],
                             'start_date' => !empty($line_start) ? $line_start : (!empty($global_start) ? $global_start : ''),
-                            'end_date' => !empty($line_end) ? $line_end : (!empty($global_end) ? $global_end : '')
+                            'end_date' => !empty($line_end) ? $line_end : (!empty($global_end) ? $global_end : ''),
+                            'has_soa' => false,
+                            'has_data' => false,
+                            'has_dm' => false
                         ];
                     }
                 }
@@ -159,7 +277,7 @@ if (isset($_GET['action'])) {
         exit;
     }
 
-    // 1.5 CSV Upload Handler na may Support sa Custom Subject/Body o Fallback sa Standards
+    // 1.5 CSV Upload Handler
     if ($action === 'get_dm_ids_by_csv') {
         $resolved_accounts = [];
         
@@ -218,7 +336,11 @@ if (isset($_GET['action'])) {
                             $resolved_start  = !empty($final_start) ? $final_start : ($memo['min_start'] ?? '');
                             $resolved_end    = !empty($final_end) ? $final_end : ($memo['max_end'] ?? '');
 
-                            $defaults = getDefaultEmailContent($memo['account_number'], $memo['company'], $resolved_start, $resolved_end);
+                            $metrics = calculateAccountSummaryMetrics($conn, $memo['dm_id'], $resolved_start, $resolved_end);
+                            $defaults = getDefaultEmailContent($memo['account_number'], $memo['company'], 'Valued Client', $metrics['data_coverage'], $metrics['approved_plan_display'], $metrics['total_final_dm']);
+                            
+                            $has_soa = checkSharedDriveSOA($conn, $memo['account_number'], $memo['dm_id'], $resolved_start, $resolved_end);
+                            $has_data = checkDataCoverageExists($conn, $memo['dm_id'], $resolved_start, $resolved_end);
 
                             $resolved_accounts[] = [
                                 'dm_id' => $memo['dm_id'] ?? 0,
@@ -229,11 +351,14 @@ if (isset($_GET['action'])) {
                                 'subject' => !empty($custom_subject) ? $custom_subject : $defaults['subject'],
                                 'html_content' => !empty($custom_body) ? $custom_body : $defaults['body'],
                                 'start_date' => $resolved_start,
-                                'end_date' => $resolved_end
+                                'end_date' => $resolved_end,
+                                'has_soa' => $has_soa,
+                                'has_data' => $has_data,
+                                'has_dm' => true
                             ];
                         }
                     } else {
-                        $defaults = getDefaultEmailContent($account_number, 'Not Found in Database', $final_start, $final_end);
+                        $defaults = getDefaultEmailContent($account_number, 'Not Found in Database', 'Valued Client', 'As of current billing', '0.00', '0.00');
                         $resolved_accounts[] = [
                             'dm_id' => 0,
                             'account_number' => $account_number,
@@ -243,7 +368,10 @@ if (isset($_GET['action'])) {
                             'subject' => !empty($custom_subject) ? $custom_subject : $defaults['subject'],
                             'html_content' => !empty($custom_body) ? $custom_body : $defaults['body'],
                             'start_date' => $final_start,
-                            'end_date' => $final_end
+                            'end_date' => $final_end,
+                            'has_soa' => false,
+                            'has_data' => false,
+                            'has_dm' => false
                         ];
                     }
                 }
@@ -297,49 +425,21 @@ if (isset($_GET['action'])) {
         $recipient_name  = ($account_email_row && !empty($account_email_row['full_name'])) ? $account_email_row['full_name'] : 'Valued Client';
         $cc_emails       = '';
 
-        $itemQuery = "SELECT * FROM debit_memo_items WHERE dm_id = ?";
-        $itemParams = [$dm_id];
-
-        if (!empty($breakdown_item_ids)) {
-            $placeholders = implode(',', array_fill(0, count($breakdown_item_ids), '?'));
-            $itemQuery .= " AND id IN ($placeholders)";
-            foreach ($breakdown_item_ids as $iid) { $itemParams[] = $iid; }
-        }
-
+        $metrics = calculateAccountSummaryMetrics($conn, $dm_id, $start_date, $end_date);
+        
+        // Kunin ang raw start/end dates para sa getDefaultEmailContent
+        $itemQueryForDates = "SELECT MIN(coverage_start) as min_s, MAX(coverage_end) as max_e FROM debit_memo_items WHERE dm_id = ?";
+        $datesParams = [$dm_id];
         if (!empty($start_date) && !empty($end_date)) {
-            $itemQuery .= " AND coverage_start >= ? AND coverage_end <= ?";
-            $itemParams[] = $start_date;
-            $itemParams[] = $end_date;
+            $itemQueryForDates .= " AND coverage_start >= ? AND coverage_end <= ?";
+            $datesParams[] = $start_date;
+            $datesParams[] = $end_date;
         }
+        $stmtDates = $conn->prepare($itemQueryForDates);
+        $stmtDates->execute($datesParams);
+        $resDates = $stmtDates->fetch(PDO::FETCH_ASSOC);
 
-        $itemQuery .= " ORDER BY coverage_start ASC";
-
-        $stmtItems = $conn->prepare($itemQuery);
-        $stmtItems->execute($itemParams);
-        $items = $stmtItems->fetchAll(PDO::FETCH_ASSOC);
-
-        $total_final_dm = 0.00;
-        $total_approved_plan = 0.00;
-        $raw_start_dates = [];
-        $raw_end_dates = [];
-
-        foreach ($items as $it) {
-            $dm_v = isset($it['debit_memo_details']) ? (float)$it['debit_memo_details'] : 0.00;
-            $ao_v = isset($it['add_ons']) ? (float)$it['add_ons'] : 0.00;
-            $total_final_dm += isset($it['final_dm']) ? (float)$it['final_dm'] : ($dm_v - $ao_v);
-            $total_approved_plan += isset($it['approved_plan']) ? (float)$it['approved_plan'] : 0.00;
-
-            if (!empty($it['coverage_start'])) $raw_start_dates[] = $it['coverage_start'];
-            if (!empty($it['coverage_end'])) $raw_end_dates[] = $it['coverage_end'];
-        }
-
-        if (!empty($raw_start_dates) && !empty($raw_end_dates)) {
-            $data_coverage = date('M d, Y', strtotime(min($raw_start_dates))) . " to " . date('M d, Y', strtotime(max($raw_end_dates)));
-        } else {
-            $data_coverage = "As of current billing";
-        }
-
-        $defaults = getDefaultEmailContent($account_number, $dm['company'] ?? $recipient_name, min($raw_start_dates ?? [$start_date]), max($raw_end_dates ?? [$end_date]));
+        $defaults = getDefaultEmailContent($account_number, $dm['company'] ?? $recipient_name, $recipient_name, $metrics['data_coverage'], $metrics['approved_plan_display'], $metrics['total_final_dm']);
 
         require_once 'pdf_generator.php';
         $pdf_result = createDebitMemoPDF($dm_id, $conn, $breakdown_item_ids, $start_date, $end_date);
@@ -356,7 +456,7 @@ if (isset($_GET['action'])) {
             ];
         }
 
-        $soa_query = "SELECT DISTINCT pdf.filename, pdf.file_link 
+        $soa_query = "SELECT DISTINCT pdf.filename, pdf.file_link, pdf.billing_period 
                       FROM debit_memo_items dmi 
                       JOIN pdf_extracted_details pdf ON pdf.account_number = ? 
                       WHERE dmi.dm_id = ?";
@@ -373,15 +473,18 @@ if (isset($_GET['action'])) {
             array_push($soa_params, $start_date, $end_date);
         }
 
+        $soa_query .= " AND ABS(DATEDIFF(dmi.coverage_end, STR_TO_DATE(SUBSTRING_INDEX(pdf.billing_period, ' - ', -1), '%Y-%m-%d'))) <= 5";
+
         $soa_stmt = $conn->prepare($soa_query);
         $soa_stmt->execute($soa_params);
         $soa_files = $soa_stmt->fetchAll(PDO::FETCH_ASSOC);
 
         foreach ($soa_files as $soa) {
-            if (!empty($soa['filename'])) {
+            $target_file = !empty($soa['filename']) ? $soa['filename'] : $soa['file_link'];
+            if (!empty($target_file)) {
                 $attachments[] = [
-                    'path' => $soa['filename'],
-                    'name' => basename($soa['filename'])
+                    'path' => $target_file,
+                    'name' => basename($target_file)
                 ];
             }
         }
@@ -419,7 +522,6 @@ ob_start();
 <div class="max-w-4xl mx-auto p-4 mt-6">
     <div class="bg-white rounded-2xl shadow-sm border border-gray-200 p-6 flex flex-col">
         
-        <!-- Top Header with Back Button -->
         <div class="flex justify-between items-center mb-6 pb-4 border-b border-gray-100">
             <div>
                 <h2 class="text-base font-bold text-gray-800 uppercase tracking-wider">Email Hub</h2>
@@ -430,7 +532,6 @@ ob_start();
             </a>
         </div>
 
-        <!-- Tabs Navigation -->
         <div class="flex border-b border-gray-200 mb-6">
             <button type="button" onclick="switchEmailHubTab(1)" id="tabBtn1" class="flex-1 pb-3 text-xs font-bold text-amber-600 border-b-2 border-amber-600 transition-all uppercase tracking-wider">
                 Paste Accounts / Emails
@@ -440,7 +541,6 @@ ob_start();
             </button>
         </div>
 
-        <!-- TAB 1 CONTENT: Paste Accounts -->
         <div id="emailHubTab1" class="space-y-4">
             <div>
                 <div class="flex justify-between items-center mb-1">
@@ -466,7 +566,6 @@ ob_start();
             </button>
         </div>
 
-        <!-- TAB 2 CONTENT: Upload CSV -->
         <div id="emailHubTab2" class="space-y-4" style="display: none;">
             <div class="p-6 border-2 border-dashed border-gray-300 rounded-2xl bg-gray-50 text-center flex flex-col items-center justify-center py-10">
                 <i class="las la-cloud-upload-alt text-4xl text-amber-600 mb-2"></i>
@@ -498,7 +597,6 @@ ob_start();
 </div>
 
 <!-- MODALS -->
-<!-- BULK EMAIL REVIEW & VALIDATION MODAL -->
 <div id="bulkEmailReviewModal" style="display: none;" class="fixed inset-0 z-[99999] flex items-center justify-center bg-black/60 backdrop-blur-sm">
     <div class="bg-white rounded-3xl shadow-2xl border border-gray-100 w-full max-w-5xl p-6 mx-4 flex flex-col max-h-[90vh]">
         <div class="flex justify-between items-center mb-4 pb-3 border-b">
@@ -513,7 +611,7 @@ ob_start();
             <table class="w-full text-left border-collapse text-xs">
                 <thead class="bg-gray-100 sticky top-0 z-10 text-gray-700 font-bold uppercase text-[10px]">
                     <tr>
-                        <th class="p-2.5 text-center w-20">Status</th>
+                        <th class="p-2.5 text-center w-28">Status</th>
                         <th class="p-2.5">Account Number & Company</th>
                         <th class="p-2.5">Coverage Dates (Per Line)</th>
                         <th class="p-2.5">Recipient Email</th>
@@ -532,7 +630,6 @@ ob_start();
     </div>
 </div>
 
-<!-- SINGLE EMAIL PREVIEW MODAL -->
 <div id="emailPreviewModal" style="display: none;" class="fixed inset-0 z-[99999] flex items-center justify-center bg-black/60 backdrop-blur-sm">
     <div class="bg-white rounded-3xl shadow-2xl border border-gray-100 w-full max-w-2xl p-6 mx-4 max-h-[90vh] flex flex-col">
         
@@ -555,7 +652,7 @@ ob_start();
 
             <div>
                 <label class="block text-[10px] font-bold text-gray-500 uppercase">CC Emails (Comma-separated)</label>
-                <input type="text" id="preview_cc" name="cc_emails" class="w-full p-2 border rounded-xl text-xs bg-gray-50" placeholder="e.g. accounting@company.com, admin@company.com">
+                <input type="text" id="preview_cc" name="cc_emails" class="w-full p-2 border rounded-xl text-xs bg-gray-50" placeholder="e.g. accounting@company.com">
             </div>
 
             <div>
@@ -586,7 +683,6 @@ ob_start();
     </div>
 </div>
 
-<!-- DISPATCH PROGRESS MODAL -->
 <div id="dispatchProgressModal" style="display: none;" class="fixed inset-0 z-[99999] flex items-center justify-center bg-black/60 backdrop-blur-sm">
     <div class="bg-white rounded-3xl shadow-2xl border border-gray-100 w-full max-w-2xl p-6 mx-4">
         <h3 class="text-base font-bold text-gray-800 mb-4">Sending Statement Emails...</h3>
@@ -603,7 +699,6 @@ ob_start();
     </div>
 </div>
 
-<!-- SCRIPTS -->
 <script>
     let bulkAccountsCache = [];
 
@@ -673,12 +768,7 @@ ob_start();
         })
         .then(async res => {
             const text = await res.text();
-            try {
-                return JSON.parse(text);
-            } catch (e) {
-                console.error("Raw server response:", text);
-                throw new Error("Server returned non-JSON response.");
-            }
+            try { return JSON.parse(text); } catch (e) { throw new Error("Server returned non-JSON response."); }
         })
         .then(data => {
             if (data.status === 'success' && data.accounts && data.accounts.length > 0) {
@@ -688,7 +778,6 @@ ob_start();
             }
         })
         .catch(err => {
-            console.error("Error processing pasted accounts:", err);
             alert("An error occurred: " + err.message);
         });
     }
@@ -709,12 +798,7 @@ ob_start();
         })
         .then(async res => {
             const text = await res.text();
-            try {
-                return JSON.parse(text);
-            } catch (e) {
-                console.error("Raw server response:", text);
-                throw new Error("Server returned non-JSON response.");
-            }
+            try { return JSON.parse(text); } catch (e) { throw new Error("Server returned non-JSON response."); }
         })
         .then(data => {
             if (data.status === 'success' && data.accounts && data.accounts.length > 0) {
@@ -724,7 +808,6 @@ ob_start();
             }
         })
         .catch(err => {
-            console.error("Error processing CSV upload:", err);
             alert("An error occurred: " + err.message);
         });
     }
@@ -737,12 +820,7 @@ ob_start();
         })
         .then(async res => {
             const text = await res.text();
-            try {
-                return JSON.parse(text);
-            } catch (e) {
-                console.error("Raw server response:", text);
-                throw new Error("Server returned non-JSON response.");
-            }
+            try { return JSON.parse(text); } catch (e) { throw new Error("Server returned non-JSON response."); }
         })
         .then(data => {
             if (data.status === 'success') {
@@ -753,9 +831,6 @@ ob_start();
             } else {
                 alert("Error: " + data.message);
             }
-        })
-        .catch(err => {
-            console.error("Bulk email preview error:", err);
         });
     }
 
@@ -771,27 +846,45 @@ ob_start();
             let tr = document.createElement('tr');
             tr.className = "hover:bg-gray-50 border-b";
             
-            let statusBadge = (acc.recipient_email && acc.recipient_email.trim() !== '') ?
-                '<span class="px-2 py-0.5 bg-green-100 text-green-700 rounded text-[10px] font-bold">🟢 Ready</span>' :
-                '<span class="px-2 py-0.5 bg-red-100 text-red-700 rounded text-[10px] font-bold">🔴 Missing</span>';
+            let statusBadge = '';
+            let previewButton = '';
+            
+            if (!acc.has_data || !acc.has_dm || acc.dm_id == 0) {
+                statusBadge = '<span class="px-2 py-0.5 bg-gray-200 text-gray-700 rounded text-[10px] font-bold block text-center">⚪ No Data</span>';
+                previewButton = '<button type="button" disabled class="px-2.5 py-1 bg-gray-100 text-gray-400 rounded text-xs font-bold cursor-not-allowed">Preview</button>';
+            } else if (!acc.recipient_email || acc.recipient_email.trim() === '') {
+                statusBadge = '<span class="px-2 py-0.5 bg-red-100 text-red-700 rounded text-[10px] font-bold block text-center">🔴 Missing Email</span>';
+                previewButton = `<button type="button" onclick="previewEmailBeforeSend(${acc.dm_id}, '', '${acc.start_date || ''}', '${acc.end_date || ''}')" class="px-2.5 py-1 bg-blue-50 text-blue-600 rounded text-xs font-bold hover:bg-blue-100">Preview</button>`;
+            } else if (!acc.has_soa) {
+                statusBadge = '<span class="px-2 py-0.5 bg-amber-100 text-amber-700 rounded text-[10px] font-bold block text-center">🟡 Missing SOA</span>';
+                previewButton = `<button type="button" onclick="previewEmailBeforeSend(${acc.dm_id}, '', '${acc.start_date || ''}', '${acc.end_date || ''}')" class="px-2.5 py-1 bg-blue-50 text-blue-600 rounded text-xs font-bold hover:bg-blue-100">Preview</button>`;
+            } else {
+                statusBadge = '<span class="px-2 py-0.5 bg-green-100 text-green-700 rounded text-[10px] font-bold block text-center">🟢 Ready</span>';
+                previewButton = `<button type="button" onclick="previewEmailBeforeSend(${acc.dm_id}, '', '${acc.start_date || ''}', '${acc.end_date || ''}')" class="px-2.5 py-1 bg-blue-50 text-blue-600 rounded text-xs font-bold hover:bg-blue-100">Preview</button>`;
+            }
             
             let coverageDisplay = (acc.start_date && acc.end_date) ? 
-                `<span class="text-[11px] font-mono text-blue-600">${acc.start_date} to ${acc.end_date}</span>` : 
+                `<span class="text-[11px] font-mono ${!acc.has_data ? 'text-gray-400 line-through' : 'text-blue-600'}">${acc.start_date} to ${acc.end_date}</span>` : 
                 `<span class="text-[10px] text-gray-400 italic">Walang Petsa</span>`;
 
-            tr.innerHTML = `
+           tr.innerHTML = `
                 <td class="p-2.5 text-center">${statusBadge}</td>
                 <td class="p-2.5 font-semibold text-gray-800">${acc.account_number} <br><span class="text-[10px] text-gray-500 font-normal">${acc.company || ''}</span></td>
                 <td class="p-2.5">${coverageDisplay}</td>
-                <td class="p-2.5"><input type="email" value="${acc.recipient_email || ''}" oninput="bulkAccountsCache[${idx}].recipient_email = this.value" class="w-full p-1.5 border rounded text-xs bg-white"></td>
+                <td class="p-2.5"><input type="email" value="${acc.recipient_email || ''}" oninput="updateRecipientEmailAndRefresh(${idx}, this.value)" class="w-full p-1.5 border rounded text-xs bg-white"></td>
                 <td class="p-2.5"><input type="text" value="${acc.cc_emails || ''}" oninput="bulkAccountsCache[${idx}].cc_emails = this.value" class="w-full p-1.5 border rounded text-xs bg-white"></td>
-                <td class="p-2.5 text-center"><button type="button" onclick="previewEmailBeforeSend(${acc.dm_id}, '', '${acc.start_date || ''}', '${acc.end_date || ''}')" class="px-2.5 py-1 bg-blue-50 text-blue-600 rounded text-xs font-bold hover:bg-blue-100">Preview</button></td>
+                <td class="p-2.5 text-center">${previewButton}</td>
             `;
             tbody.appendChild(tr);
         });
     }
 
     function previewEmailBeforeSend(dmId, itemIds = '', startDate = '', endDate = '') {
+        if (!dmId || dmId == 0) {
+            alert("Walang nahanap na Debit Memo para sa account na ito. Hindi ma-i-preview.");
+            return;
+        }
+
         let cachedAccount = bulkAccountsCache.find(acc => acc.dm_id == dmId || acc.account_number == dmId);
 
         if (cachedAccount) {
@@ -825,27 +918,6 @@ ob_start();
                 }
 
                 document.getElementById('emailPreviewModal').style.display = 'flex';
-            })
-            .catch(err => {
-                console.error("Attachment fetch error:", err);
-                document.getElementById('emailPreviewModal').style.display = 'flex';
-            });
-
-        } else {
-            let url = `email_hub.php?action=get_email_preview&dm_id=${dmId}&item_ids=${itemIds}&start_date=${startDate}&end_date=${endDate}`;
-            fetch(url)
-            .then(res => res.json())
-            .then(data => {
-                if (data.status === 'success') {
-                    document.getElementById('preview_dm_id').value = dmId;
-                    document.getElementById('preview_to').value = data.recipient_email || '';
-                    document.getElementById('preview_cc').value = data.cc_emails || '';
-                    document.getElementById('preview_subject').value = data.subject || '';
-                    document.getElementById('preview_body').value = data.html_content || '';
-                    document.getElementById('emailPreviewModal').style.display = 'flex';
-                } else {
-                    alert("Error: " + data.message);
-                }
             });
         }
     }
@@ -856,47 +928,35 @@ ob_start();
 
     function submitConfirmedEmail() {
         const dmId = document.getElementById('preview_dm_id').value;
-        const newTo = document.getElementById('preview_to').value;
-        const newCc = document.getElementById('preview_cc').value;
-        const newSubject = document.getElementById('preview_subject').value;
-        const newBody = document.getElementById('preview_body').value;
-        const newStart = document.getElementById('preview_start_date').value;
-        const newEnd = document.getElementById('preview_end_date').value;
-
-        let index = bulkAccountsCache.findIndex(acc => acc.dm_id == dmId);
-        if (index !== -1) {
-            bulkAccountsCache[index].recipient_email = newTo;
-            bulkAccountsCache[index].cc_emails = newCc;
-            bulkAccountsCache[index].subject = newSubject;
-            bulkAccountsCache[index].html_content = newBody;
-            bulkAccountsCache[index].start_date = newStart;
-            bulkAccountsCache[index].end_date = newEnd;
+        if (!dmId || dmId == 0) {
+            alert("Hindi ma-i-send ang email dahil walang valid na Debit Memo ID.");
+            return;
         }
 
         const form = document.getElementById('emailPreviewForm');
         const formData = new FormData(form);
-
-        const fileInput = document.getElementById('additional_attachments');
-        if (fileInput && fileInput.files.length > 0) {
-            for (let i = 0; i < fileInput.files.length; i++) {
-                formData.append('additional_attachments[]', fileInput.files[i]);
-            }
-        }
 
         closeEmailPreviewModal();
         executeDispatchFetch(formData, 1);
     }
 
     function proceedBulkDispatchFromModal() {
+        let validAccounts = bulkAccountsCache.filter(acc => acc.has_data && acc.dm_id && acc.dm_id != 0 && acc.recipient_email && acc.recipient_email.trim() !== '');
+
+        if (validAccounts.length === 0) {
+            alert("Walang valid na account na may sapat na data at email na handa nang i-send.");
+            return;
+        }
+
         closeBulkEmailReviewModal();
         
-        let dmIds = bulkAccountsCache.map(acc => acc.dm_id);
-        let recipients = bulkAccountsCache.map(acc => acc.recipient_email || '');
-        let ccs = bulkAccountsCache.map(acc => acc.cc_emails || '');
-        let startDates = bulkAccountsCache.map(acc => acc.start_date || '');
-        let endDates = bulkAccountsCache.map(acc => acc.end_date || '');
-        let subjects = bulkAccountsCache.map(acc => acc.subject || '');
-        let bodies = bulkAccountsCache.map(acc => acc.html_content || '');
+        let dmIds = validAccounts.map(acc => acc.dm_id);
+        let recipients = validAccounts.map(acc => acc.recipient_email || '');
+        let ccs = validAccounts.map(acc => acc.cc_emails || '');
+        let startDates = validAccounts.map(acc => acc.start_date || '');
+        let endDates = validAccounts.map(acc => acc.end_date || '');
+        let subjects = validAccounts.map(acc => acc.subject || '');
+        let bodies = validAccounts.map(acc => acc.html_content || '');
 
         let formData = new FormData();
         formData.append('dm_ids', dmIds.join(','));
@@ -952,7 +1012,6 @@ ob_start();
             if (closeBtn) closeBtn.style.display = 'block';
         })
         .catch(error => {
-            console.error('Email Dispatch Error:', error);
             if (progressBar) progressBar.style.width = '100%';
             if (progressText) progressText.innerText = "An unexpected error occurred.";
             if (progressLog) progressLog.innerHTML = `<div class="text-rose-400">Fetch Exception: ${error.message}</div>`;
@@ -965,6 +1024,30 @@ ob_start();
         if (modal) modal.style.display = 'none';
         window.location.reload();
     }
+
+    function updateRecipientEmailAndRefresh(index, value) {
+        bulkAccountsCache[index].recipient_email = value;
+        
+        const tbody = document.getElementById('bulkReviewTableBody');
+        if (tbody && tbody.rows[index]) {
+            const statusCell = tbody.rows[index].cells[0];
+            let acc = bulkAccountsCache[index];
+            
+            let statusBadge = '';
+            if (!acc.has_data || !acc.has_dm || acc.dm_id == 0) {
+                statusBadge = '<span class="px-2 py-0.5 bg-gray-200 text-gray-700 rounded text-[10px] font-bold block text-center">⚪ No Data</span>';
+            } else if (!acc.recipient_email || acc.recipient_email.trim() === '') {
+                statusBadge = '<span class="px-2 py-0.5 bg-red-100 text-red-700 rounded text-[10px] font-bold block text-center">🔴 Missing Email</span>';
+            } else if (!acc.has_soa) {
+                statusBadge = '<span class="px-2 py-0.5 bg-amber-100 text-amber-700 rounded text-[10px] font-bold block text-center">🟡 Missing SOA</span>';
+            } else {
+                statusBadge = '<span class="px-2 py-0.5 bg-green-100 text-green-700 rounded text-[10px] font-bold block text-center">🟢 Ready</span>';
+            }
+            
+            statusCell.innerHTML = statusBadge;
+        }
+    }
+
 </script>
 <?php
 $content = ob_get_clean();
