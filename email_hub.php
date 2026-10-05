@@ -33,22 +33,75 @@ if (isset($_GET['action'])) {
     header('Content-Type: application/json; charset=utf-8');
     $action = $_GET['action'];
 
-    // Standard Default Email Subject and Body Generator (Updated para gamitin ang employee_id)
+    // Standard Default Email Subject and Body Generator (Updated para maging HTML format)
     function getDefaultEmailContent($account_number, $company, $recipient_name = 'Valued Client', $employee_id = '', $data_coverage = 'As of current billing', $approved_plan_display = '0.00', $final_dm_val = '0.00') {
         $default_subject = "Statement of Account / Debit Memo - " . $account_number;
         
-        // Kung may employee_id, gamitin ito sa format na Name / Employee_ID, kung wala ay Account Number ang gagamitin
         $identifier = !empty($employee_id) ? $employee_id : $account_number;
         $account_name_display = "{$recipient_name} / {$identifier}";
         
-        $default_body = "Dear Ma'am/Sir,\n\nPlease find attached your Statement of Account (SOA) reflecting the applicable Debit Memo charges:\n\nSummary Details:\nPeriod Covered: " . $data_coverage . "\nAccount Name: " . $account_name_display . "\nApproved Plan (Company Share):" . $approved_plan_display . "\nTotal Excess Charges Amount: ₱ " . $final_dm_val . "\n\nThis statement outlines the specific breakdown and descriptions of the charges applied to your telco account for your information.\n\nNote: This email provides a detailed breakdown and description of your telco account charges for your reference. If your excess charges is zero (₱0.00), no action is required and you may disregard this notification.\n\nPlease review the attached SOA for full details.\n\nThis is an automated email, please do not reply.\n\nThank you,\nIT Telco Admin Team";
+        // HTML Formatted Body
+        $default_body = "
+<div style='font-family: Arial, sans-serif; font-size: 11pt; color: #333; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e2e8f0; border-radius: 8px; background-color: #ffffff;'>
+    
+    <!-- Header / Branding -->
+    <div style='border-bottom: 2px solid #0f172a; padding-bottom: 12px; margin-bottom: 20px;'>
+        <h2 style='color: #0f172a; font-size: 16px; margin: 0;'>IT Telco Admin Team</h2>
+        <p style='font-size: 10px; color: #64748b; margin: 2px 0 0 0;'>Statement of Account & Debit Memo Notification</p>
+    </div>
+    
+    <p>Dear Ma'am/Sir,</p>
+    <p>Please find attached your Statement of Account (SOA) reflecting the applicable Debit Memo charges:</p>
+    
+    <!-- Summary Details Box / Card -->
+    <div style='background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 15px; margin: 15px 0;'>
+        <h3 style='font-size: 12px; color: #1e293b; margin-top: 0; margin-bottom: 10px; text-transform: uppercase; border-bottom: 1px solid #cbd5e1; padding-bottom: 5px;'>Summary Details</h3>
+        <table style='width: 100%; font-size: 11pt; border-collapse: collapse;'>
+            <tr>
+                <td style='padding: 6px 0; color: #64748b; width: 45%;'>Period Covered:</td>
+                <td style='padding: 6px 0; font-weight: bold; color: #0f172a;'>" . $data_coverage . "</td>
+            </tr>
+            <tr>
+                <td style='padding: 6px 0; color: #64748b;'>Account Name:</td>
+                <td style='padding: 6px 0; font-weight: bold; color: #0f172a;'>" . $account_name_display . "</td>
+            </tr>
+            <tr>
+                <td style='padding: 6px 0; color: #64748b;'>Approved Plan (Company Share):</td>
+                <td style='padding: 6px 0; font-weight: bold; color: #0f172a;'>" . $approved_plan_display . "</td>
+            </tr>
+            <tr style='border-top: 1px solid #e2e8f0;'>
+                <td style='padding: 10px 0 4px 0; color: #0f172a; font-weight: bold;'>Total Chargeable Amount:</td>
+                <td style='padding: 10px 0 4px 0; font-weight: bold; color: #e11d48; font-size: 12pt;'>₱ " . $final_dm_val . "</td>
+            </tr>
+        </table>
+    </div>
+
+    <p style='font-size: 10pt; color: #475569;'>This statement outlines the specific breakdown and descriptions of the charges applied to your telco account for your information.</p>
+    
+    <!-- Notice Box -->
+    <div style='background-color: #fffbeb; border-left: 4px solid #f59e0b; padding: 10px; margin: 15px 0; font-size: 10pt; color: #92400e; border-radius: 0 4px 4px 0;'>
+        <b>Note:</b> If your excess charges is zero (₱0.00), no action is required and you may disregard this notification. Please review the attached SOA for full details.
+    </div>
+
+    <!-- Footer / Signature Section -->
+    <div style='margin-top: 30px; padding-top: 15px; border-top: 2px solid #e2e8f0; background-color: #f8fafc; padding: 12px; border-radius: 6px;'>
+        <div style='background-color: #fef2f2; border: 1px solid #fecaca; padding: 8px 12px; border-radius: 4px; margin-bottom: 10px; text-align: center;'>
+            <p style='font-size: 9.5pt; color: #991b1b; margin: 0; font-weight: bold;'>
+                ⚠ This is an automated email, please do not reply.
+            </p>
+        </div>
+        <p style='font-size: 8.5pt; color: #64748b; margin: 0;'>
+            Regards,<br>
+            <span style='color: #2563eb; font-size: 9pt; font-weight: bold;'>IT Telco Admin Team</span>
+        </p>
+    </div>
+</div>";
 
         return [
             'subject' => $default_subject,
             'body' => $default_body
         ];
     }
-
     // Helper function para i-check kung may Shared Drive SOA
     function checkSharedDriveSOA($conn, $account_number, $dm_id, $start_date, $end_date) {
         if (empty($dm_id) || $dm_id == 0) return false;
