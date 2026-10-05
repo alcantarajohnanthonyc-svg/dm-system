@@ -736,73 +736,123 @@ $base_query = http_build_query($current_params);
 </div>
 
 <!-- ADD/EDIT MODAL -->
-<div id="addEditModal" class="hidden fixed inset-0 bg-gray-600 bg-opacity-50 flex items-center justify-center z-50">
-    <div class="bg-white rounded-lg shadow-xl w-full max-w-5xl p-6 max-h-[90vh] overflow-y-auto">
-        <h3 id="modalFormTitle" class="font-bold text-xl">Add Debit Memo Item</h3>
-        <form id="addEditForm" method="POST" action="save_record.php" novalidate>
+<div id="addEditModal" class="hidden fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+    <div class="bg-white rounded-2xl shadow-2xl w-full max-w-6xl max-h-[90vh] flex flex-col overflow-hidden border border-slate-100">
+        
+        <!-- Modal Header -->
+        <div class="px-8 py-5 bg-slate-900 text-white flex items-center justify-between">
+            <div>
+                <h3 id="modalFormTitle" class="font-bold text-lg tracking-wide">Add Debit Memo Item</h3>
+                <p class="text-xs text-slate-400 mt-0.5">Fill in the account details and financial breakdown below.</p>
+            </div>
+            <button type="button" onclick="closeModal()" class="text-slate-400 hover:text-white transition p-2 rounded-lg hover:bg-slate-800">
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                </svg>
+            </button>
+        </div>
+
+        <!-- Modal Body / Form -->
+        <form id="addEditForm" method="POST" action="save_record.php" novalidate class="flex-1 overflow-y-auto p-8 space-y-6">
             <input type="hidden" id="form_dm_id" name="id" value="">
-            <div class="grid grid-cols-1 sm:grid-cols-3 md:grid-cols-5 gap-4 mb-6 bg-gray-50 p-4 rounded-md">
-                <div>
-                    <label class="block text-[10px] font-bold text-gray-500 uppercase">Account #</label>
-                    <input type="text" name="account_number" list="acc_list" class="w-full p-2 border rounded-md text-xs" onchange="fetchAccountDetails(this.value)" onblur="fetchAccountDetails(this.value)" placeholder="Search/Select..." required>
-                    <div id="accFeedback" class="text-[9px] font-bold mt-1"></div>
-                </div>
-                <div>
-                    <label class="block text-[10px] font-bold text-gray-500 uppercase">Company</label>
-                    <input type="text" name="company" class="w-full p-2 border rounded-md text-xs" required>
-                </div>
-                <div>
-                    <label class="block text-[10px] font-bold text-gray-500 uppercase">Assignee</label>
-                    <input type="text" name="assignee" class="w-full p-2 border rounded-md text-xs">
-                </div>
-                <div>
-                    <label class="block text-[10px] font-bold text-gray-500 uppercase">Mobile #</label>
-                    <input type="text" name="mobile_number" class="w-full p-2 border rounded-md text-xs" required>
-                </div>
-                <div>
-                    <label class="block text-[10px] font-bold text-gray-500 uppercase">Carrier</label>
-                    <input type="text" name="carrier" list="carrier_input" class="w-full p-2 border rounded-md text-xs" required>
-                </div>
-            </div>
 
-            <div class="grid grid-cols-2 gap-4 mb-6">
-                <div><label class="block text-[10px] font-bold text-gray-500 uppercase">Start Date</label><input type="date" name="coverage_start" class="w-full p-2 border rounded-md text-xs" required></div>
-                <div><label class="block text-[10px] font-bold text-gray-500 uppercase">End Date</label><input type="date" name="coverage_end" class="w-full p-2 border rounded-md text-xs" required></div>
-            </div>
-
-            <div class="grid grid-cols-3 md:grid-cols-6 gap-3 border-t pt-4">
-                <?php 
-                $amounts = [
-                    'approve_plan' => 'Approved Plan',
-                    'phone_amort' => 'Phone Amortization', 
-                    'debit_adj' => 'Debit Adj',
-                    'credit_adj' => 'Credit Adj',
-                    'other_charges' => 'Other Charges', 
-                    'local' => 'Local(Call/Text)',
-                    'ndd' => 'NDD (NATIONAL)', 
-                    'idd' => 'IDD (INTERNATIONAL)', 
-                    'roam' => 'Roam', 
-                    'sms' => 'SMS',
-                    'gprs' => 'GPRS',
-                    'wiz_usage' => 'Wiz Usage', 
-                    'loading' => 'Loading CHARGES',
-                    'vat' => 'VAT', 
-                    'oct' => 'Overseas communication Tax',
-                    'current_charges' => 'Current Charges', 
-                    'total_amount_due' => 'Total Amount Due', 
-                    'debit_memo_details' => 'Total Debit Memo'
-                ];
-                foreach ($amounts as $name => $label): ?>
+            <!-- Section 1: Account Information -->
+            <div>
+                <h4 class="text-xs font-bold uppercase tracking-wider text-slate-400 mb-3">Account Information</h4>
+                <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-5 gap-4 bg-slate-50 p-4 rounded-xl border border-slate-200/60">
                     <div>
-                        <label class="block text-[9px] font-bold text-gray-400 uppercase"><?= $label ?></label>
-                        <input type="number" step="0.01" name="<?= $name ?>" class="w-full p-1.5 border rounded-md text-xs" value="0.00">
+                        <label class="block text-[11px] font-semibold text-slate-600 mb-1">Account #</label>
+                        <input type="text" name="account_number" list="acc_list" class="w-full p-2.5 bg-white border border-slate-200 rounded-lg text-xs focus:ring-2 focus:ring-slate-900 focus:outline-none transition" onchange="fetchAccountDetails(this.value)" onblur="fetchAccountDetails(this.value)" placeholder="Search/Select..." required>
+                        <div id="accFeedback" class="text-[10px] font-medium mt-1"></div>
                     </div>
-                <?php endforeach; ?>
+                    <div>
+                        <label class="block text-[11px] font-semibold text-slate-600 mb-1">Company</label>
+                        <input type="text" name="company" class="w-full p-2.5 bg-white border border-slate-200 rounded-lg text-xs focus:ring-2 focus:ring-slate-900 focus:outline-none transition" required>
+                    </div>
+                    <div>
+                        <label class="block text-[11px] font-semibold text-slate-600 mb-1">Assignee</label>
+                        <input type="text" name="assignee" class="w-full p-2.5 bg-white border border-slate-200 rounded-lg text-xs focus:ring-2 focus:ring-slate-900 focus:outline-none transition">
+                    </div>
+                    <div>
+                        <label class="block text-[11px] font-semibold text-slate-600 mb-1">Mobile #</label>
+                        <input type="text" name="mobile_number" class="w-full p-2.5 bg-white border border-slate-200 rounded-lg text-xs focus:ring-2 focus:ring-slate-900 focus:outline-none transition" required>
+                    </div>
+                    <div>
+                        <label class="block text-[11px] font-semibold text-slate-600 mb-1">Carrier</label>
+                        <input type="text" name="carrier" list="carrier_input" class="w-full p-2.5 bg-white border border-slate-200 rounded-lg text-xs focus:ring-2 focus:ring-slate-900 focus:outline-none transition" required>
+                    </div>
+                </div>
             </div>
 
-            <div class="flex justify-center items-center gap-6 mt-8 border-t pt-6">
-                <button type="button" onclick="closeModal()" class="px-8 py-2 bg-gray-200 rounded-md text-xs font-bold hover:bg-gray-300 transition">CANCEL</button>
-                <button type="submit" class="px-8 py-2 bg-slate-800 text-white rounded-md text-xs font-bold hover:bg-slate-900 shadow-md transition">SAVE ITEM</button>
+            <!-- Section 2: Coverage Period -->
+            <div>
+                <h4 class="text-xs font-bold uppercase tracking-wider text-slate-400 mb-3">Coverage Period</h4>
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 bg-slate-50 p-4 rounded-xl border border-slate-200/60">
+                    <div>
+                        <label class="block text-[11px] font-semibold text-slate-600 mb-1">Start Date</label>
+                        <input type="date" name="coverage_start" class="w-full p-2.5 bg-white border border-slate-200 rounded-lg text-xs focus:ring-2 focus:ring-slate-900 focus:outline-none transition" required>
+                    </div>
+                    <div>
+                        <label class="block text-[11px] font-semibold text-slate-600 mb-1">End Date</label>
+                        <input type="date" name="coverage_end" class="w-full p-2.5 bg-white border border-slate-200 rounded-lg text-xs focus:ring-2 focus:ring-slate-900 focus:outline-none transition" required>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Section 3: Financial Breakdown & Summary Columns -->
+            <div>
+                <h4 class="text-xs font-bold uppercase tracking-wider text-slate-400 mb-3">Financial Breakdown & Summary Columns</h4>
+                <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-3.5 bg-slate-50 p-4 rounded-xl border border-slate-200/60">
+                    <?php 
+                    $amounts = [
+                        'approve_plan' => 'Approved Plan',
+                        'phone_amort' => 'Phone Amortization', 
+                        'debit_adj' => 'Debit Adj',
+                        'credit_adj' => 'Credit Adj',
+                        'other_charges' => 'Other Charges', 
+                        'local' => 'Local (Call/Text)',
+                        'ndd' => 'NDD (National)', 
+                        'idd' => 'IDD (International)', 
+                        'roam' => 'Roam', 
+                        'sms' => 'SMS',
+                        'gprs' => 'GPRS',
+                        'wiz_usage' => 'Wiz Usage', 
+                        'loading' => 'Loading Charges',
+                        'vat' => 'VAT', 
+                        'oct' => 'Overseas Comm. Tax',
+                        'current_charges' => 'Current Charges', 
+                        'total_amount_due' => 'Total Amount Due',
+                        // Newly added summary columns aligned with your table header layout:
+                        'debit_memo_details' => 'Processed DM',
+                        'system_generated_dm' => 'System Generated DM',
+                        'difference' => 'Difference (Proc - Sys)',
+                        'add_ons' => 'Add Ons',
+                        'final_dm' => 'Final DM (Proc - Add)'
+                    ];
+
+                    foreach ($amounts as $name => $label): 
+                        // Style specific summary/computed fields uniquely
+                        $isComputed = in_array($name, ['difference', 'final_dm', 'system_generated_dm']);
+                        $isProcessed = ($name === 'debit_memo_details');
+                        
+                        $bgClass = 'bg-white';
+                        if ($isComputed) $bgClass = 'bg-yellow-50/60 border-yellow-200/80';
+                        if ($isProcessed) $bgClass = 'bg-emerald-50/60 border-emerald-200/80';
+                    ?>
+                        <div class="p-2.5 rounded-lg border border-slate-200/80 <?= $bgClass ?>">
+                            <label class="block text-[10px] font-bold text-slate-500 uppercase tracking-tight mb-1 leading-snug"><?= $label ?></label>
+                            <input type="number" step="0.01" name="<?= $name ?>" id="field_<?= $name ?>" 
+                                   class="w-full p-2 bg-white border border-slate-200 rounded-md text-xs font-semibold text-slate-700 focus:ring-2 focus:ring-slate-900 focus:outline-none transition" 
+                                   value="0.00" <?= ($name === 'difference' || $name === 'final_dm') ? 'readonly tabindex="-1"' : '' ?>>
+                        </div>
+                    <?php endforeach; ?>
+                </div>
+            </div>
+
+            <!-- Modal Footer Buttons -->
+            <div class="flex justify-end items-center gap-3 pt-6 border-t border-slate-100">
+                <button type="button" onclick="closeModal()" class="px-6 py-2.5 bg-slate-100 text-slate-700 rounded-xl text-xs font-bold hover:bg-slate-200 transition">CANCEL</button>
+                <button type="submit" class="px-6 py-2.5 bg-slate-900 text-white rounded-xl text-xs font-bold hover:bg-slate-800 shadow-lg shadow-slate-900/10 transition">SAVE ITEM</button>
             </div>
         </form>
     </div>

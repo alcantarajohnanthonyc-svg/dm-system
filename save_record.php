@@ -18,10 +18,11 @@ $start_date = $_POST['coverage_start'];
 $end_date = $_POST['coverage_end'];
 $memo_details = $_POST['debit_memo_details'];
 
+// Isinama na ang 'add_ons', tinanggal na ang mga formula fields
 $numeric_fields = [
     'approve_plan', 'phone_amort', 'debit_adj', 'credit_adj', 'other_charges', 
     'local', 'ndd', 'idd', 'roam', 'sms', 'gprs', 'wiz_usage', 'loading', 
-    'charges', 'vat', 'oct', 'current_charges', 'total_amount_due'
+    'charges', 'vat', 'oct', 'current_charges', 'total_amount_due', 'add_ons'
 ];
 
 $data = [];
@@ -43,12 +44,11 @@ try {
         $current_dm_id = $conn->lastInsertId();
     } else {
         $current_dm_id = $memo['dm_id'];
-        // UPDATE PARENT RECORD: This ensures company/assignee changes are saved
         $stmt = $conn->prepare("UPDATE debit_memos SET company = ?, assignee_name = ? WHERE dm_id = ?");
         $stmt->execute([$company, $assignee, $current_dm_id]);
     }
 
-    // 2. Insert or Update Child Record
+    // 2. Insert or Update Child Record (Kasama na ang add_ons, wala na ang formula columns)
     if ($item_id && $item_id > 0) {
         // UPDATE CHILD RECORD
         $sql = "UPDATE debit_memo_items SET 
@@ -56,7 +56,7 @@ try {
                 approved_plan = ?, phone_amortization = ?, debit_adj = ?, credit_adj = ?, other_charges = ?, 
                 local_call_text = ?, ndd_charges = ?, idd_charges = ?, roaming_charges = ?, sms_charges = ?, 
                 gprs_charges = ?, wiz_usage = ?, loading_charges = ?, vat = ?, oct = ?, 
-                current_charges = ?, total_amount_due = ?, debit_memo_details = ?, created_by = ? 
+                current_charges = ?, total_amount_due = ?, add_ons = ?, debit_memo_details = ?, created_by = ? 
                 WHERE id = ?";
         
         $stmt = $conn->prepare($sql);
@@ -65,7 +65,7 @@ try {
             $data['approve_plan'], $data['phone_amort'], $data['debit_adj'], $data['credit_adj'], $data['other_charges'],
             $data['local'], $data['ndd'], $data['idd'], $data['roam'], $data['sms'],
             $data['gprs'], $data['wiz_usage'], $data['loading'], $data['vat'], $data['oct'],
-            $data['current_charges'], $data['total_amount_due'], $memo_details, $user_id, $item_id
+            $data['current_charges'], $data['total_amount_due'], $data['add_ons'], $memo_details, $user_id, $item_id
         ]);
     } else {
         // INSERT CHILD RECORD
@@ -73,8 +73,8 @@ try {
                 approved_plan, phone_amortization, debit_adj, credit_adj, other_charges, 
                 local_call_text, ndd_charges, idd_charges, roaming_charges, sms_charges, 
                 gprs_charges, wiz_usage, loading_charges, vat, oct, 
-                current_charges, total_amount_due, debit_memo_details, created_by) 
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
+                current_charges, total_amount_due, add_ons, debit_memo_details, created_by) 
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
         
         $stmt = $conn->prepare($sql);
         $stmt->execute([
@@ -82,7 +82,7 @@ try {
             $data['approve_plan'], $data['phone_amort'], $data['debit_adj'], $data['credit_adj'], $data['other_charges'],
             $data['local'], $data['ndd'], $data['idd'], $data['roam'], $data['sms'],
             $data['gprs'], $data['wiz_usage'], $data['loading'], $data['vat'], $data['oct'],
-            $data['current_charges'], $data['total_amount_due'], $memo_details, $user_id
+            $data['current_charges'], $data['total_amount_due'], $data['add_ons'], $memo_details, $user_id
         ]);
     }
 
@@ -93,3 +93,4 @@ try {
     if ($conn->inTransaction()) $conn->rollBack();
     echo json_encode(['status' => 'error', 'message' => $e->getMessage()]);
 }
+?>
