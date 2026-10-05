@@ -175,26 +175,36 @@ if (isset($_GET['action']) && $_GET['action'] === 'get_bulk_email_preview') {
         $accounts_data = [];
         foreach ($memos as $memo) {
             $acc_num = $memo['account_number'];
+            $dm_id = $memo['dm_id'];
             
-            // 1. Kunin ang lahat ng detalye kasama ang full_name at employee_id mula sa account_emails
             $email_stmt = $conn->prepare("SELECT * FROM account_emails WHERE account_number = ?");
             $email_stmt->execute([$acc_num]);
             $account_email_row = $email_stmt->fetch(PDO::FETCH_ASSOC);
 
             $recipient_name = ($account_email_row && !empty($account_email_row['full_name'])) ? $account_email_row['full_name'] : 'Valued Client';
             $employee_id    = ($account_email_row && !empty($account_email_row['employee_id'])) ? $account_email_row['employee_id'] : '';
-            
-            // 2. I-format ang display ng Account Number / Identifier kung saan uunahin ang employee_id kung meron
             $identifier = !empty($employee_id) ? $employee_id : $acc_num;
 
+            // Suriin kung may actual data items at SOA ang debit memo na ito
+            $item_check = $conn->prepare("SELECT COUNT(*) FROM debit_memo_items WHERE dm_id = ?");
+            $item_check->execute([$dm_id]);
+            $has_data = ($item_check->fetchColumn() > 0);
+
+            $soa_check = $conn->prepare("SELECT COUNT(*) FROM debit_memo_items dmi JOIN pdf_extracted_details pdf ON pdf.account_number = ? WHERE dmi.dm_id = ?");
+            $soa_check->execute([$acc_num, $dm_id]);
+            $has_soa = ($soa_check->fetchColumn() > 0);
+
             $accounts_data[] = [
-                'dm_id' => $memo['dm_id'],
+                'dm_id' => $dm_id,
                 'account_number' => $acc_num,
-                'display_identifier' => $identifier, // Magagamit kung gusto mong ipakita ang employee_id sa table
+                'display_identifier' => $identifier,
                 'recipient_name' => $recipient_name,
                 'company' => $memo['company'],
                 'recipient_email' => ($account_email_row && !empty($account_email_row['email_address'])) ? $account_email_row['email_address'] : '',
-                'cc_emails' => ($account_email_row && !empty($account_email_row['cc_emails'])) ? $account_email_row['cc_emails'] : ''
+                'cc_emails' => ($account_email_row && !empty($account_email_row['cc_emails'])) ? $account_email_row['cc_emails'] : '',
+                'has_data' => $has_data,
+                'has_dm' => true,
+                'has_soa' => $has_soa
             ];
         }
 
@@ -849,8 +859,7 @@ $base_query = http_build_query($current_params);
             <table class="w-full text-left border-collapse text-xs">
                 <thead class="bg-gray-100 sticky top-0 z-10 text-gray-700 font-bold uppercase text-[10px]">
                     <tr>
-                        <th class="p-2.5 text-center w-20 cursor-pointer" onclick="sortBulkTable('status')">Status ↕</th>
-                        <th class="p-2.5 cursor-pointer" onclick="sortBulkTable('account_number')">Account Number & Company ↕</th>
+<th class="p-2.5 text-center w-36 cursor-pointer" onclick="sortBulkTable('status')">Status ↕</th>                        <th class="p-2.5 cursor-pointer" onclick="sortBulkTable('account_number')">Account Number & Company ↕</th>
                         <th class="p-2.5 cursor-pointer" onclick="sortBulkTable('recipient_email')">Recipient Email ↕</th>
                         <th class="p-2.5">CC Emails</th>
                         <th class="p-2.5 text-center w-24">Preview</th>
@@ -1693,8 +1702,8 @@ function renderBulkReviewTable() {
         itemsToDisplay.sort((a, b) => {
             let valA = '', valB = '';
             if (currentBulkSortField === 'status') {
-                valA = (a.recipient_email && a.recipient_email.trim() !== '') ? 'Ready' : 'Missing';
-                valB = (b.recipient_email && b.recipient_email.trim() !== '') ? 'Ready' : 'Missing';
+                valA = (!a.has_data || !a.has_dm || a.dm_id == 0) ? 'No Data' : ((!a.recipient_email || a.recipient_email.trim() === '') ? 'Missing Email' : (!a.has_soa ? 'Missing SOA' : 'Ready'));
+                valB = (!b.has_data || !b.has_dm || b.dm_id == 0) ? 'No Data' : ((!b.recipient_email || b.recipient_email.trim() === '') ? 'Missing Email' : (!b.has_soa ? 'Missing SOA' : 'Ready'));
             } else if (currentBulkSortField === 'account_number') {
                 valA = a.account_number || '';
                 valB = b.account_number || '';
@@ -1720,15 +1729,20 @@ function renderBulkReviewTable() {
 
     paginatedItems.forEach((acc) => {
         let globalIndex = bulkAccountsCache.findIndex(item => item.dm_id === acc.dm_id);
-        let hasEmail = acc.recipient_email && acc.recipient_email.trim() !== '';
-        let statusBadge = hasEmail 
-            ? `<span class="px-2 py-0.5 bg-green-100 text-green-700 rounded-full text-[9px] font-bold">🟢 Ready</span>` 
-            : `<span class="px-2 py-0.5 bg-red-100 text-red-700 rounded-full text-[9px] font-bold">🔴 Missing</span>`;
         
-        let rowBg = hasEmail ? '' : 'bg-red-50/50';
+       let statusBadge = '';
+        if (!acc.has_data || !acc.has_dm || acc.dm_id == 0) {
+            statusBadge = '<span class="px-2 py-0.5 rounded text-[9px] font-bold bg-gray-100 text-gray-700 border border-gray-200 block text-center">⚪ No Data</span>';
+        } else if (!acc.recipient_email || acc.recipient_email.trim() === '') {
+            statusBadge = '<span class="px-2 py-0.5 rounded text-[9px] font-bold bg-red-100 text-red-700 border border-red-200 block text-center">🔴 Missing Email</span>';
+        } else if (!acc.has_soa) {
+            statusBadge = '<span class="px-2 py-0.5 rounded text-[9px] font-bold bg-amber-100 text-amber-700 border border-amber-200 block text-center">🟡 Missing SOA</span>';
+        } else {
+            statusBadge = '<span class="px-2 py-0.5 rounded text-[9px] font-bold bg-green-100 text-green-700 border border-green-200 block text-center">🟢 Ready</span>';
+        }
 
         tbody.innerHTML += `
-            <tr class="${rowBg} border-b" data-index="${globalIndex}">
+            <tr class="border-b" data-index="${globalIndex}">
                 <td class="p-2.5 text-center">${statusBadge}</td>
                 <td class="p-2.5">
                     <input type="hidden" name="bulk_dm_ids[]" value="${acc.dm_id}">
@@ -1736,7 +1750,7 @@ function renderBulkReviewTable() {
                     <div class="text-[10px] text-gray-500">${acc.company}</div>
                 </td>
                 <td class="p-2.5">
-                    <input type="email" name="bulk_recipients[]" value="${acc.recipient_email || ''}" placeholder="Ilagay ang email dito..." class="w-full p-1.5 border rounded text-xs bg-white recipient-input" oninput="updateCacheField(${globalIndex}, 'recipient_email', this.value)">
+                    <input type="email" name="bulk_recipients[]" value="${acc.recipient_email || ''}" placeholder="Ilagay ang email dito..." class="w-full p-1.5 border rounded text-xs bg-white recipient-input" oninput="updateCacheFieldAndRefreshBadge(${globalIndex}, 'recipient_email', this.value, this)">
                 </td>
                 <td class="p-2.5">
                     <input type="text" name="bulk_ccs[]" value="${acc.cc_emails || ''}" placeholder="CC emails..." class="w-full p-1.5 border rounded text-xs bg-white cc-input" oninput="updateCacheField(${globalIndex}, 'cc_emails', this.value)">
@@ -1832,10 +1846,14 @@ function sendEmailFromBreakdown() {
 }
 
 function previewEmailBeforeSend(dmId, itemIds = '') {
-   const startDate = document.querySelector('input[name="start_date"]') ? document.querySelector('input[name="start_date"]').value : '';
+    const startDate = document.querySelector('input[name="start_date"]') ? document.querySelector('input[name="start_date"]').value : '';
     const endDate = document.querySelector('input[name="end_date"]') ? document.querySelector('input[name="end_date"]').value : '';
 
-    let url = `list_dm.php?action=get_email_preview&dm_id=${dmId}&item_ids=${itemIds}&start_date=${startDate}&end_date=${endDate}`;
+    let cachedAccount = bulkAccountsCache.find(acc => acc.dm_id == dmId);
+    let accStart = (cachedAccount && cachedAccount.start_date) ? cachedAccount.start_date : startDate;
+    let accEnd = (cachedAccount && cachedAccount.end_date) ? cachedAccount.end_date : endDate;
+
+    let url = `list_dm.php?action=get_email_preview&dm_id=${dmId}&item_ids=${itemIds}&start_date=${accStart}&end_date=${accEnd}`;
 
     fetch(url)
     .then(res => res.json())
@@ -2074,7 +2092,31 @@ function processCsvEmailHub() {
     alert('CSV file successfully uploaded for the Email Hub.');
     closeEmailHubModal();
 }
-
+function updateCacheFieldAndRefreshBadge(index, field, value, inputElement) {
+    if (bulkAccountsCache[index]) {
+        bulkAccountsCache[index][field] = value;
+        
+        // Hanapin ang katabing status badge cell sa row na ito at i-update agad
+        const row = inputElement.closest('tr');
+        if (row) {
+            const statusCell = row.cells[0];
+            let acc = bulkAccountsCache[index];
+            
+            let statusBadge = '';
+            if (!acc.has_data || !acc.has_dm || acc.dm_id == 0) {
+                statusBadge = '<span class="px-2 py-0.5 rounded text-[9px] font-bold bg-gray-100 text-gray-700 border border-gray-200 block text-center">⚪ No Data</span>';
+            } else if (!acc.recipient_email || acc.recipient_email.trim() === '') {
+                statusBadge = '<span class="px-2 py-0.5 rounded text-[9px] font-bold bg-red-100 text-red-700 border border-red-200 block text-center">🔴 Missing Email</span>';
+            } else if (!acc.has_soa) {
+                statusBadge = '<span class="px-2 py-0.5 rounded text-[9px] font-bold bg-amber-100 text-amber-700 border border-amber-200 block text-center">🟡 Missing SOA</span>';
+            } else {
+                statusBadge = '<span class="px-2 py-0.5 rounded text-[9px] font-bold bg-green-100 text-green-700 border border-green-200 block text-center">🟢 Ready</span>';
+            }
+            
+            statusCell.innerHTML = statusBadge;
+        }
+    }
+}
 
 </script>
 

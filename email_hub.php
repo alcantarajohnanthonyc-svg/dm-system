@@ -33,6 +33,7 @@ if (isset($_GET['action'])) {
     header('Content-Type: application/json; charset=utf-8');
     $action = $_GET['action'];
 
+    // Standard Default Email Subject and Body Generator (Updated para gamitin ang employee_id)
     // Standard Default Email Subject and Body Generator (Updated para maging HTML format)
     function getDefaultEmailContent($account_number, $company, $recipient_name = 'Valued Client', $employee_id = '', $data_coverage = 'As of current billing', $approved_plan_display = '0.00', $final_dm_val = '0.00') {
         $default_subject = "Statement of Account / Debit Memo - " . $account_number;
@@ -102,6 +103,7 @@ if (isset($_GET['action'])) {
             'body' => $default_body
         ];
     }
+
     // Helper function para i-check kung may Shared Drive SOA
     function checkSharedDriveSOA($conn, $account_number, $dm_id, $start_date, $end_date) {
         if (empty($dm_id) || $dm_id == 0) return false;
