@@ -90,25 +90,31 @@ foreach ($dm_ids as $index => $dm_id) {
     $custom_body     = isset($bulk_bodies[$index]) ? trim($bulk_bodies[$index]) : '';
     
     $recipient_name  = 'Valued Client';
+    $employee_id     = '';
 
-    // 2. Kunin ang impormasyon mula sa 'account_emails' table para sa pangalan o fallback ng email
+    // 2. Kunin ang impormasyon mula sa 'account_emails' table para sa pangalan, employee_id, o fallback ng email[cite: 7, 11]
     $email_stmt = $pdo->prepare("SELECT * FROM account_emails WHERE account_number = ?");
     $email_stmt->execute([$account_number]);
     $account_email_row = $email_stmt->fetch();
 
-    // Kung walang laman ang galing sa modal, saka natin gamitin ang email mula sa database
+    // Kung walang laman ang galing sa modal, saka natin gamitin ang email mula sa database[cite: 11]
     if (empty($recipient_email)) {
         if ($account_email_row && !empty($account_email_row['email_address'])) {
             $recipient_email = trim($account_email_row['email_address']);
         }
     }
 
-    // Kunin ang full name kung available sa database
+    // Kunin ang full name kung available sa database[cite: 7, 11]
     if ($account_email_row && !empty($account_email_row['full_name'])) {
         $recipient_name = $account_email_row['full_name'];
     }
 
-    // 3. Kung pagkatapos nito ay wala pa ring email, mag-fail
+    // Kunin ang employee_id kung available sa database[cite: 7, 11]
+    if ($account_email_row && !empty($account_email_row['employee_id'])) {
+        $employee_id = $account_email_row['employee_id'];
+    }
+
+    // 3. Kung pagkatapos nito ay wala pa ring email, mag-fail[cite: 11]
     if (empty($recipient_email)) {
         $fail_count++;
         $error_msg = "Account {$account_number} (DM ID: {$dm_id}) - Failed: No email address provided or mapped.";
@@ -131,7 +137,7 @@ foreach ($dm_ids as $index => $dm_id) {
         continue;
     }
 
-    // 3.5 Pull details from debit_memo_items gamit ang custom date range kung naka-specify
+    // 3.5 Pull details from debit_memo_items gamit ang custom date range kung naka-specify[cite: 11]
     $itemQuery = "SELECT * FROM debit_memo_items WHERE dm_id = ?";
     $itemParams = [$dm_id];
 
@@ -155,6 +161,7 @@ foreach ($dm_ids as $index => $dm_id) {
 
     $total_final_dm = 0.00;
     $total_approved_plan = 0.00;
+    $approved_plan_set = false;
     $mobile_number_val = 'N/A';
     $telco_val = 'N/A';
     
@@ -167,7 +174,10 @@ foreach ($dm_ids as $index => $dm_id) {
             $ao_v = isset($it['add_ons']) ? (float)$it['add_ons'] : 0.00;
             $total_final_dm += isset($it['final_dm']) ? (float)$it['final_dm'] : ($dm_v - $ao_v);
             
-            $total_approved_plan += isset($it['approved_plan']) ? (float)$it['approved_plan'] : 0.00;
+            if (!$approved_plan_set && isset($it['approved_plan'])) {
+                $total_approved_plan = (float)$it['approved_plan'];
+                $approved_plan_set = true;
+            }
             if (!empty($it['mobile_number'])) $mobile_number_val = $it['mobile_number'];
             if (!empty($it['telco'])) $telco_val = $it['telco'];
 
@@ -184,11 +194,14 @@ foreach ($dm_ids as $index => $dm_id) {
         $data_coverage = "As of current billing";
     }
 
-    $account_name_display = "{$recipient_name} / {$account_number}";
+    // Gamitin ang employee_id kung mayroon, kung wala ay mag-fallback sa account_number
+    $identifier_val = !empty($employee_id) ? $employee_id : $account_number;
+    $account_name_display = "{$recipient_name} / {$identifier_val}";
+
     $approved_plan_display = number_format($total_approved_plan, 2, '.', ',');
     $final_dm_val = number_format($total_final_dm, 2, '.', ',');
 
-    // 4. Generate Debit Memo PDF attachment
+    // 4. Generate Debit Memo PDF attachment[cite: 11]
     $pdf_result = createDebitMemoPDF($dm_id, $pdo, $breakdown_item_ids, $custom_start, $custom_end);
 
     if (!is_array($pdf_result) || count($pdf_result) != 2) {
@@ -216,12 +229,12 @@ foreach ($dm_ids as $index => $dm_id) {
 
     $filename = 'Debit_Memo_' . $acc_num . '.pdf';
     
-    // Gamitin ang custom subject kung mayroon, kung wala ay default
+    // Gamitin ang custom subject kung mayroon, kung wala ay default[cite: 11]
     $subject = !empty($custom_subject) ? $custom_subject : "Statement of Account / Debit Memo - " . $account_number;
 
-    // Gamitin ang custom body kung mayroon, kung wala ay default HTML format
+    // Gamitin ang custom body kung mayroon, kung wala ay default HTML format[cite: 11]
     if (!empty($custom_body)) {
-        // Palitan ang newline ng <br> para sa maayos na email formatting
+        // Palitan ang newline ng <br> para sa maayos na email formatting[cite: 11]
         $html_content = nl2br(htmlspecialchars($custom_body));
     } else {
         $html_content = "
@@ -250,7 +263,7 @@ foreach ($dm_ids as $index => $dm_id) {
         ]
     ];
 
-    // 5. Dynamically attach matching PDFs from Google Drive
+    // 5. Dynamically attach matching PDFs from Google Drive[cite: 11]
     $soa_query = "
         SELECT DISTINCT pdf.filename, pdf.file_link 
         FROM debit_memo_items dmi
@@ -317,7 +330,7 @@ foreach ($dm_ids as $index => $dm_id) {
         }
     }
 
-    // 6. Send Email via SMTP
+    // 6. Send Email via SMTP[cite: 11]
     $mail_sent = send_smtp_mail_with_multi_attachments($recipient_email, $subject, $attachments, $html_content, $cc_emails);
     if ($mail_sent === true) {
         $success_count++;
@@ -350,7 +363,7 @@ foreach ($dm_ids as $index => $dm_id) {
     }
 }
 
-// 7. Dispatch Summary Report to Admins
+// 7. Dispatch Summary Report to Admins[cite: 11]
 send_dispatch_report_to_admins($pdo, $admin_report_items, $success_count, $fail_count);
 
 $detailed_message = "Bulk PDF dispatch completed. Successful: {$success_count}, Failed: {$fail_count}.";

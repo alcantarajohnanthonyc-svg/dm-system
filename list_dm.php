@@ -40,6 +40,7 @@ if (isset($_GET['action']) && $_GET['action'] === 'get_email_preview') {
 
     $recipient_email = ($account_email_row && !empty($account_email_row['email_address'])) ? $account_email_row['email_address'] : '';
     $recipient_name  = ($account_email_row && !empty($account_email_row['full_name'])) ? $account_email_row['full_name'] : 'Valued Client';
+    $employee_id     = ($account_email_row && !empty($account_email_row['employee_id'])) ? $account_email_row['employee_id'] : '';
     $cc_emails       = ($account_email_row && !empty($account_email_row['cc_emails'])) ? $account_email_row['cc_emails'] : '';
 
     $itemQuery = "SELECT * FROM debit_memo_items WHERE dm_id = ?";
@@ -66,6 +67,7 @@ if (isset($_GET['action']) && $_GET['action'] === 'get_email_preview') {
 
     $total_final_dm = 0.00;
     $total_approved_plan = 0.00;
+    $approved_plan_set = false;
     $raw_start_dates = [];
     $raw_end_dates = [];
 
@@ -73,7 +75,10 @@ if (isset($_GET['action']) && $_GET['action'] === 'get_email_preview') {
         $dm_v = isset($it['debit_memo_details']) ? (float)$it['debit_memo_details'] : 0.00;
         $ao_v = isset($it['add_ons']) ? (float)$it['add_ons'] : 0.00;
         $total_final_dm += isset($it['final_dm']) ? (float)$it['final_dm'] : ($dm_v - $ao_v);
-        $total_approved_plan += isset($it['approved_plan']) ? (float)$it['approved_plan'] : 0.00;
+        if (!$approved_plan_set && isset($it['approved_plan'])) {
+            $total_approved_plan = (float)$it['approved_plan'];
+            $approved_plan_set = true;
+        }
 
         if (!empty($it['coverage_start'])) $raw_start_dates[] = $it['coverage_start'];
         if (!empty($it['coverage_end'])) $raw_end_dates[] = $it['coverage_end'];
@@ -87,7 +92,8 @@ if (isset($_GET['action']) && $_GET['action'] === 'get_email_preview') {
 
    $dm_number_display = $dm['dm_number'] ?? $dm_id;
     $subject = "Statement of Account / Debit Memo - " . $account_number;
-    $account_name_display = "{$recipient_name} / {$account_number}";
+   $identifier = !empty($employee_id) ? $employee_id : $account_number;
+    $account_name_display = "{$recipient_name} / {$identifier}";
     $approved_plan_display = number_format($total_approved_plan, 2, '.', ',');
     $final_dm_val = number_format($total_final_dm, 2, '.', ',');
 
@@ -169,16 +175,26 @@ if (isset($_GET['action']) && $_GET['action'] === 'get_bulk_email_preview') {
         $accounts_data = [];
         foreach ($memos as $memo) {
             $acc_num = $memo['account_number'];
-            $email_stmt = $conn->prepare("SELECT email_address FROM account_emails WHERE account_number = ?");
+            
+            // 1. Kunin ang lahat ng detalye kasama ang full_name at employee_id mula sa account_emails
+            $email_stmt = $conn->prepare("SELECT * FROM account_emails WHERE account_number = ?");
             $email_stmt->execute([$acc_num]);
-            $email_row = $email_stmt->fetch(PDO::FETCH_ASSOC);
+            $account_email_row = $email_stmt->fetch(PDO::FETCH_ASSOC);
+
+            $recipient_name = ($account_email_row && !empty($account_email_row['full_name'])) ? $account_email_row['full_name'] : 'Valued Client';
+            $employee_id    = ($account_email_row && !empty($account_email_row['employee_id'])) ? $account_email_row['employee_id'] : '';
+            
+            // 2. I-format ang display ng Account Number / Identifier kung saan uunahin ang employee_id kung meron
+            $identifier = !empty($employee_id) ? $employee_id : $acc_num;
 
             $accounts_data[] = [
                 'dm_id' => $memo['dm_id'],
                 'account_number' => $acc_num,
+                'display_identifier' => $identifier, // Magagamit kung gusto mong ipakita ang employee_id sa table
+                'recipient_name' => $recipient_name,
                 'company' => $memo['company'],
-                'recipient_email' => ($email_row && !empty($email_row['email_address'])) ? $email_row['email_address'] : '',
-                'cc_emails' => ''
+                'recipient_email' => ($account_email_row && !empty($account_email_row['email_address'])) ? $account_email_row['email_address'] : '',
+                'cc_emails' => ($account_email_row && !empty($account_email_row['cc_emails'])) ? $account_email_row['cc_emails'] : ''
             ];
         }
 
@@ -267,14 +283,13 @@ $limit  = ($limit_input === 'ALL') ? 999999 : (in_array((int)$limit_input, [20, 
 $offset = ($page - 1) * $limit;
 
 // 2. Build Unified Subquery (Strict Inclusion)
-// 2. Build Unified Subquery (Strict Inclusion)
 $filteredSubQuery = "SELECT dmi.dm_id, 
                             GROUP_CONCAT(DISTINCT dmi.carrier_name SEPARATOR '|') as carrier_names, 
                             MIN(dmi.coverage_start) as start_date, 
                             MAX(dmi.coverage_end) as end_date, 
                             SUM(CAST(dmi.debit_memo_details AS DECIMAL(10,2))) as filtered_total,
                             (
-                                SELECT SUM(CAST(dmi_inner.approved_plan AS DECIMAL(10,2)))
+                                SELECT MAX(CAST(dmi_inner.approved_plan AS DECIMAL(10,2)))
                                 FROM debit_memo_items dmi_inner
                                 WHERE dmi_inner.dm_id = dmi.dm_id
                                   AND dmi_inner.coverage_start >= :where_start 

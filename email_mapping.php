@@ -25,11 +25,17 @@ if (isset($_GET['action']) && $_GET['action'] === 'export_csv') {
         header('Content-Type: text/csv; charset=utf-8');
         header('Content-Disposition: attachment; filename=account_emails_export_' . date('Y-m-d') . '.csv');
         $output = fopen('php://output', 'w');
-        fputcsv($output, ['account_number', 'email_address', 'mobile_number']);
+        fputcsv($output, ['account_number', 'full_name', 'employee_id', 'email_address', 'mobile_number']);
         
-        $stmt = $db_connection->query("SELECT account_number, email_address, mobile_number FROM account_emails");
+        $stmt = $db_connection->query("SELECT account_number, full_name, employee_id, email_address, mobile_number FROM account_emails");
         while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
-            fputcsv($output, [$row['account_number'], $row['email_address'], $row['mobile_number'] ?? '']);
+            fputcsv($output, [
+                $row['account_number'], 
+                $row['full_name'] ?? '', 
+                $row['employee_id'] ?? '', 
+                $row['email_address'], 
+                $row['mobile_number'] ?? ''
+            ]);
         }
         fclose($output);
         exit;
@@ -41,8 +47,8 @@ if (isset($_GET['action']) && $_GET['action'] === 'download_template') {
     header('Content-Type: text/csv; charset=utf-8');
     header('Content-Disposition: attachment; filename=account_emails_template.csv');
     $output = fopen('php://output', 'w');
-    fputcsv($output, ['account_number', 'email_address', 'mobile_number']);
-    fputcsv($output, ['1000040712', 'client@company.com', '09123456789']);
+    fputcsv($output, ['account_number', 'full_name', 'employee_id', 'email_address', 'mobile_number']);
+    fputcsv($output, ['1000040712', 'John Doe', 'EMP12345', 'client@company.com', '09123456789']);
     fclose($output);
     exit;
 }
@@ -67,27 +73,29 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $action = $_POST['action'] ?? '';
 
     if ($action === 'save_mapping') {
-        $record_id = trim($_POST['record_id'] ?? '');
+        $record_id      = trim($_POST['record_id'] ?? '');
         $account_number = trim($_POST['account_number'] ?? '');
-        $email_address = trim($_POST['email_address'] ?? '');
-        $mobile_number = trim($_POST['mobile_number'] ?? '');
+        $full_name      = trim($_POST['full_name'] ?? '');
+        $employee_id    = trim($_POST['employee_id'] ?? '');
+        $email_address  = trim($_POST['email_address'] ?? '');
+        $mobile_number  = trim($_POST['mobile_number'] ?? '');
 
         if (!empty($account_number) && !empty($email_address) && $db_connection) {
             try {
                 if (!empty($record_id)) {
-                    $stmtUpdate = $db_connection->prepare("UPDATE account_emails SET account_number = ?, email_address = ?, mobile_number = ? WHERE id = ?");
-                    $stmtUpdate->execute([$account_number, $email_address, $mobile_number, $record_id]);
+                    $stmtUpdate = $db_connection->prepare("UPDATE account_emails SET account_number = ?, full_name = ?, employee_id = ?, email_address = ?, mobile_number = ? WHERE id = ?");
+                    $stmtUpdate->execute([$account_number, $full_name, $employee_id, $email_address, $mobile_number, $record_id]);
                     header("Location: " . strtok($_SERVER['PHP_SELF'], '?') . "?updated=1");
                     exit;
                 } else {
                     $stmtCheck = $db_connection->prepare("SELECT id FROM account_emails WHERE TRIM(account_number) = TRIM(?) LIMIT 1");
                     $stmtCheck->execute([$account_number]);
                     if ($stmtCheck->fetch()) {
-                        $stmtUpdate = $db_connection->prepare("UPDATE account_emails SET email_address = ?, mobile_number = ? WHERE TRIM(account_number) = TRIM(?)");
-                        $stmtUpdate->execute([$email_address, $mobile_number, $account_number]);
+                        $stmtUpdate = $db_connection->prepare("UPDATE account_emails SET full_name = ?, employee_id = ?, email_address = ?, mobile_number = ? WHERE TRIM(account_number) = TRIM(?)");
+                        $stmtUpdate->execute([$full_name, $employee_id, $email_address, $mobile_number, $account_number]);
                     } else {
-                        $stmt = $db_connection->prepare("INSERT INTO account_emails (account_number, email_address, mobile_number, created_at) VALUES (?, ?, ?, NOW())");
-                        $stmt->execute([$account_number, $email_address, $mobile_number]);
+                        $stmt = $db_connection->prepare("INSERT INTO account_emails (account_number, full_name, employee_id, email_address, mobile_number, created_at) VALUES (?, ?, ?, ?, ?, NOW())");
+                        $stmt->execute([$account_number, $full_name, $employee_id, $email_address, $mobile_number]);
                     }
                     header("Location: " . strtok($_SERVER['PHP_SELF'], '?') . "?success=1");
                     exit;
@@ -101,12 +109,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     } elseif ($action === 'sync_accounts') {
         if ($db_connection) {
             try {
-                $sqlSync = "INSERT INTO account_emails (account_number, email_address, mobile_number, created_at)
-                            SELECT DISTINCT dm.account_number, '', '', NOW()
+                // 1. Insert missing accounts and pull assignee_name as full_name from debit_memos
+                $sqlSync = "INSERT INTO account_emails (account_number, full_name, employee_id, email_address, mobile_number, created_at)
+                            SELECT DISTINCT dm.account_number, COALESCE(dm.assignee_name, ''), '', '', '', NOW()
                             FROM debit_memos dm
                             WHERE TRIM(dm.account_number) NOT IN (SELECT TRIM(ae.account_number) FROM account_emails ae)";
                 $countAdded = $db_connection->exec($sqlSync);
 
+                // 2. Update empty full_names from debit_memos assignee_name if matching existing records
+                $sqlUpdateNames = "UPDATE account_emails ae
+                                    JOIN (
+                                        SELECT dm.account_number, dm.assignee_name
+                                        FROM debit_memos dm
+                                        WHERE dm.assignee_name IS NOT NULL AND dm.assignee_name != ''
+                                        ORDER BY dm.dm_id DESC
+                                    ) latest_name ON TRIM(ae.account_number) = TRIM(latest_name.account_number)
+                                    SET ae.full_name = latest_name.assignee_name
+                                    WHERE (ae.full_name IS NULL OR ae.full_name = '' OR ae.full_name = 'N/A')";
+                $db_connection->exec($sqlUpdateNames);
+
+                // 3. Update mobile numbers from debit_memo_items
                 $sqlUpdateMobiles = "UPDATE account_emails ae
                                     JOIN (
                                         SELECT dm.account_number, dmi.mobile_number
@@ -122,7 +144,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 header("Location: " . strtok($_SERVER['PHP_SELF'], '?') . "?synced=" . intval($countAdded));
                 exit;
             } catch (Exception $e) {
-                $error_message = "Error syncing accounts and mobile numbers: " . $e->getMessage();
+                $error_message = "Error syncing accounts, names, and mobile numbers: " . $e->getMessage();
             }
         }
     } elseif ($action === 'upload_csv') {
@@ -136,20 +158,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     if ($rowNum === 1 && (stripos($data[0], 'account') !== false)) {
                         continue;
                     }
-                    $acc_num = trim($data[0] ?? '');
-                    $email = trim($data[1] ?? '');
-                    $mobile = trim($data[2] ?? '');
+                    $acc_num     = trim($data[0] ?? '');
+                    $full_name   = trim($data[1] ?? '');
+                    $employee_id = trim($data[2] ?? '');
+                    $email       = trim($data[3] ?? '');
+                    $mobile      = trim($data[4] ?? '');
 
                     if (!empty($acc_num)) {
                         try {
                             $stmtCheck = $db_connection->prepare("SELECT id FROM account_emails WHERE TRIM(account_number) = TRIM(?) LIMIT 1");
                             $stmtCheck->execute([$acc_num]);
                             if ($stmtCheck->fetch()) {
-                                $stmtUp = $db_connection->prepare("UPDATE account_emails SET email_address = COALESCE(NULLIF(?, ''), email_address), mobile_number = COALESCE(NULLIF(?, ''), mobile_number) WHERE TRIM(account_number) = TRIM(?)");
-                                $stmtUp->execute([$email, $mobile, $acc_num]);
+                                $stmtUp = $db_connection->prepare("UPDATE account_emails SET full_name = COALESCE(NULLIF(?, ''), full_name), employee_id = COALESCE(NULLIF(?, ''), employee_id), email_address = COALESCE(NULLIF(?, ''), email_address), mobile_number = COALESCE(NULLIF(?, ''), mobile_number) WHERE TRIM(account_number) = TRIM(?)");
+                                $stmtUp->execute([$full_name, $employee_id, $email, $mobile, $acc_num]);
                             } else {
-                                $stmtIns = $db_connection->prepare("INSERT INTO account_emails (account_number, email_address, mobile_number, created_at) VALUES (?, ?, ?, NOW())");
-                                $stmtIns->execute([$acc_num, $email, $mobile]);
+                                $stmtIns = $db_connection->prepare("INSERT INTO account_emails (account_number, full_name, employee_id, email_address, mobile_number, created_at) VALUES (?, ?, ?, ?, ?, NOW())");
+                                $stmtIns->execute([$acc_num, $full_name, $employee_id, $email, $mobile]);
                             }
                             $importedCount++;
                         } catch (Exception $ex) {}
@@ -176,7 +200,7 @@ $page = max(1, intval($_GET['page'] ?? 1));
 // Handle rows per page selection (10, 25, 50, 100, or All)
 $limit_input = $_GET['limit'] ?? '25';
 if ($limit_input === 'all') {
-    $limit = 999999; // Effectively all records
+    $limit = 999999; 
 } else {
     $limit = intval($limit_input);
     if (!in_array($limit, [10, 25, 50, 100])) {
@@ -186,7 +210,7 @@ if ($limit_input === 'all') {
 $offset = ($page - 1) * $limit;
 
 // Validate sort columns and directions to prevent SQL injection
-$allowed_cols = ['id', 'account_number', 'email_address', 'mobile_number', 'created_at'];
+$allowed_cols = ['id', 'account_number', 'full_name', 'employee_id', 'email_address', 'mobile_number', 'created_at'];
 if (!in_array($sort_col, $allowed_cols)) {
     $sort_col = 'id';
 }
@@ -203,8 +227,8 @@ try {
         $whereSql = "";
         $params = [];
         if (!empty($search_query)) {
-            $whereSql = "WHERE account_number LIKE ? OR email_address LIKE ? OR mobile_number LIKE ?";
-            $params = ["%{$search_query}%", "%{$search_query}%", "%{$search_query}%"];
+            $whereSql = "WHERE account_number LIKE ? OR full_name LIKE ? OR employee_id LIKE ? OR email_address LIKE ? OR mobile_number LIKE ?";
+            $params = ["%{$search_query}%", "%{$search_query}%", "%{$search_query}%", "%{$search_query}%", "%{$search_query}%"];
         }
 
         // Get total records count for pagination
@@ -263,18 +287,18 @@ ob_start();
     <!-- SHORTENED HEADER & ACTIONS BAR -->
     <div class="mb-6 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
         <div>
-            <h2 class="text-xl font-bold text-gray-900">Manage Account Email & Mobile Mappings</h2>
+            <h2 class="text-xl font-bold text-gray-900">Manage Account Email & Employee Mappings</h2>
         </div>
         
         <!-- TOP CONSOLIDATED ACTION BUTTONS -->
         <div class="flex flex-wrap items-center gap-2">
-            <!-- Add Email Button (Triggers Modal) -->
+            <!-- Add Mapping Button (Triggers Modal) -->
             <button type="button" onclick="openAddModal()" class="bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 px-3.5 rounded-xl text-xs transition shadow-sm flex items-center gap-1.5">
                 ➕ Add Email Mapping
             </button>
 
             <!-- Sync Button -->
-            <form method="POST" action="" onsubmit="return confirm('Do you want to sync all missing account numbers and update latest mobile numbers from debit memos?');">
+            <form method="POST" action="" onsubmit="return confirm('Do you want to sync all missing account numbers, pull latest full names, and update mobile numbers from debit memos?');">
                 <input type="hidden" name="action" value="sync_accounts">
                 <button type="submit" class="bg-indigo-600 hover:bg-indigo-700 text-white font-medium py-2 px-3.5 rounded-xl text-xs transition shadow-sm flex items-center gap-1.5">
                     🔄 Sync Accounts
@@ -313,7 +337,7 @@ ob_start();
         </div>
     <?php elseif (isset($_GET['synced'])): ?>
         <div class="mb-4 p-4 bg-blue-50 border border-blue-200 text-blue-700 rounded-xl text-sm">
-            Successfully synced <strong><?php echo intval($_GET['synced']); ?></strong> new account(s) and updated mobile numbers!
+            Successfully synced <strong><?php echo intval($_GET['synced']); ?></strong> new account(s), updated full names and mobile numbers!
         </div>
     <?php elseif (isset($_GET['imported'])): ?>
         <div class="mb-4 p-4 bg-green-50 border border-green-200 text-green-700 rounded-xl text-sm">
@@ -331,7 +355,7 @@ ob_start();
         <div class="flex items-center gap-3 w-full sm:w-auto">
             <!-- Search Input -->
             <div class="relative flex items-center w-full sm:max-w-xs">
-                <input type="text" name="search" value="<?php echo htmlspecialchars($search_query); ?>" placeholder="Search account, email, or mobile..." class="w-full text-xs border border-gray-300 rounded-xl pl-3 pr-8 py-2 bg-white shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                <input type="text" name="search" value="<?php echo htmlspecialchars($search_query); ?>" placeholder="Search account, name, employee ID, email..." class="w-full text-xs border border-gray-300 rounded-xl pl-3 pr-8 py-2 bg-white shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
                 <button type="submit" class="absolute right-2.5 text-gray-400 hover:text-gray-600 text-xs">🔍</button>
             </div>
 
@@ -368,6 +392,16 @@ ob_start();
                         </a>
                     </th>
                     <th class="px-6 py-3 text-left">
+                        <a href="<?php echo getQueryUrl(['sort' => 'full_name', 'dir' => ($sort_col === 'full_name' && $sort_dir === 'ASC') ? 'DESC' : 'ASC', 'page' => 1]); ?>" class="flex items-center hover:text-blue-600 transition">
+                            Full Name <?php echo getSortIcon('full_name', $sort_col, $sort_dir); ?>
+                        </a>
+                    </th>
+                    <th class="px-6 py-3 text-left">
+                        <a href="<?php echo getQueryUrl(['sort' => 'employee_id', 'dir' => ($sort_col === 'employee_id' && $sort_dir === 'ASC') ? 'DESC' : 'ASC', 'page' => 1]); ?>" class="flex items-center hover:text-blue-600 transition">
+                            Employee ID <?php echo getSortIcon('employee_id', $sort_col, $sort_dir); ?>
+                        </a>
+                    </th>
+                    <th class="px-6 py-3 text-left">
                         <a href="<?php echo getQueryUrl(['sort' => 'email_address', 'dir' => ($sort_col === 'email_address' && $sort_dir === 'ASC') ? 'DESC' : 'ASC', 'page' => 1]); ?>" class="flex items-center hover:text-blue-600 transition">
                             Email Address <?php echo getSortIcon('email_address', $sort_col, $sort_dir); ?>
                         </a>
@@ -391,6 +425,8 @@ ob_start();
                         <tr class="hover:bg-gray-50/50 transition">
                             <td class="px-6 py-3.5 text-gray-500"><?php echo htmlspecialchars($row['id'] ?? ''); ?></td>
                             <td class="px-6 py-3.5 font-mono font-semibold text-blue-600"><?php echo htmlspecialchars($row['account_number'] ?? ''); ?></td>
+                            <td class="px-6 py-3.5 text-gray-800 font-medium"><?php echo htmlspecialchars($row['full_name'] ?? 'N/A'); ?></td>
+                            <td class="px-6 py-3.5 text-gray-800 font-mono"><?php echo htmlspecialchars($row['employee_id'] ?? 'N/A'); ?></td>
                             <td class="px-6 py-3.5 text-gray-800 font-medium"><?php echo htmlspecialchars($row['email_address'] ?? 'N/A'); ?></td>
                             <td class="px-6 py-3.5 text-gray-800 font-medium"><?php echo htmlspecialchars($row['mobile_number'] ?? 'N/A'); ?></td>
                             <td class="px-6 py-3.5 text-gray-500"><?php echo htmlspecialchars($row['created_at'] ?? 'N/A'); ?></td>
@@ -399,6 +435,8 @@ ob_start();
                                     onclick="openEditModal(
                                         '<?php echo $row['id']; ?>', 
                                         '<?php echo htmlspecialchars($row['account_number'], ENT_QUOTES); ?>', 
+                                        '<?php echo htmlspecialchars($row['full_name'] ?? '', ENT_QUOTES); ?>', 
+                                        '<?php echo htmlspecialchars($row['employee_id'] ?? '', ENT_QUOTES); ?>', 
                                         '<?php echo htmlspecialchars($row['email_address'], ENT_QUOTES); ?>', 
                                         '<?php echo htmlspecialchars($row['mobile_number'], ENT_QUOTES); ?>'
                                     )" 
@@ -409,7 +447,7 @@ ob_start();
                     <?php endforeach; ?>
                 <?php else: ?>
                     <tr>
-                        <td colspan="6" class="px-6 py-10 text-center text-gray-400 italic">No mapping records found.</td>
+                        <td colspan="8" class="px-6 py-10 text-center text-gray-400 italic">No mapping records found.</td>
                     </tr>
                 <?php endif; ?>
             </tbody>
@@ -433,7 +471,7 @@ ob_start();
                     <a href="<?php echo getQueryUrl(['page' => $page - 1]); ?>" class="px-3 py-1.5 text-xs bg-white border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 transition">Prev</a>
                 <?php endif; ?>
 
-                <!-- Numbered Pagination links (Window of nearby pages) -->
+                <!-- Numbered Pagination links -->
                 <?php
                 $start_p = max(1, $page - 2);
                 $end_p = min($total_pages, $page + 2);
@@ -475,6 +513,16 @@ ob_start();
                         class="w-full px-3 py-2 bg-white border border-gray-300 rounded-xl text-xs text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500">
                 </div>
                 <div>
+                    <label class="block text-xs font-semibold text-gray-600 mb-1">Full Name</label>
+                    <input type="text" name="full_name" placeholder="e.g. John Doe"
+                        class="w-full px-3 py-2 bg-white border border-gray-300 rounded-xl text-xs text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500">
+                </div>
+                <div>
+                    <label class="block text-xs font-semibold text-gray-600 mb-1">Employee ID</label>
+                    <input type="text" name="employee_id" placeholder="e.g. EMP12345"
+                        class="w-full px-3 py-2 bg-white border border-gray-300 rounded-xl text-xs text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500">
+                </div>
+                <div>
                     <label class="block text-xs font-semibold text-gray-600 mb-1">Email Address</label>
                     <input type="email" name="email_address" placeholder="client@company.com" required
                         class="w-full px-3 py-2 bg-white border border-gray-300 rounded-xl text-xs text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500">
@@ -512,7 +560,7 @@ ob_start();
             </a>
         </div>
 
-        <p class="text-xs text-gray-500 mb-2">Format required: <code class="bg-gray-100 px-1 py-0.5 rounded text-gray-700">account_number, email_address, mobile_number</code></p>
+        <p class="text-xs text-gray-500 mb-2">Format required: <code class="bg-gray-100 px-1 py-0.5 rounded text-gray-700">account_number, full_name, employee_id, email_address, mobile_number</code></p>
         
         <form method="POST" action="" enctype="multipart/form-data">
             <input type="hidden" name="action" value="upload_csv">
@@ -542,6 +590,16 @@ ob_start();
                 <div>
                     <label class="block text-xs font-semibold text-gray-600 mb-1">Account Number</label>
                     <input type="text" name="account_number" id="edit_account_number" required
+                        class="w-full px-3 py-2 bg-white border border-gray-300 rounded-xl text-xs text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500">
+                </div>
+                <div>
+                    <label class="block text-xs font-semibold text-gray-600 mb-1">Full Name</label>
+                    <input type="text" name="full_name" id="edit_full_name"
+                        class="w-full px-3 py-2 bg-white border border-gray-300 rounded-xl text-xs text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500">
+                </div>
+                <div>
+                    <label class="block text-xs font-semibold text-gray-600 mb-1">Employee ID</label>
+                    <input type="text" name="employee_id" id="edit_employee_id"
                         class="w-full px-3 py-2 bg-white border border-gray-300 rounded-xl text-xs text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500">
                 </div>
                 <div>
@@ -580,9 +638,11 @@ function closeImportModal() {
     document.getElementById('importModal').classList.add('hidden');
 }
 
-function openEditModal(id, accountNo, email, mobile) {
+function openEditModal(id, accountNo, fullName, employeeId, email, mobile) {
     document.getElementById('edit_record_id').value = id;
     document.getElementById('edit_account_number').value = accountNo;
+    document.getElementById('edit_full_name').value = fullName === 'N/A' ? '' : fullName;
+    document.getElementById('edit_employee_id').value = employeeId === 'N/A' ? '' : employeeId; // Naayos ang variable name dito
     document.getElementById('edit_email_address').value = email;
     document.getElementById('edit_mobile_number').value = mobile === 'N/A' ? '' : mobile;
     document.getElementById('editModalTitle').innerText = 'Edit Mapping (ID: ' + id + ')';
