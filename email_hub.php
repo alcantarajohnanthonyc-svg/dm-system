@@ -670,36 +670,68 @@ ob_start();
     </div>
 </div>
 
-<!-- MODALS -->
-<div id="bulkEmailReviewModal" style="display: none;" class="fixed inset-0 z-[99999] flex items-center justify-center bg-black/60 backdrop-blur-sm">
-    <div class="bg-white rounded-3xl shadow-2xl border border-gray-100 w-full max-w-5xl p-6 mx-4 flex flex-col max-h-[90vh]">
-        <div class="flex justify-between items-center mb-4 pb-3 border-b">
+<!-- UPDATED MODAL: Bulk Email Review & Validation -->
+<div id="bulkEmailReviewModal" style="display: none;" class="fixed inset-0 z-[99999] flex items-center justify-center bg-black/60 backdrop-blur-md">
+    <div class="bg-white rounded-3xl shadow-2xl border border-gray-100 w-full max-w-6xl p-6 mx-4 flex flex-col max-h-[90vh] animate-in fade-in zoom-in duration-200">
+        
+        <!-- Modal Header -->
+        <div class="flex justify-between items-start pb-4 border-b border-gray-100">
             <div>
-                <h3 class="text-lg font-bold text-gray-800">Bulk Email Review & Validation</h3>
-                <p id="bulkSummaryCount" class="text-xs text-gray-500 font-medium"></p>
+                <h3 class="text-lg font-extrabold text-gray-900 tracking-tight flex items-center gap-2">
+                    <i class="las la-envelope-open-text text-amber-600 text-xl"></i> Bulk Email Review & Validation
+                </h3>
+                <p id="bulkSummaryCount" class="text-xs text-gray-500 font-medium mt-0.5">7 accounts loaded for review</p>
             </div>
-            <button type="button" onclick="closeBulkEmailReviewModal()" class="text-gray-400 hover:text-gray-600 text-lg font-bold">✕</button>
+            <button type="button" onclick="closeBulkEmailReviewModal()" class="w-8 h-8 flex items-center justify-center rounded-full bg-gray-100 text-gray-400 hover:text-gray-700 hover:bg-gray-200 transition-all font-bold">✕</button>
+        </div>
+
+        <!-- Upper Status Count Bar (Without Sort Dropdown) -->
+        <div class="py-3 px-4 my-3 bg-slate-50 border border-slate-200/80 rounded-2xl flex items-center justify-between gap-3">
+            <div class="flex items-center gap-2 flex-wrap" id="statusCountersContainer">
+                <span class="inline-flex items-center gap-1.5 px-2.5 py-1 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-lg text-xs font-bold shadow-xs">
+                    <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span> Ready: <span id="countReady">0</span>
+                </span>
+                <span class="inline-flex items-center gap-1.5 px-2.5 py-1 bg-rose-50 text-rose-700 border border-rose-200 rounded-lg text-xs font-bold shadow-xs">
+                    <span class="w-2 h-2 rounded-full bg-rose-500"></span> Missing Email: <span id="countMissingEmail">0</span>
+                </span>
+                <span class="inline-flex items-center gap-1.5 px-2.5 py-1 bg-amber-50 text-amber-700 border border-amber-200 rounded-lg text-xs font-bold shadow-xs">
+                    <span class="w-2 h-2 rounded-full bg-amber-500"></span> Without SOA: <span id="countMissingSOA">0</span>
+                </span>
+                <span class="inline-flex items-center gap-1.5 px-2.5 py-1 bg-gray-100 text-gray-600 border border-gray-200 rounded-lg text-xs font-bold shadow-xs">
+                    <span class="w-2 h-2 rounded-full bg-gray-400"></span> No Data: <span id="countNoData">0</span>
+                </span>
+            </div>
         </div>
         
-        <div class="border rounded-xl overflow-y-auto flex-grow max-h-[50vh]">
+        <!-- Table Body Container with Clickable Headers for Sorting -->
+        <div class="border border-gray-200 rounded-2xl overflow-y-auto flex-grow max-h-[48vh] shadow-inner bg-white">
             <table class="w-full text-left border-collapse text-xs">
-                <thead class="bg-gray-100 sticky top-0 z-10 text-gray-700 font-bold uppercase text-[10px]">
+                <thead class="bg-slate-100/80 sticky top-0 z-10 text-slate-700 font-bold uppercase text-[10px] tracking-wider backdrop-blur-sm">
                     <tr>
-                        <th class="p-2.5 text-center w-28">Status</th>
-                        <th class="p-2.5">Account Number & Company</th>
-                        <th class="p-2.5">Coverage Dates (Per Line)</th>
-                        <th class="p-2.5">Recipient Email</th>
-                        <th class="p-2.5">CC Emails</th>
-                        <th class="p-2.5 text-center w-24">Preview</th>
+                        <th class="p-3 text-center w-28 cursor-pointer hover:bg-slate-200/60 transition-colors select-none" onclick="sortBulkTable('status')">
+                            Status <span id="sortIcon_status" class="text-amber-600 ml-0.5"></span>
+                        </th>
+                        <th class="p-3 cursor-pointer hover:bg-slate-200/60 transition-colors select-none" onclick="sortBulkTable('account')">
+                            Account Number & Company <span id="sortIcon_account" class="text-amber-600 ml-0.5"></span>
+                        </th>
+                        <th class="p-3 cursor-pointer hover:bg-slate-200/60 transition-colors select-none" onclick="sortBulkTable('coverage')">
+                            Coverage Dates (Per Line) <span id="sortIcon_coverage" class="text-amber-600 ml-0.5"></span>
+                        </th>
+                        <th class="p-3">Recipient Email</th>
+                        <th class="p-3">CC Emails</th>
+                        <th class="p-3 text-center w-24">Preview</th>
                     </tr>
                 </thead>
-                <tbody id="bulkReviewTableBody" class="divide-y"></tbody>
+                <tbody id="bulkReviewTableBody" class="divide-y divide-gray-100"></tbody>
             </table>
         </div>
 
-        <div class="flex justify-end gap-3 mt-4 pt-3 border-t">
-            <button type="button" onclick="closeBulkEmailReviewModal()" class="px-4 py-2 bg-gray-200 text-gray-700 rounded-xl text-xs font-bold hover:bg-gray-300">Cancel</button>
-            <button type="button" onclick="proceedBulkDispatchFromModal()" class="px-5 py-2 bg-emerald-600 text-white rounded-xl text-xs font-bold hover:bg-emerald-700 shadow-md">Confirm & Send Emails</button>
+        <!-- Footer Buttons -->
+        <div class="flex justify-end gap-3 mt-4 pt-3 border-t border-gray-100">
+            <button type="button" onclick="closeBulkEmailReviewModal()" class="px-5 py-2.5 bg-gray-100 text-gray-700 rounded-xl text-xs font-bold hover:bg-gray-200 transition-all">Cancel</button>
+            <button type="button" onclick="proceedBulkDispatchFromModal()" class="px-6 py-2.5 bg-emerald-600 text-white rounded-xl text-xs font-bold hover:bg-emerald-700 shadow-lg shadow-emerald-600/20 transition-all flex items-center gap-2">
+                <i class="las la-paper-plane text-sm"></i> Confirm & Send Emails
+            </button>
         </div>
     </div>
 </div>
@@ -916,43 +948,45 @@ ob_start();
         const tbody = document.getElementById('bulkReviewTableBody');
         tbody.innerHTML = '';
         
+        // Update header counter badges every time table renders
+        updateBulkStatusCounters();
+
         bulkAccountsCache.forEach((acc, idx) => {
             let tr = document.createElement('tr');
-            tr.className = "hover:bg-gray-50 border-b";
+            tr.className = "hover:bg-slate-50/80 transition-colors border-b border-gray-100";
             
             let statusBadge = '';
             let previewButton = '';
             
             if (!acc.has_data || !acc.has_dm || acc.dm_id == 0) {
-                statusBadge = '<span class="px-2 py-0.5 bg-gray-200 text-gray-700 rounded text-[10px] font-bold block text-center">⚪ No Data</span>';
-                previewButton = '<button type="button" disabled class="px-2.5 py-1 bg-gray-100 text-gray-400 rounded text-xs font-bold cursor-not-allowed">Preview</button>';
+                statusBadge = '<span class="px-2.5 py-1 bg-gray-100 text-gray-600 rounded-lg text-[10px] font-bold block text-center border border-gray-200">⚪ No Data</span>';
+                previewButton = '<button type="button" disabled class="px-3 py-1.5 bg-gray-50 text-gray-300 rounded-xl text-xs font-bold cursor-not-allowed">Preview</button>';
             } else if (!acc.recipient_email || acc.recipient_email.trim() === '') {
-                statusBadge = '<span class="px-2 py-0.5 bg-red-100 text-red-700 rounded text-[10px] font-bold block text-center">🔴 Missing Email</span>';
-                previewButton = `<button type="button" onclick="previewEmailBeforeSend(${acc.dm_id}, '', '${acc.start_date || ''}', '${acc.end_date || ''}')" class="px-2.5 py-1 bg-blue-50 text-blue-600 rounded text-xs font-bold hover:bg-blue-100">Preview</button>`;
+                statusBadge = '<span class="px-2.5 py-1 bg-rose-50 text-rose-700 rounded-lg text-[10px] font-bold block text-center border border-rose-200">🔴 Missing Email</span>';
+                previewButton = `<button type="button" onclick="previewEmailBeforeSend(${acc.dm_id}, '', '${acc.start_date || ''}', '${acc.end_date || ''}')" class="px-3 py-1.5 bg-blue-50 text-blue-600 hover:bg-blue-100 rounded-xl text-xs font-bold transition-all shadow-xs">Preview</button>`;
             } else if (!acc.has_soa) {
-                statusBadge = '<span class="px-2 py-0.5 bg-amber-100 text-amber-700 rounded text-[10px] font-bold block text-center">🟡 Missing SOA</span>';
-                previewButton = `<button type="button" onclick="previewEmailBeforeSend(${acc.dm_id}, '', '${acc.start_date || ''}', '${acc.end_date || ''}')" class="px-2.5 py-1 bg-blue-50 text-blue-600 rounded text-xs font-bold hover:bg-blue-100">Preview</button>`;
+                statusBadge = '<span class="px-2.5 py-1 bg-amber-50 text-amber-700 rounded-lg text-[10px] font-bold block text-center border border-amber-200">🟡 Without SOA</span>';
+                previewButton = `<button type="button" onclick="previewEmailBeforeSend(${acc.dm_id}, '', '${acc.start_date || ''}', '${acc.end_date || ''}')" class="px-3 py-1.5 bg-blue-50 text-blue-600 hover:bg-blue-100 rounded-xl text-xs font-bold transition-all shadow-xs">Preview</button>`;
             } else {
-                statusBadge = '<span class="px-2 py-0.5 bg-green-100 text-green-700 rounded text-[10px] font-bold block text-center">🟢 Ready</span>';
-                previewButton = `<button type="button" onclick="previewEmailBeforeSend(${acc.dm_id}, '', '${acc.start_date || ''}', '${acc.end_date || ''}')" class="px-2.5 py-1 bg-blue-50 text-blue-600 rounded text-xs font-bold hover:bg-blue-100">Preview</button>`;
+                statusBadge = '<span class="px-2.5 py-1 bg-emerald-50 text-emerald-700 rounded-lg text-[10px] font-bold block text-center border border-emerald-200">🟢 Ready</span>';
+                previewButton = `<button type="button" onclick="previewEmailBeforeSend(${acc.dm_id}, '', '${acc.start_date || ''}', '${acc.end_date || ''}')" class="px-3 py-1.5 bg-blue-50 text-blue-600 hover:bg-blue-100 rounded-xl text-xs font-bold transition-all shadow-xs">Preview</button>`;
             }
             
             let coverageDisplay = (acc.start_date && acc.end_date) ? 
-                `<span class="text-[11px] font-mono ${!acc.has_data ? 'text-gray-400 line-through' : 'text-blue-600'}">${acc.start_date} to ${acc.end_date}</span>` : 
+                `<span class="text-[11px] font-mono font-medium ${!acc.has_data ? 'text-gray-400 line-through' : 'text-blue-600'}">${acc.start_date} to ${acc.end_date}</span>` : 
                 `<span class="text-[10px] text-gray-400 italic">Walang Petsa</span>`;
 
            tr.innerHTML = `
-                <td class="p-2.5 text-center">${statusBadge}</td>
-                <td class="p-2.5 font-semibold text-gray-800">${acc.account_number} <br><span class="text-[10px] text-gray-500 font-normal">${acc.company || ''}</span></td>
-                <td class="p-2.5">${coverageDisplay}</td>
-                <td class="p-2.5"><input type="email" value="${acc.recipient_email || ''}" oninput="updateRecipientEmailAndRefresh(${idx}, this.value)" class="w-full p-1.5 border rounded text-xs bg-white"></td>
-                <td class="p-2.5"><input type="text" value="${acc.cc_emails || ''}" oninput="bulkAccountsCache[${idx}].cc_emails = this.value" class="w-full p-1.5 border rounded text-xs bg-white"></td>
-                <td class="p-2.5 text-center">${previewButton}</td>
+                <td class="p-3 text-center align-middle">${statusBadge}</td>
+                <td class="p-3 font-semibold text-gray-900 align-middle">${acc.account_number} <br><span class="text-[10px] text-gray-500 font-normal">${acc.company || ''}</span></td>
+                <td class="p-3 align-middle">${coverageDisplay}</td>
+                <td class="p-3 align-middle"><input type="email" value="${acc.recipient_email || ''}" oninput="updateRecipientEmailAndRefresh(${idx}, this.value)" class="w-full p-2 border border-gray-200 rounded-xl text-xs bg-white focus:ring-2 focus:ring-amber-500 focus:outline-none transition-all shadow-xs" placeholder="Enter recipient email..."></td>
+                <td class="p-3 align-middle"><input type="text" value="${acc.cc_emails || ''}" oninput="bulkAccountsCache[${idx}].cc_emails = this.value" class="w-full p-2 border border-gray-200 rounded-xl text-xs bg-white focus:ring-2 focus:ring-amber-500 focus:outline-none transition-all shadow-xs" placeholder="CC emails..."></td>
+                <td class="p-3 text-center align-middle">${previewButton}</td>
             `;
             tbody.appendChild(tr);
         });
     }
-
     function previewEmailBeforeSend(dmId, itemIds = '', startDate = '', endDate = '') {
         if (!dmId || dmId == 0) {
             alert("Walang nahanap na Debit Memo para sa account na ito. Hindi ma-i-preview.");
@@ -1099,29 +1133,140 @@ ob_start();
         window.location.reload();
     }
 
-    function updateRecipientEmailAndRefresh(index, value) {
+   function updateRecipientEmailAndRefresh(index, value) {
         bulkAccountsCache[index].recipient_email = value;
         
+        // Re-evaluate if missing SOA status changes based on input
+        let acc = bulkAccountsCache[index];
         const tbody = document.getElementById('bulkReviewTableBody');
+        
         if (tbody && tbody.rows[index]) {
             const statusCell = tbody.rows[index].cells[0];
-            let acc = bulkAccountsCache[index];
-            
             let statusBadge = '';
+            
             if (!acc.has_data || !acc.has_dm || acc.dm_id == 0) {
-                statusBadge = '<span class="px-2 py-0.5 bg-gray-200 text-gray-700 rounded text-[10px] font-bold block text-center">⚪ No Data</span>';
+                statusBadge = '<span class="px-2.5 py-1 bg-gray-100 text-gray-600 rounded-lg text-[10px] font-bold block text-center border border-gray-200">⚪ No Data</span>';
             } else if (!acc.recipient_email || acc.recipient_email.trim() === '') {
-                statusBadge = '<span class="px-2 py-0.5 bg-red-100 text-red-700 rounded text-[10px] font-bold block text-center">🔴 Missing Email</span>';
+                statusBadge = '<span class="px-2.5 py-1 bg-rose-50 text-rose-700 rounded-lg text-[10px] font-bold block text-center border border-rose-200">🔴 Missing Email</span>';
             } else if (!acc.has_soa) {
-                statusBadge = '<span class="px-2 py-0.5 bg-amber-100 text-amber-700 rounded text-[10px] font-bold block text-center">🟡 Missing SOA</span>';
+                statusBadge = '<span class="px-2.5 py-1 bg-amber-50 text-amber-700 rounded-lg text-[10px] font-bold block text-center border border-amber-200">🟡 Without SOA</span>';
             } else {
-                statusBadge = '<span class="px-2 py-0.5 bg-green-100 text-green-700 rounded text-[10px] font-bold block text-center">🟢 Ready</span>';
+                statusBadge = '<span class="px-2.5 py-1 bg-emerald-50 text-emerald-700 rounded-lg text-[10px] font-bold block text-center border border-emerald-200">🟢 Ready</span>';
             }
             
             statusCell.innerHTML = statusBadge;
         }
+
+        // Instantly recalculate upper counts so totals update live as you type emails
+        updateBulkStatusCounters();
+    }
+    // Function to calculate and update upper count status badges
+    function updateBulkStatusCounters() {
+        let readyCount = 0;
+        let missingEmailCount = 0;
+        let missingSoaCount = 0;
+        let noDataCount = 0;
+
+        bulkAccountsCache.forEach(acc => {
+            if (!acc.has_data || !acc.has_dm || acc.dm_id == 0) {
+                noDataCount++;
+            } else if (!acc.recipient_email || acc.recipient_email.trim() === '') {
+                missingEmailCount++;
+            } else if (!acc.has_soa) {
+                missingSoaCount++;
+            } else {
+                readyCount++;
+            }
+        });
+
+        document.getElementById('countReady').innerText = readyCount;
+        document.getElementById('countMissingEmail').innerText = missingEmailCount;
+        document.getElementById('countMissingSOA').innerText = missingSoaCount;
+        document.getElementById('countNoData').innerText = noDataCount;
     }
 
+    // Function to handle sorting A-Z or Z-A
+    function sortBulkAccountsTable(sortType) {
+        if (sortType === 'az') {
+            bulkAccountsCache.sort((a, b) => a.account_number.localeCompare(b.account_number));
+        } else if (sortType === 'za') {
+            bulkAccountsCache.sort((a, b) => b.account_number.localeCompare(a.account_number));
+        } else if (sortType === 'company_az') {
+            bulkAccountsCache.sort((a, b) => (a.company || '').localeCompare(b.company || ''));
+        } else if (sortType === 'company_za') {
+            bulkAccountsCache.sort((a, b) => (b.company || '').localeCompare(a.company || ''));
+        }
+        renderBulkReviewTable();
+    }
+
+    let currentSortColumn = '';
+    let currentSortDirection = 'asc';
+
+    // Function to handle clicking headers for sorting with visual indicators
+    function sortBulkTable(column) {
+        if (currentSortColumn === column) {
+            currentSortDirection = currentSortDirection === 'asc' ? 'desc' : 'asc';
+        } else {
+            currentSortColumn = column;
+            currentSortDirection = 'asc';
+        }
+
+        // Reset all header indicator icons
+        ['status', 'account', 'coverage'].forEach(col => {
+            const iconEl = document.getElementById(`sortIcon_${col}`);
+            if (iconEl) iconEl.innerHTML = '';
+        });
+
+        // Set active header indicator icon
+        const activeIconEl = document.getElementById(`sortIcon_${column}`);
+        if (activeIconEl) {
+            activeIconEl.innerHTML = currentSortDirection === 'asc' ? '<i class="las la-sort-amount-up"></i>' : '<i class="las la-sort-amount-down"></i>';
+        }
+
+        bulkAccountsCache.sort((a, b) => {
+            let valA = '', valB = '';
+
+            if (column === 'status') {
+                valA = (!a.has_data || !a.has_dm || a.dm_id == 0) ? '3' : (!a.recipient_email || a.recipient_email.trim() === '' ? '0' : (!a.has_soa ? '1' : '2'));
+                valB = (!b.has_data || !b.has_dm || b.dm_id == 0) ? '3' : (!b.recipient_email || b.recipient_email.trim() === '' ? '0' : (!b.has_soa ? '1' : '2'));
+            } else if (column === 'account') {
+                valA = a.account_number || '';
+                valB = b.account_number || '';
+            } else if (column === 'coverage') {
+                valA = a.start_date || '';
+                valB = b.start_date || '';
+            }
+
+            if (valA < valB) return currentSortDirection === 'asc' ? -1 : 1;
+            if (valA > valB) return currentSortDirection === 'asc' ? 1 : -1;
+            return 0;
+        });
+
+        renderBulkReviewTable();
+    }
+    function updateBulkStatusCounters() {
+        let readyCount = 0;
+        let missingEmailCount = 0;
+        let missingSoaCount = 0;
+        let noDataCount = 0;
+
+        bulkAccountsCache.forEach(acc => {
+            if (!acc.has_data || !acc.has_dm || acc.dm_id == 0) {
+                noDataCount++;
+            } else if (!acc.recipient_email || acc.recipient_email.trim() === '') {
+                missingEmailCount++;
+            } else if (!acc.has_soa) {
+                missingSoaCount++;
+            } else {
+                readyCount++;
+            }
+        });
+
+        document.getElementById('countReady').innerText = readyCount;
+        document.getElementById('countMissingEmail').innerText = missingEmailCount;
+        document.getElementById('countMissingSOA').innerText = missingSoaCount;
+        document.getElementById('countNoData').innerText = noDataCount;
+    }
 </script>
 <?php
 $content = ob_get_clean();
