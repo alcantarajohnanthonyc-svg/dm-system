@@ -1,5 +1,5 @@
 <?php
-// debit_memo_upload.php - Direct Google Drive Hierarchical Folder Upload Module (Batch Size: 10)
+// debit_memo_upload.php - Direct Google Drive & Local Server Hierarchical Folder Upload Module (Batch Size: 10)
 @ini_set('display_errors', 1);
 @ini_set('display_startup_errors', 1);
 @error_reporting(E_ALL);
@@ -107,7 +107,7 @@ if (!function_exists('extract_pdf_statement_details')) {
             $result['account_number'] = trim($m[1]);
         }
 
-// 2. Extract Mobile Number / Primary Number (Sinusuportahan na ang 10-digits o may 0/63)
+        // 2. Extract Mobile Number
         $result['mobile_number'] = 'N/A';
         $phone_pattern = '/(?:Primary\s*Number|Mobile\s*Number|Mobile\s*No\.?)\D*?(\+?(?:63|0)?9\d{9}|9\d{9})/is';
 
@@ -116,12 +116,10 @@ if (!function_exists('extract_pdf_statement_details')) {
         } elseif (preg_match($phone_pattern, $clean_text, $m)) {
             $result['mobile_number'] = trim(preg_replace('/[^\d\+]+/', '', $m[1]));
         } else {
-            // SAFE FALLBACK: Sinusubukan ang table lines, spacing, o 10-digit na numero na nagsisimula sa 9
             $fallback_patterns = [
                 '/Mobile\s*Number\D*?[\|\:]\D*?(\+?(?:63|0)?9\d{9}|9\d{9})/is',
                 '/Mobile\s*Number\s*[\|\:]\s*[\s\|]*(\+?(?:63|0)?9\d{9}|9\d{9})/is',
                 '/Mobile\s*Number\D{1,30}(\+?(?:63|0)?9\d{9}|9\d{9})/is',
-                // Partikular para sa mga format na tulad ng 9998852166 (10 digits)
                 '/Mobile\s*Number\s*[:|]?\s*([0-9\s]{10,})/is'
             ];
 
@@ -136,16 +134,14 @@ if (!function_exists('extract_pdf_statement_details')) {
             }
         }
 
-      // 3. Extract Amount Due
+        // 3. Extract Amount Due
         $raw_val = null;
         if (preg_match('/(?:TOTAL\s+AMOUNT\s+DUE|Amount\s+to\s+Pay)\s*(?:\(total\s+amount\s+due\))?\s*([A-Z]{3}|Php|P)?\s*([\d,\.\(\)]+)\s*(CR)?/i', $text, $m)) {
             $raw_val = trim($m[2]);
         } else {
-            // SAFE FALLBACK: Para sa bagong format kung saan nakahiwalay ang TOTAL AMOUNT DUE sa linya
             if (preg_match('/TOTAL\s+AMOUNT\s+DUE\s*[:|]?\s*(?:[A-Z]{3}|Php|P|₱)?\s*([\d,\.\(\)]+)\s*(CR)?/i', $text, $m)) {
                 $raw_val = trim($m[1]);
             } else {
-                // KARAGDAGANG SAFE FALLBACK: Para sa mga may table lines, newline separator, at ₱ sign (tulad ng 0793729456)
                 if (preg_match('/TOTAL\s+AMOUNT\s+DUE\s*[:|]?\s*[\s\|]*([₱P]?)\s*([\d,\.\(\)]+)/is', $text, $m)) {
                     $raw_val = trim($m[2]);
                 } elseif (preg_match('/TOTAL\s+AMOUNT\s+DUE\D*?([₱P]?\s*[\d,\.]+)/is', $text, $m)) {
@@ -155,7 +151,6 @@ if (!function_exists('extract_pdf_statement_details')) {
         }
 
         if ($raw_val !== null) {
-            // Linisin ang mga currency symbol bago i-process
             $raw_val = str_replace(['Php', 'P', '₱', ' '], '', $raw_val);
             if (strpos($raw_val, '(') !== false) {
                 $raw_val = '-' . str_replace(['(', ')', ','], '', $raw_val);
@@ -166,27 +161,26 @@ if (!function_exists('extract_pdf_statement_details')) {
                 $result['amount_due'] = number_format((float)$raw_val, 2, '.', '');
             }
         }
+
         // 4. Telco-Specific Parsing
         if ($result['telco'] === 'Smart') {
-            if (preg_match('/Invoice\s*Date\s*[:|]?\s*([A-Za-z]{3}\s+\d{1,2},\s+\d{4}|\d{2}\/\d{2}\/\d{2})/i', $text,$m)) {
+            if (preg_match('/Invoice\s*Date\s*[:|]?\s*([A-Za-z]{3}\s+\d{1,2},\s+\d{4}|\d{2}\/\d{2}\/\d{2})/i', $text, $m)) {
                 $result['invoice_date'] = parse_flexible_date($m[1]);
             }
-            if (preg_match('/DUE\s*DATE\s*:\s*AMOUNT\s*DUE\s*:.*?([A-Za-z]{3}\s+\d{1,2},\s+\d{4})/is', $clean_text,$m)) {
+            if (preg_match('/DUE\s*DATE\s*:\s*AMOUNT\s*DUE\s*:.*?([A-Za-z]{3}\s+\d{1,2},\s+\d{4})/is', $clean_text, $m)) {
                 $result['due_date'] = parse_flexible_date($m[1]);
             }
-            // BAGUHIN ITO: Gamitan ng parse_flexible_date ang parehong simula at dulo ng billing period
-           if (preg_match('/Billing\s*Period(?:\s*Covering)?\s*[:|]?\s*([A-Za-z]{3}\s+\d{1,2},\s+\d{4}|\d{2}\/\d{2}\/\d{2})\s*(?:to|\-)?\s*([A-Za-z]{3}\s+\d{1,2},\s+\d{4}|\d{2}\/\d{2}\/\d{2})/i', $text,$m)) {
+            if (preg_match('/Billing\s*Period(?:\s*Covering)?\s*[:|]?\s*([A-Za-z]{3}\s+\d{1,2},\s+\d{4}|\d{2}\/\d{2}\/\d{2})\s*(?:to|\-)?\s*([A-Za-z]{3}\s+\d{1,2},\s+\d{4}|\d{2}\/\d{2}\/\d{2})/i', $text, $m)) {
                 $result['billing_period'] = parse_flexible_date($m[1]) . ' - ' . parse_flexible_date($m[2]);
             }
-        }
-        
-        elseif ($result['telco'] === 'Globe') {
-            if (preg_match('/Billing\s*Period[^\d]*(\d{2}\/\d{2}\/\d{2})\s*(?:to|\-)\s*(\d{2}\/\d{2}\/\d{2})/i', $clean_page1, $m)) {$result['billing_period'] = parse_flexible_date($m[1]) . ' - ' . parse_flexible_date($m[2]);
+        } elseif ($result['telco'] === 'Globe') {
+            if (preg_match('/Billing\s*Period[^\d]*(\d{2}\/\d{2}\/\d{2})\s*(?:to|\-)\s*(\d{2}\/\d{2}\/\d{2})/i', $clean_page1, $m)) {
+                $result['billing_period'] = parse_flexible_date($m[1]) . ' - ' . parse_flexible_date($m[2]);
             }
-            if (preg_match('/Invoice\s*Date\b.*?(\d{3}\-\d{3}\-\d{3}\-\d{5})\D+(\d{2}\/\d{2}\/\d{2})/i', $clean_page1,$m)) {
+            if (preg_match('/Invoice\s*Date\b.*?(\d{3}\-\d{3}\-\d{3}\-\d{5})\D+(\d{2}\/\d{2}\/\d{2})/i', $clean_page1, $m)) {
                 $result['invoice_date'] = parse_flexible_date($m[2]);
             }
-            if (preg_match('/Due\s*Date\D{0,40}(?:(?:\d{2}\/\d{2}\/\d{2}\s*to\s*\d{2}\/\d{2}\/\d{2})\s*)?(\d{2}\/\d{2}\/\d{2})/i', $clean_page1,$m)) {
+            if (preg_match('/Due\s*Date\D{0,40}(?:(?:\d{2}\/\d{2}\/\d{2}\s*to\s*\d{2}\/\d{2}\/\d{2})\s*)?(\d{2}\/\d{2}\/\d{2})/i', $clean_page1, $m)) {
                 $result['due_date'] = parse_flexible_date($m[1]);
             }
         }
@@ -197,9 +191,11 @@ if (!function_exists('extract_pdf_statement_details')) {
 
 // Helper function to find or create a Google Drive subfolder recursively
 if (!function_exists('get_or_create_drive_folder')) {
-    function get_or_create_drive_folder($drive_service,$parent_id, $folder_name) {$escapedName = str_replace("'", "\\'", $folder_name);$query = "name = '{$escapedName}' and '{$parent_id}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false";
+    function get_or_create_drive_folder($drive_service, $parent_id, $folder_name) {
+        $escapedName = str_replace("'", "\\'", $folder_name);
+        $query = "name = '{$escapedName}' and '{$parent_id}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false";
         
-        $files =$drive_service->files->listFiles([
+        $files = $drive_service->files->listFiles([
             'q' => $query,
             'supportsAllDrives' => true,
             'includeItemsFromAllDrives' => true,
@@ -232,23 +228,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['pdf_files'])) {
     header('Content-Type: application/json');
 
     $success_files = [];
-    $failed_files = [];$overwrite = isset($_POST['overwrite']) &&$_POST['overwrite'] === '1';
+    $failed_files = [];
+    $overwrite = isset($_POST['overwrite']) && $_POST['overwrite'] === '1';
 
     $db_connection = null;
-    if (isset($pdo) &&$pdo instanceof PDO) {
-        $db_connection =$pdo;
-    } elseif (isset($conn) &&$conn instanceof PDO) {
-        $db_connection =$conn;
-    } elseif (isset($db) &&$db instanceof PDO) {
-        $db_connection =$db;
+    if (isset($pdo) && $pdo instanceof PDO) {
+        $db_connection = $pdo;
+    } elseif (isset($conn) && $conn instanceof PDO) {
+        $db_connection = $conn;
+    } elseif (isset($db) && $db instanceof PDO) {
+        $db_connection = $db;
     }
 
     $drive_service = null;
     try {
         if (class_exists('Google_Client')) {
-            $client = new Google_Client();$credentials_path = __DIR__ . '/credentials.json';
+            $client = new Google_Client();
+            $credentials_path = __DIR__ . '/credentials.json';
 
-            if (file_exists($credentials_path)) {$client->setAuthConfig($credentials_path);$client->addScope(Google_Service_Drive::DRIVE);
+            if (file_exists($credentials_path)) {
+                $client->setAuthConfig($credentials_path);
+                $client->addScope(Google_Service_Drive::DRIVE);
             }
 
             if (class_exists('GuzzleHttp\Client')) {
@@ -265,7 +265,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['pdf_files'])) {
         exit;
     }
 
-    foreach ($_FILES['pdf_files']['name'] as$i => $name) {$tmp_name = $_FILES['pdf_files']['tmp_name'][$i];
+    foreach ($_FILES['pdf_files']['name'] as $i => $name) {
+        $tmp_name = $_FILES['pdf_files']['tmp_name'][$i];
         $basename = basename($name);
 
         if (!is_uploaded_file($tmp_name)) {
@@ -273,31 +274,61 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['pdf_files'])) {
             continue;
         }
 
-        $details = extract_pdf_statement_details($tmp_name,$basename);
+        $details = extract_pdf_statement_details($tmp_name, $basename);
 
         $gdrive_status = "Not Uploaded";
         $file_link = null;
         $file_id = null;
 
-        $telco_folder_name = !empty($details['telco']) ? $details['telco'] : 'Unknown_Telco';$year_folder_name = 'Unknown_Year';
-        if (!empty($details['invoice_date']) &&$details['invoice_date'] !== 'N/A') {
+        $telco_folder_name = !empty($details['telco']) ? $details['telco'] : 'Unknown_Telco';
+        $year_folder_name = 'Unknown_Year';
+        if (!empty($details['invoice_date']) && $details['invoice_date'] !== 'N/A') {
             $year_folder_name = date('Y', strtotime($details['invoice_date']));
-        } elseif (preg_match('/(20\d{2})/', $basename, $ym)) {$year_folder_name = $ym[1];
-        } else {$year_folder_name = date('Y');
+        } elseif (preg_match('/(20\d{2})/', $basename, $ym)) {
+            $year_folder_name = $ym[1];
+        } else {
+            $year_folder_name = date('Y');
         }
 
         $billing_folder_name = !empty($details['billing_period']) ? str_replace(['/', '\\'], '-', $details['billing_period']) : 'Unknown_Period';
         $db_file_path = "{$telco_folder_name}/{$year_folder_name}/{$billing_folder_name}";
 
-        // Google Drive Upload Logic
+        // =========================================================================
+        // 1. LOCAL SERVER UPLOAD / SAVE LOGIC (Na may anti-Access Denied patch)
+        // =========================================================================
+        $local_dir = __DIR__ . '/uploads/' . $db_file_path;
+        if (!file_exists($local_dir)) {
+            @mkdir($local_dir, 0777, true);
+        }
+
+        // Tiyaking writable ang direktoryo para hindi ma-deny ang access
+        if (file_exists($local_dir) && !is_writable($local_dir)) {
+            @chmod($local_dir, 0777);
+        }
+
+        $local_file_target = $local_dir . '/' . $basename;
+        
+        // Kung may existing file na sa local, i-clear ang permission at i-delete muna para maiwasan ang Access Denied
+        if (file_exists($local_file_target)) {
+            @chmod($local_file_target, 0777);
+            @unlink($local_file_target);
+        }
+
+        @copy($tmp_name, $local_file_target);
+        @chmod($local_file_target, 0644);
+
+        // =========================================================================
+        // 2. GOOGLE DRIVE UPLOAD LOGIC
+        // =========================================================================
         if ($drive_service) {
             try {
-                $telco_folder_id = get_or_create_drive_folder($drive_service, $google_drive_folder_id,$telco_folder_name);
-                $year_folder_id = get_or_create_drive_folder($drive_service, $telco_folder_id,$year_folder_name);
-                $target_parent_id = get_or_create_drive_folder($drive_service, $year_folder_id,$billing_folder_name);
+                $telco_folder_id = get_or_create_drive_folder($drive_service, $google_drive_folder_id, $telco_folder_name);
+                $year_folder_id = get_or_create_drive_folder($drive_service, $telco_folder_id, $year_folder_name);
+                $target_parent_id = get_or_create_drive_folder($drive_service, $year_folder_id, $billing_folder_name);
 
-                $escapedName = str_replace("'", "\\'", $basename);$query = "name = '{$escapedName}' and '{$target_parent_id}' in parents and trashed = false";
-                $existingFiles =$drive_service->files->listFiles([
+                $escapedName = str_replace("'", "\\'", $basename);
+                $query = "name = '{$escapedName}' and '{$target_parent_id}' in parents and trashed = false";
+                $existingFiles = $drive_service->files->listFiles([
                     'q' => $query,
                     'supportsAllDrives' => true,
                     'includeItemsFromAllDrives' => true,
@@ -307,17 +338,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['pdf_files'])) {
                 $content = file_get_contents($tmp_name);
 
                 if (!empty($existingFiles)) {
-                    $existingFileId =$existingFiles[0]->getId();
+                    $existingFileId = $existingFiles[0]->getId();
                     if ($overwrite) {
-                        $fileMetadata = new Google_Service_Drive_DriveFile(['name' =>$basename]);
-                        $updatedFile =$drive_service->files->update($existingFileId,$fileMetadata, [
+                        $fileMetadata = new Google_Service_Drive_DriveFile(['name' => $basename]);
+                        $updatedFile = $drive_service->files->update($existingFileId, $fileMetadata, [
                             'data' => $content,
                             'mimeType' => 'application/pdf',
                             'uploadType' => 'multipart',
                             'supportsAllDrives' => true,
                             'fields' => 'id, webViewLink'
                         ]);
-                        $file_id = $updatedFile->getId();$file_link = $updatedFile->getWebViewLink();$gdrive_status = "Overwritten in Shared Drive ({$db_file_path})";
+                        $file_id = $updatedFile->getId();
+                        $file_link = $updatedFile->getWebViewLink();
+                        $gdrive_status = "Overwritten in Shared Drive ({$db_file_path})";
                     } else {
                         $failed_files[] = "$basename (Upload Failed: File already exists in Google Drive and Overwrite is disabled)";
                         continue;
@@ -335,7 +368,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['pdf_files'])) {
                         'fields' => 'id, webViewLink',
                         'supportsAllDrives' => true
                     ]);
-                    $file_id = $createdFile->getId();$file_link = $createdFile->getWebViewLink();$gdrive_status = "Uploaded to Shared Drive ({$db_file_path})";
+                    $file_id = $createdFile->getId();
+                    $file_link = $createdFile->getWebViewLink();
+                    $gdrive_status = "Uploaded to Shared Drive ({$db_file_path})";
                 }
             } catch (Exception $e) {
                 $failed_files[] = "$basename (Drive Error: " . $e->getMessage() . ")";
@@ -346,9 +381,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['pdf_files'])) {
             continue;
         }
 
+        // =========================================================================
+        // 3. DATABASE INSERT / UPDATE LOGIC
+        // =========================================================================
         if ($db_connection) {
             try {
-                $stmt =$db_connection->prepare("
+                $stmt = $db_connection->prepare("
                     INSERT INTO pdf_extracted_details 
                     (filename, account_number, mobile_number, telco, amount_due, billing_period, invoice_date, due_date, file_link, file_id, file_path)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -364,14 +402,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['pdf_files'])) {
                         file_id = VALUES(file_id),
                         file_path = VALUES(file_path)
                 ");
-                $stmt->execute([$basename, 
-                    $details['account_number'],$details['mobile_number'], 
-                    $details['telco'],$details['amount_due'], 
-                    $details['billing_period'],$details['invoice_date'], 
-                    $details['due_date'],$file_link, 
-                    $file_id,$db_file_path
+                $stmt->execute([
+                    $basename, 
+                    $details['account_number'], 
+                    $details['mobile_number'], 
+                    $details['telco'], 
+                    $details['amount_due'], 
+                    $details['billing_period'], 
+                    $details['invoice_date'], 
+                    $details['due_date'], 
+                    $file_link, 
+                    $file_id, 
+                    $db_file_path
                 ]);
-                $success_files[] = "$basename (Saved to DB | Telco: {$details['telco']} | {$gdrive_status})";
+                $success_files[] = "$basename (Saved to DB & Local Server | Telco: {$details['telco']} | {$gdrive_status})";
             } catch (Exception $e) {
                 $failed_files[] = "$basename (DB Error: " . $e->getMessage() . ")";
             }
@@ -393,10 +437,10 @@ ob_start();
 <div class="bg-white shadow-lg rounded-2xl p-6 border border-gray-100 max-w-5xl mx-auto mt-6">
     <div class="mb-6">
         <h2 class="text-lg font-bold text-gray-800">Upload Statements (Batch Size: 10)</h2>
-        <p class="text-xs text-gray-500 mt-0.5">Drag and drop folders or PDF files safely. All PDF files inside dropped folders/subfolders will be automatically queued and synced to Google Drive in batches of 10.</p>
+        <p class="text-xs text-gray-500 mt-0.5">Drag and drop folders or PDF files safely. All PDF files inside dropped folders/subfolders will be automatically queued, saved locally, and synced to Google Drive in batches of 10.</p>
     </div>
 
-   <div id="dropZone" class="border-2 border-dashed border-gray-300 rounded-2xl p-8 text-center bg-gray-50/50 hover:bg-gray-50 transition-colors mb-6 relative">
+    <div id="dropZone" class="border-2 border-dashed border-gray-300 rounded-2xl p-8 text-center bg-gray-50/50 hover:bg-gray-50 transition-colors mb-6 relative">
         <div class="flex flex-col items-center">
             <div class="w-10 h-10 mb-3 text-gray-400 flex items-center justify-center bg-white rounded-full shadow-sm border border-gray-100">
                 📁
@@ -461,7 +505,7 @@ ob_start();
                     <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
                     <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
                 </svg>
-                <span>Uploading Files to Cloud (Batch Mode)</span>
+                <span>Uploading Files to Cloud & Local (Batch Mode)</span>
             </h3>
             <span id="progressPercentage" class="bg-blue-100 text-blue-800 px-3 py-1 rounded-full text-xs font-bold">0%</span>
         </div>

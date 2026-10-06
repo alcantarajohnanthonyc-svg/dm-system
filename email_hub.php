@@ -33,14 +33,14 @@ if (isset($_GET['action'])) {
     header('Content-Type: application/json; charset=utf-8');
     $action = $_GET['action'];
 
-    // Standard Default Email Subject and Body Generator (Updated para gamitin ang employee_id)
-    // Standard Default Email Subject and Body Generator (Updated para maging HTML format)
-    function getDefaultEmailContent($account_number, $company, $recipient_name = 'Valued Client', $employee_id = '', $data_coverage = 'As of current billing', $approved_plan_display = '0.00', $final_dm_val = '0.00') {
-        $default_subject = "Statement of Account / Debit Memo - " . $account_number;
+    // Standard Default Email Subject and Body Generator (Updated para isama ang mobile_number)
+    function getDefaultEmailContent($account_number, $company, $recipient_name = '', $employee_id = '', $mobile_number = '', $data_coverage = 'As of current billing', $approved_plan_display = '0.00', $final_dm_val = '0.00') {
+        $default_subject = "Statement of Account/Excess Charges - " . $account_number;
         
-        $identifier = !empty($employee_id) ? $employee_id : $account_number;
-        $account_name_display = "{$recipient_name} / {$identifier}";
-        
+        // Sundin ang logic: kung walang employee id, gamitin ang mobile number; kung wala rin, gamitin ang account number
+        $identifier = !empty($employee_id) ? $employee_id : (!empty($mobile_number) ? $mobile_number : $account_number);
+        $account_name_display = trim($recipient_name) . " / " . $identifier;
+            
         // HTML Formatted Body
         $default_body = "
 <div style='font-family: Arial, sans-serif; font-size: 11pt; color: #333; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e2e8f0; border-radius: 8px; background-color: #ffffff;'>
@@ -52,7 +52,7 @@ if (isset($_GET['action'])) {
     </div>
     
     <p>Dear Ma'am/Sir,</p>
-    <p>Please find attached your Statement of Account (SOA) reflecting the applicable Debit Memo charges:</p>
+    <p>Please find attached your Statement of Account (SOA) reflecting the applicable excess charges, with details below:</p>
     
     <!-- Summary Details Box / Card -->
     <div style='background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 15px; margin: 15px 0;'>
@@ -71,7 +71,7 @@ if (isset($_GET['action'])) {
                 <td style='padding: 6px 0; font-weight: bold; color: #0f172a;'>" . $approved_plan_display . "</td>
             </tr>
             <tr style='border-top: 1px solid #e2e8f0;'>
-                <td style='padding: 10px 0 4px 0; color: #0f172a; font-weight: bold;'>Total Chargeable Amount:</td>
+                <td style='padding: 10px 0 4px 0; color: #0f172a; font-weight: bold;'>Total Excess Charges:</td>
                 <td style='padding: 10px 0 4px 0; font-weight: bold; color: #e11d48; font-size: 12pt;'>₱ " . $final_dm_val . "</td>
             </tr>
         </table>
@@ -81,18 +81,23 @@ if (isset($_GET['action'])) {
     
     <!-- Notice Box -->
     <div style='background-color: #fffbeb; border-left: 4px solid #f59e0b; padding: 10px; margin: 15px 0; font-size: 10pt; color: #92400e; border-radius: 0 4px 4px 0;'>
-        <b>Note:</b> If your excess charges is zero (₱0.00), no action is required and you may disregard this notification. Please review the attached SOA for full details.
+        <b>Note:</b> This email provides a detailed breakdown and description of your telco account charges for your reference. If your excess charges is zero (₱0.00), no action is required and you may disregard this notification.
     </div>
 
     <!-- Footer / Signature Section -->
     <div style='margin-top: 30px; padding-top: 15px; border-top: 2px solid #e2e8f0; background-color: #f8fafc; padding: 12px; border-radius: 6px;'>
+       
+        <p style='font-size: 10pt; color: #334155; margin: 0 0 10px 0; text-align: center;'>
+          Please review the attached SOA for full details.
+        </p>
+
         <div style='background-color: #fef2f2; border: 1px solid #fecaca; padding: 8px 12px; border-radius: 4px; margin-bottom: 10px; text-align: center;'>
             <p style='font-size: 9.5pt; color: #991b1b; margin: 0; font-weight: bold;'>
                 ⚠ This is an automated email, please do not reply.
             </p>
         </div>
         <p style='font-size: 8.5pt; color: #64748b; margin: 0;'>
-            Regards,<br>
+            Thank you,<br>
             <span style='color: #2563eb; font-size: 9pt; font-weight: bold;'>IT Telco Admin Team</span>
         </p>
     </div>
@@ -282,14 +287,17 @@ if (isset($_GET['action'])) {
                             $account_email_row = $email_stmt->fetch(PDO::FETCH_ASSOC);
 
                             $recipient_email = ($account_email_row && !empty($account_email_row['email_address'])) ? $account_email_row['email_address'] : '';
-                            $recipient_name  = ($account_email_row && !empty($account_email_row['full_name'])) ? $account_email_row['full_name'] : 'Valued Client';
+                            $recipient_name  = ($account_email_row && !empty($account_email_row['full_name'])) ? $account_email_row['full_name'] : '';
                             $employee_id     = ($account_email_row && !empty($account_email_row['employee_id'])) ? $account_email_row['employee_id'] : '';
+                            $mobile_number   = ($account_email_row && !empty($account_email_row['mobile_number'])) ? $account_email_row['mobile_number'] : '';
 
                             $final_start = !empty($line_start) ? $line_start : (!empty($global_start) ? $global_start : ($memo['min_start'] ?? ''));
                             $final_end = !empty($line_end) ? $line_end : (!empty($global_end) ? $global_end : ($memo['max_end'] ?? ''));
 
                             $metrics = calculateAccountSummaryMetrics($conn, $memo['dm_id'], $final_start, $final_end);
-                            $defaults = getDefaultEmailContent($memo['account_number'], $memo['company'], $recipient_name, $employee_id, $metrics['data_coverage'], $metrics['approved_plan_display'], $metrics['total_final_dm']);
+                            
+                            // Updated with mobile_number
+                            $defaults = getDefaultEmailContent($memo['account_number'], $memo['company'], $recipient_name, $employee_id, $mobile_number, $metrics['data_coverage'], $metrics['approved_plan_display'], $metrics['total_final_dm']);
                             
                             $has_soa = checkSharedDriveSOA($conn, $memo['account_number'], $memo['dm_id'], $final_start, $final_end);
                             $has_data = checkDataCoverageExists($conn, $memo['dm_id'], $final_start, $final_end);
@@ -310,7 +318,8 @@ if (isset($_GET['action'])) {
                             ];
                         }
                     } else {
-                        $defaults = getDefaultEmailContent($account_number, 'Not Found in Database', 'Valued Client', '', 'As of current billing', '0.00', '0.00');
+                        // Updated with mobile_number fallback
+                        $defaults = getDefaultEmailContent($account_number, 'Not Found in Database', '', '', '', 'As of current billing', '0.00', '0.00');
                         $resolved_accounts[] = [
                             'dm_id' => 0,
                             'account_number' => $account_number,
@@ -385,9 +394,10 @@ if (isset($_GET['action'])) {
                             $email_stmt->execute([$memo['account_number']]);
                             $account_email_row = $email_stmt->fetch(PDO::FETCH_ASSOC);
 
-                            $db_email = ($account_email_row && !empty($account_email_row['email_address'])) ? $account_email_row['email_address'] : '';
-                            $recipient_name = ($account_email_row && !empty($account_email_row['full_name'])) ? $account_email_row['full_name'] : 'Valued Client';
+                            $db_email      = ($account_email_row && !empty($account_email_row['email_address'])) ? $account_email_row['email_address'] : '';
+                            $recipient_name = ($account_email_row && !empty($account_email_row['full_name'])) ? $account_email_row['full_name'] : '';
                             $employee_id    = ($account_email_row && !empty($account_email_row['employee_id'])) ? $account_email_row['employee_id'] : '';
+                            $mobile_number  = ($account_email_row && !empty($account_email_row['mobile_number'])) ? $account_email_row['mobile_number'] : '';
                             
                             $recipient_email = !empty($custom_to) ? $custom_to : $db_email;
                             $cc_emails       = $custom_cc;
@@ -396,7 +406,9 @@ if (isset($_GET['action'])) {
                             $resolved_end    = !empty($final_end) ? $final_end : ($memo['max_end'] ?? '');
 
                             $metrics = calculateAccountSummaryMetrics($conn, $memo['dm_id'], $resolved_start, $resolved_end);
-                            $defaults = getDefaultEmailContent($memo['account_number'], $memo['company'], $recipient_name, $employee_id, $metrics['data_coverage'], $metrics['approved_plan_display'], $metrics['total_final_dm']);
+                            
+                            // Updated with mobile_number
+                            $defaults = getDefaultEmailContent($memo['account_number'], $memo['company'], $recipient_name, $employee_id, $mobile_number, $metrics['data_coverage'], $metrics['approved_plan_display'], $metrics['total_final_dm']);
                             
                             $has_soa = checkSharedDriveSOA($conn, $memo['account_number'], $memo['dm_id'], $resolved_start, $resolved_end);
                             $has_data = checkDataCoverageExists($conn, $memo['dm_id'], $resolved_start, $resolved_end);
@@ -417,7 +429,8 @@ if (isset($_GET['action'])) {
                             ];
                         }
                     } else {
-                        $defaults = getDefaultEmailContent($account_number, 'Not Found in Database', 'Valued Client', '', 'As of current billing', '0.00', '0.00');
+                        // Updated with mobile_number fallback
+                        $defaults = getDefaultEmailContent($account_number, 'Not Found in Database', '', '', '', 'As of current billing', '0.00', '0.00');
                         $resolved_accounts[] = [
                             'dm_id' => 0,
                             'account_number' => $account_number,
@@ -481,8 +494,9 @@ if (isset($_GET['action'])) {
         $account_email_row = $email_stmt->fetch(PDO::FETCH_ASSOC);
 
         $recipient_email = ($account_email_row && !empty($account_email_row['email_address'])) ? $account_email_row['email_address'] : '';
-        $recipient_name  = ($account_email_row && !empty($account_email_row['full_name'])) ? $account_email_row['full_name'] : 'Valued Client';
+        $recipient_name  = ($account_email_row && !empty($account_email_row['full_name'])) ? $account_email_row['full_name'] : '';
         $employee_id     = ($account_email_row && !empty($account_email_row['employee_id'])) ? $account_email_row['employee_id'] : '';
+        $mobile_number   = ($account_email_row && !empty($account_email_row['mobile_number'])) ? $account_email_row['mobile_number'] : '';
         $cc_emails       = '';
 
         $metrics = calculateAccountSummaryMetrics($conn, $dm_id, $start_date, $end_date);
@@ -498,7 +512,8 @@ if (isset($_GET['action'])) {
         $stmtDates->execute($datesParams);
         $resDates = $stmtDates->fetch(PDO::FETCH_ASSOC);
 
-        $defaults = getDefaultEmailContent($account_number, $dm['company'] ?? $recipient_name, $recipient_name, $employee_id, $metrics['data_coverage'], $metrics['approved_plan_display'], $metrics['total_final_dm']);
+        // Updated with mobile_number
+        $defaults = getDefaultEmailContent($account_number, $dm['company'] ?? $recipient_name, $recipient_name, $employee_id, $mobile_number, $metrics['data_coverage'], $metrics['approved_plan_display'], $metrics['total_final_dm']);
 
         require_once 'pdf_generator.php';
         $pdf_result = createDebitMemoPDF($dm_id, $conn, $breakdown_item_ids, $start_date, $end_date);

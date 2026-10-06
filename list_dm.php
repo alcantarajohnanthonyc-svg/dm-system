@@ -39,7 +39,7 @@ if (isset($_GET['action']) && $_GET['action'] === 'get_email_preview') {
     $account_email_row = $email_stmt->fetch(PDO::FETCH_ASSOC);
 
     $recipient_email = ($account_email_row && !empty($account_email_row['email_address'])) ? $account_email_row['email_address'] : '';
-    $recipient_name  = ($account_email_row && !empty($account_email_row['full_name'])) ? $account_email_row['full_name'] : 'Valued Client';
+    $recipient_name  = ($account_email_row && !empty($account_email_row['full_name'])) ? $account_email_row['full_name'] : '';
     $employee_id     = ($account_email_row && !empty($account_email_row['employee_id'])) ? $account_email_row['employee_id'] : '';
     $cc_emails       = ($account_email_row && !empty($account_email_row['cc_emails'])) ? $account_email_row['cc_emails'] : '';
 
@@ -89,16 +89,33 @@ if (isset($_GET['action']) && $_GET['action'] === 'get_email_preview') {
     } else {
         $data_coverage = "As of current billing";
     }
-
-   $dm_number_display = $dm['dm_number'] ?? $dm_id;
+$dm_number_display = $dm['dm_number'] ?? $dm_id;
     $subject = "Statement of Account / Debit Memo - " . $account_number;
-   $identifier = !empty($employee_id) ? $employee_id : $account_number;
+    $identifier = !empty($employee_id) ? $employee_id : $account_number;
     $account_name_display = "{$recipient_name} / {$identifier}";
+    
+    // Idinagdag ang mobile number display (galing sa data o record ng account)
+    $mobile_number_display = !empty($mobile_number) ? $mobile_number : ($dm['mobile_number'] ?? 'N/A');
+    
     $approved_plan_display = number_format($total_approved_plan, 2, '.', ',');
     $final_dm_val = number_format($total_final_dm, 2, '.', ',');
 
-$html_content = "Dear Ma'am/Sir,\n\nPlease find attached your Statement of Account (SOA) reflecting the applicable Debit Memo charges:\n\nSummary Details:\nPeriod Covered: " . $data_coverage . "\nAccount Name: " . $account_name_display . "\nApproved Plan (Company Share): ₱ " . $approved_plan_display . "\nTotal Excess Charges Amount: ₱ " . $final_dm_val . "\n\nThis statement outlines the specific breakdown and descriptions of the charges applied to your telco account for your information.\n\nNote: This email provides a detailed breakdown and description of your telco account charges for your reference. If your excess charges is zero (₱0.00), no action is required and you may disregard this notification.\n\nPlease review the attached SOA for full details.\n\nThis is an automated email, please do not reply.\n\nThank you,\nIT Telco Admin Team";    require_once 'pdf_generator.php';
-    // Ipasa ang petsa sa PDF generator function mo kung kinakailangan
+    // Na-align na ang format para maging pareho sa email_hub.php (may kasamang Mobile Number)
+    $html_content = "Dear Ma'am/Sir,\n\n" .
+                    "Please find attached your Statement of Account (SOA) reflecting the applicable Debit Memo charges:\n\n" .
+                    "Summary Details:\n" .
+                    "Period Covered: " . $data_coverage . "\n" .
+                    "Account Name: " . $account_name_display . "\n" .
+                    "Approved Plan (Company Share): ₱ " . $approved_plan_display . "\n" .
+                    "Total Excess Charges Amount: ₱ " . $final_dm_val . "\n\n" .
+                    "This statement outlines the specific breakdown and descriptions of the charges applied to your telco account for your information.\n\n" .
+                    "Note: This email provides a detailed breakdown and description of your telco account charges for your reference. If your excess charges is zero (₱0.00), no action is required and you may disregard this notification.\n\n" .
+                    "Please review the attached SOA for full details.\n\n" .
+                    "This is an automated email, please do not reply.\n\n" .
+                    "Thank you,\n" .
+                    "IT Telco Admin Team";
+
+    require_once 'pdf_generator.php';  // Ipasa ang petsa sa PDF generator function mo kung kinakailangan
     $pdf_result = createDebitMemoPDF($dm_id, $conn, $breakdown_item_ids, $start_date, $end_date);
     $attachments = [];
 
@@ -181,7 +198,7 @@ if (isset($_GET['action']) && $_GET['action'] === 'get_bulk_email_preview') {
             $email_stmt->execute([$acc_num]);
             $account_email_row = $email_stmt->fetch(PDO::FETCH_ASSOC);
 
-            $recipient_name = ($account_email_row && !empty($account_email_row['full_name'])) ? $account_email_row['full_name'] : 'Valued Client';
+            $recipient_name = ($account_email_row && !empty($account_email_row['full_name'])) ? $account_email_row['full_name'] : '';
             $employee_id    = ($account_email_row && !empty($account_email_row['employee_id'])) ? $account_email_row['employee_id'] : '';
             $identifier = !empty($employee_id) ? $employee_id : $acc_num;
 
