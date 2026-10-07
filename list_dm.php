@@ -13,13 +13,13 @@ if (!isset($_SESSION['user_id'])) {
 }
 
 // === 1. API HANDLER PARA SA SINGLE EMAIL PREVIEW ===
+// === 1. API HANDLER PARA SA SINGLE EMAIL PREVIEW (UPDATED) ===
 if (isset($_GET['action']) && $_GET['action'] === 'get_email_preview') {
     header('Content-Type: application/json');
     $dm_id = isset($_GET['dm_id']) ? intval($_GET['dm_id']) : 0;
     $item_ids_str = isset($_GET['item_ids']) ? trim($_GET['item_ids']) : '';
     $breakdown_item_ids = !empty($item_ids_str) ? array_filter(explode(',', $item_ids_str)) : [];
 
-    // Kunin ang start_date at end_date filter mula sa request
     $start_date = isset($_GET['start_date']) ? trim($_GET['start_date']) : '';
     $end_date   = isset($_GET['end_date']) ? trim($_GET['end_date']) : '';
 
@@ -41,8 +41,10 @@ if (isset($_GET['action']) && $_GET['action'] === 'get_email_preview') {
     $recipient_email = ($account_email_row && !empty($account_email_row['email_address'])) ? $account_email_row['email_address'] : '';
     $recipient_name  = ($account_email_row && !empty($account_email_row['full_name'])) ? $account_email_row['full_name'] : '';
     $employee_id     = ($account_email_row && !empty($account_email_row['employee_id'])) ? $account_email_row['employee_id'] : '';
+    $mobile_number   = ($account_email_row && !empty($account_email_row['mobile_number'])) ? $account_email_row['mobile_number'] : ($dm['mobile_number'] ?? '');
     $cc_emails       = ($account_email_row && !empty($account_email_row['cc_emails'])) ? $account_email_row['cc_emails'] : '';
 
+    // Kopyahin ang tamang pagkalkula ng metrics kagaya sa email_hub.php
     $itemQuery = "SELECT * FROM debit_memo_items WHERE dm_id = ?";
     $itemParams = [$dm_id];
 
@@ -52,7 +54,6 @@ if (isset($_GET['action']) && $_GET['action'] === 'get_email_preview') {
         foreach ($breakdown_item_ids as $iid) { $itemParams[] = $iid; }
     }
 
-    // Isama ang date filter kung meron man
     if (!empty($start_date) && !empty($end_date)) {
         $itemQuery .= " AND coverage_start >= ? AND coverage_end <= ?";
         $itemParams[] = $start_date;
@@ -66,18 +67,22 @@ if (isset($_GET['action']) && $_GET['action'] === 'get_email_preview') {
     $items = $stmtItems->fetchAll(PDO::FETCH_ASSOC);
 
     $total_final_dm = 0.00;
+    $total_current_charges = 0.00;
     $total_approved_plan = 0.00;
-    $approved_plan_set = false;
     $raw_start_dates = [];
     $raw_end_dates = [];
 
     foreach ($items as $it) {
+        $curr_charge_v = isset($it['current_charges']) ? (float)$it['current_charges'] : 0.00;
+        $total_current_charges += $curr_charge_v;
+
         $dm_v = isset($it['debit_memo_details']) ? (float)$it['debit_memo_details'] : 0.00;
         $ao_v = isset($it['add_ons']) ? (float)$it['add_ons'] : 0.00;
-        $total_final_dm += isset($it['final_dm']) ? (float)$it['final_dm'] : ($dm_v - $ao_v);
-        if (!$approved_plan_set && isset($it['approved_plan'])) {
-            $total_approved_plan = (float)$it['approved_plan'];
-            $approved_plan_set = true;
+        $final_dm_val = isset($it['final_dm']) ? (float)$it['final_dm'] : ($dm_v - $ao_v);
+        $total_final_dm += $final_dm_val;
+
+        if (isset($it['approved_plan'])) {
+            $total_approved_plan += (float)$it['approved_plan'];
         }
 
         if (!empty($it['coverage_start'])) $raw_start_dates[] = $it['coverage_start'];
@@ -89,33 +94,27 @@ if (isset($_GET['action']) && $_GET['action'] === 'get_email_preview') {
     } else {
         $data_coverage = "As of current billing";
     }
-$dm_number_display = $dm['dm_number'] ?? $dm_id;
-    $subject = "Statement of Account / Debit Memo - " . $account_number;
-    $identifier = !empty($employee_id) ? $employee_id : $account_number;
-    $account_name_display = "{$recipient_name} / {$identifier}";
-    
-    // Idinagdag ang mobile number display (galing sa data o record ng account)
-    $mobile_number_display = !empty($mobile_number) ? $mobile_number : ($dm['mobile_number'] ?? 'N/A');
-    
-    $approved_plan_display = number_format($total_approved_plan, 2, '.', ',');
-    $final_dm_val = number_format($total_final_dm, 2, '.', ',');
 
-    // Na-align na ang format para maging pareho sa email_hub.php (may kasamang Mobile Number)
-    $html_content = "Dear Ma'am/Sir,\n\n" .
-                    "Please find attached your Statement of Account (SOA) reflecting the applicable Debit Memo charges:\n\n" .
-                    "Summary Details:\n" .
-                    "Period Covered: " . $data_coverage . "\n" .
-                    "Account Name: " . $account_name_display . "\n" .
-                    "Approved Plan (Company Share): ₱ " . $approved_plan_display . "\n" .
-                    "Total Excess Charges Amount: ₱ " . $final_dm_val . "\n\n" .
-                    "This statement outlines the specific breakdown and descriptions of the charges applied to your telco account for your information.\n\n" .
-                    "Note: This email provides a detailed breakdown and description of your telco account charges for your reference. If your excess charges is zero (₱0.00), no action is required and you may disregard this notification.\n\n" .
-                    "Please review the attached SOA for full details.\n\n" .
-                    "This is an automated email, please do not reply.\n\n" .
-                    "Thank you,\n" .
-                    "IT Telco Admin Team";
+    $approved_plan_display = "₱ " . number_format($total_approved_plan, 2, '.', ',');
+    $current_charges_display = "₱ " . number_format($total_current_charges, 2, '.', ',');
+    $final_dm_val_display = number_format($total_final_dm, 2, '.', ',');
 
-    require_once 'pdf_generator.php';  // Ipasa ang petsa sa PDF generator function mo kung kinakailangan
+    // Kunin ang template direkta mula sa email_template.php para 100% magkatulad
+    require_once 'email_template.php';
+    $company_name = $dm['company'] ?? $recipient_name;
+    $template = getEmailTemplate(
+        $account_number, 
+        $company_name, 
+        $recipient_name, 
+        $employee_id, 
+        $mobile_number, 
+        $data_coverage, 
+        $approved_plan_display, 
+        $current_charges_display, 
+        $final_dm_val_display
+    );
+
+    require_once 'pdf_generator.php';
     $pdf_result = createDebitMemoPDF($dm_id, $conn, $breakdown_item_ids, $start_date, $end_date);
     $attachments = [];
 
@@ -130,43 +129,12 @@ $dm_number_display = $dm['dm_number'] ?? $dm_id;
         ];
     }
 
-    // Query para sa mga SOA files na pasok sa date range at items
-    $soa_query = "SELECT DISTINCT pdf.filename, pdf.file_link FROM debit_memo_items dmi JOIN pdf_extracted_details pdf ON pdf.account_number = ? WHERE dmi.dm_id = ?";
-    $soa_params = [$account_number, $dm_id];
-    if (!empty($breakdown_item_ids)) {
-        $placeholders = implode(',', array_fill(0, count($breakdown_item_ids), '?'));
-        $soa_query .= " AND dmi.id IN ($placeholders)";
-        foreach ($breakdown_item_ids as $iid) { $soa_params[] = $iid; }
-    }
-    
-    // Idagdag din ang date filter dito kung meron
-    if (!empty($start_date) && !empty($end_date)) {
-        $soa_query .= " AND dmi.coverage_start >= ? AND dmi.coverage_end <= ?";
-        $soa_params[] = $start_date;
-        $soa_params[] = $end_date;
-    }
-
-    $soa_query .= " AND ABS(DATEDIFF(dmi.coverage_end, STR_TO_DATE(SUBSTRING_INDEX(pdf.billing_period, ' - ', -1), '%Y-%m-%d'))) <= 5";
-    
-    $soa_stmt = $conn->prepare($soa_query);
-    $soa_stmt->execute($soa_params);
-    $soa_files = $soa_stmt->fetchAll(PDO::FETCH_ASSOC);
-
-    foreach ($soa_files as $soa) {
-        if (!empty($soa['filename'])) {
-            $attachments[] = [
-                'path' => $soa['filename'],
-                'name' => basename($soa['filename'])
-            ];
-        }
-    }
-
     echo json_encode([
         'status' => 'success',
         'recipient_email' => $recipient_email,
         'cc_emails' => $cc_emails,
-        'subject' => $subject,
-        'html_content' => $html_content,
+        'subject' => $template['subject'],
+        'html_content' => $template['body'],
         'attachments' => $attachments
     ]);
     exit;
@@ -177,6 +145,10 @@ if (isset($_GET['action']) && $_GET['action'] === 'get_bulk_email_preview') {
     header('Content-Type: application/json');
     $input = json_decode(file_get_contents('php://input'), true);
     $dm_ids = isset($input['dm_ids']) ? $input['dm_ids'] : [];
+    
+    // Saluhin ang filter dates mula sa JS payload
+    $start_date = isset($input['start_date']) ? trim($input['start_date']) : '';
+    $end_date   = isset($input['end_date']) ? trim($input['end_date']) : '';
 
     if (empty($dm_ids)) {
         echo json_encode(['status' => 'error', 'message' => 'No accounts provided.']);
@@ -202,6 +174,23 @@ if (isset($_GET['action']) && $_GET['action'] === 'get_bulk_email_preview') {
             $employee_id    = ($account_email_row && !empty($account_email_row['employee_id'])) ? $account_email_row['employee_id'] : '';
             $identifier = !empty($employee_id) ? $employee_id : $acc_num;
 
+            // Kunin ang petsa base sa filter kung meron man
+            $dateQuery = "SELECT MIN(coverage_start) as min_start, MAX(coverage_end) as max_end FROM debit_memo_items WHERE dm_id = ?";
+            $dateParams = [$dm_id];
+
+            if (!empty($start_date) && !empty($end_date)) {
+                $dateQuery .= " AND coverage_start >= ? AND coverage_end <= ?";
+                $dateParams[] = $start_date;
+                $dateParams[] = $end_date;
+            }
+
+            $date_stmt = $conn->prepare($dateQuery);
+            $date_stmt->execute($dateParams);
+            $date_row = $date_stmt->fetch(PDO::FETCH_ASSOC);
+
+            $calc_start = $date_row['min_start'] ?? '';
+            $calc_end = $date_row['max_end'] ?? '';
+
             // Suriin kung may actual data items at SOA ang debit memo na ito
             $item_check = $conn->prepare("SELECT COUNT(*) FROM debit_memo_items WHERE dm_id = ?");
             $item_check->execute([$dm_id]);
@@ -219,6 +208,10 @@ if (isset($_GET['action']) && $_GET['action'] === 'get_bulk_email_preview') {
                 'company' => $memo['company'],
                 'recipient_email' => ($account_email_row && !empty($account_email_row['email_address'])) ? $account_email_row['email_address'] : '',
                 'cc_emails' => ($account_email_row && !empty($account_email_row['cc_emails'])) ? $account_email_row['cc_emails'] : '',
+                'raw_start_date' => $calc_start,
+                'raw_end_date' => $calc_end,
+                'start_date' => $calc_start ? date('M d, Y', strtotime($calc_start)) : '',
+                'end_date' => $calc_end ? date('M d, Y', strtotime($calc_end)) : '',
                 'has_data' => $has_data,
                 'has_dm' => true,
                 'has_soa' => $has_soa
@@ -896,121 +889,128 @@ $base_query = http_build_query($current_params);
 </div>
 
 <!-- BULK EMAIL REVIEW & VALIDATION MODAL -->
-<div id="bulkEmailReviewModal" style="display: none;" class="fixed inset-0 z-[99999] flex items-center justify-center bg-black/60 backdrop-blur-sm">
-    <div class="bg-white rounded-3xl shadow-2xl border border-gray-100 w-full max-w-5xl p-6 mx-4 flex flex-col max-h-[90vh]">
-        <div class="flex justify-between items-center mb-4 pb-3 border-b">
-            <div>
-                <h3 class="text-lg font-bold text-gray-800">Bulk Email Review & Validation</h3>
-                <p id="bulkSummaryCount" class="text-xs text-gray-500 font-medium"></p>
-            </div>
-            <button type="button" onclick="closeBulkEmailReviewModal()" class="text-gray-400 hover:text-gray-600 text-lg font-bold">✕</button>
-        </div>
+<div id="bulkEmailReviewModal" style="display: none;" class="fixed inset-0 z-[99999] flex items-center justify-center bg-black/60 backdrop-blur-md">
+    <div class="bg-white rounded-3xl shadow-2xl border border-gray-100 w-full max-w-6xl p-6 mx-4 flex flex-col max-h-[90vh] animate-in fade-in zoom-in duration-200">
         
-        <div class="flex justify-between items-center mb-3 text-xs">
-            <div class="flex items-center gap-2">
-                <span>Show</span>
-                <select id="bulkRowsPerPageSelect" onchange="changeBulkRowsPerPage(this.value)" class="p-1 border rounded bg-gray-50">
-                    <option value="20">20</option>
-                    <option value="50">50</option>
-                    <option value="100">100</option>
-                    <option value="ALL">All</option>
-                </select>
-                <span>entries</span>
+        <!-- Modal Header -->
+        <div class="flex justify-between items-start pb-4 border-b border-gray-100">
+            <div>
+                <h3 class="text-lg font-extrabold text-gray-900 tracking-tight flex items-center gap-2">
+                    <i class="las la-envelope-open-text text-amber-600 text-xl"></i> Bulk Email Review & Validation
+                </h3>
+                <p id="bulkSummaryCount" class="text-xs text-gray-500 font-medium mt-0.5">0 accounts loaded for review</p>
             </div>
-            <div class="text-gray-500 text-[11px]">
-                Tip: Red rows indicate missing recipient email addresses. You can type directly in the box to update.
-            </div>
+            <button type="button" onclick="closeBulkEmailReviewModal()" class="w-8 h-8 flex items-center justify-center rounded-full bg-gray-100 text-gray-400 hover:text-gray-700 hover:bg-gray-200 transition-all font-bold">✕</button>
         </div>
 
-        <div class="border rounded-xl overflow-y-auto flex-grow max-h-[50vh]">
+        <!-- Upper Status Count Bar -->
+        <div class="py-3 px-4 my-3 bg-slate-50 border border-slate-200/80 rounded-2xl flex items-center justify-between gap-3">
+            <div class="flex items-center gap-2 flex-wrap" id="statusCountersContainer">
+                <span class="inline-flex items-center gap-1.5 px-2.5 py-1 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-lg text-xs font-bold shadow-xs">
+                    <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span> Ready: <span id="countReady">0</span>
+                </span>
+                <span class="inline-flex items-center gap-1.5 px-2.5 py-1 bg-rose-50 text-rose-700 border border-rose-200 rounded-lg text-xs font-bold shadow-xs">
+                    <span class="w-2 h-2 rounded-full bg-rose-500"></span> Missing Email: <span id="countMissingEmail">0</span>
+                </span>
+                <span class="inline-flex items-center gap-1.5 px-2.5 py-1 bg-amber-50 text-amber-700 border border-amber-200 rounded-lg text-xs font-bold shadow-xs">
+                    <span class="w-2 h-2 rounded-full bg-amber-500"></span> Without SOA: <span id="countMissingSOA">0</span>
+                </span>
+                <span class="inline-flex items-center gap-1.5 px-2.5 py-1 bg-gray-100 text-gray-600 border border-gray-200 rounded-lg text-xs font-bold shadow-xs">
+                    <span class="w-2 h-2 rounded-full bg-gray-400"></span> No Data: <span id="countNoData">0</span>
+                </span>
+            </div>
+        </div>
+        
+        <!-- Table Body Container -->
+        <div class="border border-gray-200 rounded-2xl overflow-y-auto flex-grow max-h-[48vh] shadow-inner bg-white">
             <table class="w-full text-left border-collapse text-xs">
-                <thead class="bg-gray-100 sticky top-0 z-10 text-gray-700 font-bold uppercase text-[10px]">
+                <thead class="bg-slate-100/80 sticky top-0 z-10 text-slate-700 font-bold uppercase text-[10px] tracking-wider backdrop-blur-sm">
                     <tr>
-<th class="p-2.5 text-center w-36 cursor-pointer" onclick="sortBulkTable('status')">Status ↕</th>                        <th class="p-2.5 cursor-pointer" onclick="sortBulkTable('account_number')">Account Number & Company ↕</th>
-                        <th class="p-2.5 cursor-pointer" onclick="sortBulkTable('recipient_email')">Recipient Email ↕</th>
-                        <th class="p-2.5">CC Emails</th>
-                        <th class="p-2.5 text-center w-24">Preview</th>
+                        <th class="p-3 text-center w-28 cursor-pointer hover:bg-slate-200/60 transition-colors select-none" onclick="sortBulkTable('status')">
+                            Status <span id="sortIcon_status" class="text-amber-600 ml-0.5"></span>
+                        </th>
+                        <th class="p-3 cursor-pointer hover:bg-slate-200/60 transition-colors select-none" onclick="sortBulkTable('account')">
+                            Account Number & Company <span id="sortIcon_account" class="text-amber-600 ml-0.5"></span>
+                        </th>
+                        <th class="p-3 cursor-pointer hover:bg-slate-200/60 transition-colors select-none" onclick="sortBulkTable('coverage')">
+                            Coverage Dates (Per Line) <span id="sortIcon_coverage" class="text-amber-600 ml-0.5"></span>
+                        </th>
+                        <th class="p-3">Recipient Email</th>
+                        <th class="p-3">CC Emails</th>
+                        <th class="p-3 text-center w-24">Preview</th>
                     </tr>
                 </thead>
-                <tbody id="bulkReviewTableBody" class="divide-y">
-                    <!-- Dynamic rows inserted here -->
-                </tbody>
+                <tbody id="bulkReviewTableBody" class="divide-y divide-gray-100"></tbody>
             </table>
         </div>
 
-        <div class="flex justify-between items-center mt-4 pt-3 border-t">
-            <div id="bulkPaginationInfo" class="text-xs text-gray-500">Showing 0 to 0 of 0 accounts</div>
-            <div class="flex gap-2">
-                <button type="button" onclick="changeBulkPage(-1)" class="px-3 py-1.5 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded text-xs font-bold">Previous</button>
-                <button type="button" onclick="changeBulkPage(1)" class="px-3 py-1.5 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded text-xs font-bold">Next</button>
-            </div>
-        </div>
-
-        <div class="flex justify-end gap-3 mt-4 pt-3 border-t">
-            <button type="button" onclick="closeBulkEmailReviewModal()" class="px-4 py-2 bg-gray-200 text-gray-700 rounded-xl text-xs font-bold hover:bg-gray-300">Cancel</button>
-            <button type="button" onclick="proceedBulkDispatchFromModal()" class="px-5 py-2 bg-emerald-600 text-white rounded-xl text-xs font-bold hover:bg-emerald-700 shadow-md">Confirm & Send Emails</button>
+        <!-- Footer Buttons -->
+        <div class="flex justify-end gap-3 mt-4 pt-3 border-t border-gray-100">
+            <button type="button" onclick="closeBulkEmailReviewModal()" class="px-5 py-2.5 bg-gray-100 text-gray-700 rounded-xl text-xs font-bold hover:bg-gray-200 transition-all">Cancel</button>
+            <button type="button" onclick="proceedBulkDispatchFromModal()" class="px-6 py-2.5 bg-emerald-600 text-white rounded-xl text-xs font-bold hover:bg-emerald-700 shadow-lg shadow-emerald-600/20 transition-all flex items-center gap-2">
+                <i class="las la-paper-plane text-sm"></i> Confirm & Send Emails
+            </button>
         </div>
     </div>
 </div>
 
 <!-- SINGLE EMAIL PREVIEW MODAL -->
 <div id="emailPreviewModal" style="display: none;" class="fixed inset-0 z-[99999] flex items-center justify-center bg-black/60 backdrop-blur-sm">
-    <div class="bg-white rounded-3xl shadow-2xl border border-gray-100 w-full max-w-2xl p-6 mx-4 max-h-[90vh] flex flex-col">
+    <div class="bg-white rounded-3xl shadow-2xl border border-gray-100 w-full max-w-3xl p-6 mx-4 max-h-[90vh] flex flex-col">
         
-        <!-- Header -->
         <div class="flex justify-between items-center mb-4 pb-2 border-b">
             <h3 class="text-base font-bold text-gray-800">Email Preview & Customization</h3>
             <button type="button" onclick="closeEmailPreviewModal()" class="text-gray-400 hover:text-gray-600 font-bold">✕</button>
         </div>
 
-        <!-- Form (Nilagyan ng enctype para sa file upload) -->
         <form id="emailPreviewForm" class="flex flex-col flex-grow overflow-y-auto space-y-3" enctype="multipart/form-data">
             
             <input type="hidden" id="preview_dm_id" name="dm_ids" value="">
             <input type="hidden" id="preview_item_ids" name="item_ids" value="">
             <input type="hidden" id="preview_start_date" name="start_date" value="">
-    <input type="hidden" id="preview_end_date" name="end_date" value="">
-            <!-- To Email -->
+            <input type="hidden" id="preview_end_date" name="end_date" value="">
+            
             <div>
                 <label class="block text-[10px] font-bold text-gray-500 uppercase">To Email</label>
                 <input type="email" id="preview_to" name="recipient_email" class="w-full p-2 border rounded-xl text-xs bg-gray-50" required>
             </div>
 
-            <!-- CC Emails -->
             <div>
                 <label class="block text-[10px] font-bold text-gray-500 uppercase">CC Emails (Comma-separated)</label>
-                <input type="text" id="preview_cc" name="cc_emails" class="w-full p-2 border rounded-xl text-xs bg-gray-50" placeholder="e.g. accounting@company.com, admin@company.com">
+                <input type="text" id="preview_cc" name="cc_emails" class="w-full p-2 border rounded-xl text-xs bg-gray-50" placeholder="e.g. accounting@company.com">
             </div>
 
-            <!-- Subject -->
             <div>
                 <label class="block text-[10px] font-bold text-gray-500 uppercase">Subject</label>
                 <input type="text" id="preview_subject" name="subject" class="w-full p-2 border rounded-xl text-xs bg-gray-50" required>
             </div>
 
-            <!-- Message Body -->
-            <div class="flex-grow">
-                <label class="block text-[10px] font-bold text-gray-500 uppercase">Message Body</label>
-                <textarea id="preview_body" name="html_content" rows="7" class="w-full p-2 border rounded-xl text-xs bg-gray-50 font-sans" required></textarea>
+            <!-- DUAL VIEW TABS (Visual Preview vs HTML Code Editor) -->
+            <div class="flex flex-col flex-grow">
+                <div class="flex justify-between items-center mb-1">
+                    <label class="block text-[10px] font-bold text-gray-500 uppercase">Message Body</label>
+                    <div class="flex gap-1 bg-gray-100 p-1 rounded-lg">
+                        <button type="button" onclick="switchPreviewMode('visual')" id="btnVisualTab" class="px-3 py-1 bg-white shadow-xs text-xs font-bold text-blue-600 rounded-md transition-all">Visual Preview</button>
+                        <button type="button" onclick="switchPreviewMode('code')" id="btnCodeTab" class="px-3 py-1 text-xs font-bold text-gray-600 rounded-md transition-all">HTML Code</button>
+                    </div>
+                </div>
+
+                <!-- Visual Rendered Container -->
+                <div id="visualPreviewContainer" class="w-full p-4 border rounded-xl bg-white shadow-inner overflow-y-auto max-h-72"></div>
+
+                <!-- HTML Code Editor Textarea (Hidden by default unless switched) -->
+                <textarea id="preview_body" name="html_content" rows="8" oninput="syncVisualPreviewFromCode()" class="w-full p-3 border rounded-xl text-xs bg-gray-50 font-mono hidden" required></textarea>
             </div>
 
-            <!-- Attachments Section -->
             <div>
                 <label class="block text-[10px] font-bold text-gray-500 uppercase mb-1">Attachments to Include</label>
-                
-                <!-- Dynamic attachment checkboxes galing sa system -->
-                <div id="preview_attachments_container" class="p-2 border rounded-xl bg-gray-50 text-xs space-y-1 max-h-28 overflow-y-auto">
-                    <!-- Dynamic checkboxes will load here -->
-                </div>
-                
-                <!-- Karagdagang File Input para sa pag-upload ng bagong attachment -->
+                <div id="preview_attachments_container" class="p-2 border rounded-xl bg-gray-50 text-xs space-y-1 max-h-24 overflow-y-auto"></div>
                 <div class="mt-2 pt-2 border-t border-gray-200">
-                    <label class="block text-[9px] font-bold text-emerald-600 uppercase mb-1">+ Upload addtional attached file (Opsyonal)</label>
+                    <label class="block text-[9px] font-bold text-emerald-600 uppercase mb-1">+ Upload New File (Optional)</label>
                     <input type="file" name="additional_attachments[]" id="additional_attachments" multiple class="w-full p-1 border rounded-lg text-xs bg-white text-gray-600 file:mr-2 file:py-1 file:px-2 file:rounded-md file:border-0 file:text-[10px] file:font-semibold file:bg-emerald-50 file:text-emerald-700 hover:file:bg-emerald-100">
                 </div>
             </div>
 
-            <!-- Modal Footer / Buttons -->
             <div class="flex justify-end gap-2 pt-3 border-t">
                 <button type="button" onclick="closeEmailPreviewModal()" class="px-4 py-2 bg-gray-200 text-gray-700 rounded-xl text-xs font-bold hover:bg-gray-300">Cancel</button>
                 <button type="button" onclick="submitConfirmedEmail()" class="px-5 py-2 bg-emerald-600 text-white rounded-xl text-xs font-bold hover:bg-emerald-700 shadow-md">Send Email Now</button>
@@ -1021,21 +1021,51 @@ $base_query = http_build_query($current_params);
 </div>
 
 <!-- DISPATCH PROGRESS MODAL -->
-<div id="dispatchProgressModal" style="display: none;" class="fixed inset-0 z-[99999] flex items-center justify-center bg-black/60 backdrop-blur-sm">
-    <div class="bg-white rounded-3xl shadow-2xl border border-gray-100 w-full max-w-2xl p-6 mx-4">
-        <h3 class="text-base font-bold text-gray-800 mb-4">Sending Statement Emails...</h3>
-        <div class="mb-4">
-            <div class="w-full bg-gray-200 rounded-full h-3 overflow-hidden">
-                <div id="dispatchProgressBar" class="bg-emerald-600 h-3 rounded-full transition-all duration-300" style="width: 0%"></div>
+<div id="dispatchProgressModal" style="display: none;" class="fixed inset-0 z-[99999] flex items-center justify-center bg-black/60 backdrop-blur-md">
+        <div class="bg-white rounded-3xl shadow-2xl border border-gray-100 w-full max-w-4xl p-8 mx-4 flex flex-col max-h-[90vh]">
+        
+            <!-- Header -->
+            <div class="flex items-center justify-between pb-4 border-b border-gray-100 mb-6">
+                <div class="flex items-center gap-3">
+                    <div class="w-10 h-10 rounded-2xl bg-amber-50 border border-amber-100 flex items-center justify-center shadow-sm">
+                        <i class="las la-paper-plane text-amber-600 text-xl animate-pulse"></i>
+                    </div>
+                    <div>
+                        <h3 class="text-base font-extrabold text-gray-900 tracking-tight">Dispatching Statement Emails</h3>
+                        <p class="text-[11px] text-gray-500 font-medium">Processing records in secure batches...</p>
+                    </div>
+                </div>
+                <span id="batchProgressCounter" class="text-xs font-bold text-amber-700 bg-amber-50 border border-amber-200 px-3 py-1.5 rounded-xl shadow-xs">Batch 0/0</span>
             </div>
-            <p id="dispatchProgressText" class="text-xs font-semibold text-gray-600 mt-2">Starting dispatch process...</p>
+        
+            <!-- Modern Progress Bar Section -->
+            <div class="mb-6 bg-slate-50/80 border border-slate-200/80 p-5 rounded-2xl">
+                <div class="flex justify-between items-center mb-2">
+                <span id="dispatchProgressText" class="text-base font-extrabold text-slate-900">Initializing dispatch process...</span>                <span id="dispatchProgressPercent" class="text-xs font-extrabold text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-md border border-emerald-200">0%</span>
+            </div>
+            <div class="w-full bg-slate-200 rounded-full h-4 overflow-hidden p-0.5 border border-slate-300 shadow-inner">
+                <div id="dispatchProgressBar" class="bg-gradient-to-r from-emerald-500 to-teal-500 h-3 rounded-full transition-all duration-400 shadow-sm" style="width: 0%"></div>
+            </div>
         </div>
-        <div id="dispatchProgressLog" class="bg-slate-900 text-white text-xs font-mono p-3 rounded-xl max-h-60 overflow-y-auto mb-4 space-y-1"></div>
-        <div class="text-right">
-            <button type="button" id="closeDispatchModalBtn" onclick="closeDispatchModal()" style="display:none;" class="bg-gray-700 text-white px-4 py-2 rounded-xl text-xs font-semibold">Close</button>
+
+        <!-- Wider & Modern Scrollable Log Box -->
+        <div class="flex flex-col flex-grow min-h-[320px] max-h-[420px] bg-slate-950 text-slate-200 text-xs font-mono p-4 rounded-2xl shadow-inner border border-slate-800 overflow-hidden">
+            <div class="flex items-center justify-between pb-2 mb-2 border-b border-slate-800/80 text-[11px] text-slate-400 uppercase tracking-wider font-bold">
+                <span>Live Terminal Activity Log</span>
+                <span class="flex items-center gap-1.5"><span class="w-2 h-2 rounded-full bg-emerald-500 animate-ping"></span> Live</span>
+            </div>
+            <div id="dispatchProgressLog" class="flex-grow overflow-y-auto space-y-1.5 pr-2 custom-scrollbar">
+                <div class="text-slate-500 italic">Waiting for batch dispatch to start...</div>
+            </div>
+        </div>
+
+        <!-- Footer Button -->
+        <div class="flex justify-end pt-5 mt-4 border-t border-gray-100">
+            <button type="button" id="closeDispatchModalBtn" onclick="closeDispatchModal()" style="display:none;" class="px-6 py-3 bg-slate-900 text-white rounded-xl text-xs font-bold hover:bg-slate-800 shadow-lg shadow-slate-900/20 transition-all flex items-center gap-2">
+                <i class="las la-check-circle text-base"></i> Close & Reload Page
+            </button>
         </div>
     </div>
-</div>
 
 <!-- EMAIL HUB MODAL -->
 <div id="emailHubModal" style="display: none;" class="fixed inset-0 z-[99999] flex items-center justify-center bg-black/60 backdrop-blur-sm">
@@ -1706,33 +1736,7 @@ function sendEmailSelected() {
     openBulkEmailReviewModal(dmIds);
 }
 
-function openBulkEmailReviewModal(dmIds) {
-    fetch('list_dm.php?action=get_bulk_email_preview', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ dm_ids: dmIds })
-    })
-    .then(res => res.json())
-    .then(data => {
-        if (data.status === 'success') {
-            bulkAccountsCache = data.accounts;
-            currentBulkPage = 1;
-            currentBulkSortField = '';
-            currentBulkSortDir = 'asc';
-            document.getElementById('bulkRowsPerPageSelect').value = '20';
-            bulkRowsPerPage = 20;
-            renderBulkReviewTable();
-            document.getElementById('bulkSummaryCount').innerText = `${dmIds.length} accounts loaded for review`;
-            document.getElementById('bulkEmailReviewModal').style.display = 'flex';
-        } else {
-            alert("Error: " + data.message);
-        }
-    })
-    .catch(err => {
-        console.error("Bulk review error:", err);
-        alert("Hindi makuha ang detalye para sa bulk review.");
-    });
-}
+
 
 function closeBulkEmailReviewModal() {
     document.getElementById('bulkEmailReviewModal').style.display = 'none';
@@ -1757,82 +1761,7 @@ function updateCacheField(index, field, value) {
     }
 }
 
-function renderBulkReviewTable() {
-    saveCurrentBulkPageInputs();
 
-    const tbody = document.getElementById('bulkReviewTableBody');
-    tbody.innerHTML = '';
-
-    let itemsToDisplay = [...bulkAccountsCache];
-
-    if (currentBulkSortField) {
-        itemsToDisplay.sort((a, b) => {
-            let valA = '', valB = '';
-            if (currentBulkSortField === 'status') {
-                valA = (!a.has_data || !a.has_dm || a.dm_id == 0) ? 'No Data' : ((!a.recipient_email || a.recipient_email.trim() === '') ? 'Missing Email' : (!a.has_soa ? 'Missing SOA' : 'Ready'));
-                valB = (!b.has_data || !b.has_dm || b.dm_id == 0) ? 'No Data' : ((!b.recipient_email || b.recipient_email.trim() === '') ? 'Missing Email' : (!b.has_soa ? 'Missing SOA' : 'Ready'));
-            } else if (currentBulkSortField === 'account_number') {
-                valA = a.account_number || '';
-                valB = b.account_number || '';
-            } else if (currentBulkSortField === 'recipient_email') {
-                valA = a.recipient_email || '';
-                valB = b.recipient_email || '';
-            }
-
-            if (valA < valB) return currentBulkSortDir === 'asc' ? -1 : 1;
-            if (valA > valB) return currentBulkSortDir === 'asc' ? 1 : -1;
-            return 0;
-        });
-    }
-
-    const totalRows = itemsToDisplay.length;
-    let effectiveLimit = bulkRowsPerPage === 'ALL' ? totalRows : parseInt(bulkRowsPerPage);
-    const totalPages = bulkRowsPerPage === 'ALL' ? 1 : (Math.ceil(totalRows / effectiveLimit) || 1);
-    if (currentBulkPage > totalPages) currentBulkPage = totalPages;
-
-    const startIdx = bulkRowsPerPage === 'ALL' ? 0 : (currentBulkPage - 1) * effectiveLimit;
-    const endIdx = bulkRowsPerPage === 'ALL' ? totalRows : Math.min(startIdx + effectiveLimit, totalRows);
-    const paginatedItems = itemsToDisplay.slice(startIdx, endIdx);
-
-    paginatedItems.forEach((acc) => {
-        let globalIndex = bulkAccountsCache.findIndex(item => item.dm_id === acc.dm_id);
-        
-       let statusBadge = '';
-        if (!acc.has_data || !acc.has_dm || acc.dm_id == 0) {
-            statusBadge = '<span class="px-2 py-0.5 rounded text-[9px] font-bold bg-gray-100 text-gray-700 border border-gray-200 block text-center">⚪ No Data</span>';
-        } else if (!acc.recipient_email || acc.recipient_email.trim() === '') {
-            statusBadge = '<span class="px-2 py-0.5 rounded text-[9px] font-bold bg-red-100 text-red-700 border border-red-200 block text-center">🔴 Missing Email</span>';
-        } else if (!acc.has_soa) {
-            statusBadge = '<span class="px-2 py-0.5 rounded text-[9px] font-bold bg-amber-100 text-amber-700 border border-amber-200 block text-center">🟡 Missing SOA</span>';
-        } else {
-            statusBadge = '<span class="px-2 py-0.5 rounded text-[9px] font-bold bg-green-100 text-green-700 border border-green-200 block text-center">🟢 Ready</span>';
-        }
-
-        tbody.innerHTML += `
-            <tr class="border-b" data-index="${globalIndex}">
-                <td class="p-2.5 text-center">${statusBadge}</td>
-                <td class="p-2.5">
-                    <input type="hidden" name="bulk_dm_ids[]" value="${acc.dm_id}">
-                    <div class="font-bold text-gray-800">${acc.account_number}</div>
-                    <div class="text-[10px] text-gray-500">${acc.company}</div>
-                </td>
-                <td class="p-2.5">
-                    <input type="email" name="bulk_recipients[]" value="${acc.recipient_email || ''}" placeholder="Ilagay ang email dito..." class="w-full p-1.5 border rounded text-xs bg-white recipient-input" oninput="updateCacheFieldAndRefreshBadge(${globalIndex}, 'recipient_email', this.value, this)">
-                </td>
-                <td class="p-2.5">
-                    <input type="text" name="bulk_ccs[]" value="${acc.cc_emails || ''}" placeholder="CC emails..." class="w-full p-1.5 border rounded text-xs bg-white cc-input" oninput="updateCacheField(${globalIndex}, 'cc_emails', this.value)">
-                </td>
-                <td class="p-2.5 text-center">
-                    <button type="button" onclick="previewEmailBeforeSend('${acc.dm_id}', '')" class="px-2.5 py-1 bg-blue-50 text-blue-600 border border-blue-200 rounded text-[10px] font-bold hover:bg-blue-100">
-                        <i class="las la-eye"></i> Preview
-                    </button>
-                </td>
-            </tr>
-        `;
-    });
-
-    document.getElementById('bulkPaginationInfo').innerText = totalRows > 0 ? `Showing ${startIdx + 1} to ${endIdx} of ${totalRows} accounts` : `Showing 0 to 0 of 0 accounts`;
-}
 
 function changeBulkPage(direction) {
     saveCurrentBulkPageInputs();
@@ -1852,46 +1781,262 @@ function changeBulkRowsPerPage(val) {
     renderBulkReviewTable();
 }
 
-function sortBulkTable(field) {
-    if (currentBulkSortField === field) {
-        currentBulkSortDir = currentBulkSortDir === 'asc' ? 'desc' : 'asc';
-    } else {
-        currentBulkSortField = field;
-        currentBulkSortDir = 'asc';
+
+function openBulkEmailReviewModal(dmIds) {
+    // Kunin ang kasalukuyang naka-set na petsa sa filter bar sa itaas
+  let startDate = document.querySelector('input[name="start_date"]') ? document.querySelector('input[name="start_date"]').value : '';
+    let endDate = document.querySelector('input[name="end_date"]') ? document.querySelector('input[name="end_date"]').value : '';
+
+    fetch('list_dm.php?action=get_bulk_email_preview', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ 
+            dm_ids: dmIds, 
+            start_date: startDate, 
+            end_date: endDate 
+        })
+    })
+    .then(res => res.json())
+    .then(data => {
+        if (data.status === 'success') {
+            bulkAccountsCache = data.accounts;
+            renderBulkReviewTable();
+            document.getElementById('bulkSummaryCount').innerText = `${dmIds.length} accounts loaded for review`;
+            document.getElementById('bulkEmailReviewModal').style.display = 'flex';
+        } else {
+            alert("Error: " + data.message);
+        }
+    })
+    .catch(err => {
+        console.error("Bulk review error:", err);
+        alert("Failed to retrieve details for bulk review.");
+    });
+}
+
+function renderBulkReviewTable() {
+    const tbody = document.getElementById('bulkReviewTableBody');
+    tbody.innerHTML = '';
+    
+    updateBulkStatusCounters();
+
+    bulkAccountsCache.forEach((acc, idx) => {
+        let tr = document.createElement('tr');
+        tr.className = "hover:bg-slate-50/80 transition-colors border-b border-gray-100";
+        
+        let statusBadge = '';
+        let previewButton = '';
+        
+        let emailVal = acc.recipient_email ? acc.recipient_email.trim() : '';
+
+        if (!acc.has_data || !acc.has_dm || acc.dm_id == 0) {
+            statusBadge = '<span class="px-2.5 py-1 bg-gray-100 text-gray-600 rounded-lg text-[10px] font-bold block text-center border border-gray-200">⚪ No Data</span>';
+            previewButton = '<button type="button" disabled class="px-3 py-1.5 bg-gray-50 text-gray-300 rounded-xl text-xs font-bold cursor-not-allowed">Preview</button>';
+        } else if (emailVal === '' || !isValidEmail(emailVal)) {
+            // Mananatiling Missing Email hangga't blangko o hindi pa valid ang format ng email (kulang ang @ o domain)
+            statusBadge = '<span class="px-2.5 py-1 bg-rose-50 text-rose-700 rounded-lg text-[10px] font-bold block text-center border border-rose-200">🔴 Missing Email</span>';
+            previewButton = `<button type="button" onclick="previewEmailBeforeSend(${acc.dm_id}, '', '${acc.start_date || ''}', '${acc.end_date || ''}')" class="px-3 py-1.5 bg-blue-50 text-blue-600 hover:bg-blue-100 rounded-xl text-xs font-bold transition-all shadow-xs">Preview</button>`;
+        } else if (!acc.has_soa) {
+            statusBadge = '<span class="px-2.5 py-1 bg-amber-50 text-amber-700 rounded-lg text-[10px] font-bold block text-center border border-amber-200">🟡 Without SOA</span>';
+            previewButton = `<button type="button" onclick="previewEmailBeforeSend(${acc.dm_id}, '', '${acc.start_date || ''}', '${acc.end_date || ''}')" class="px-3 py-1.5 bg-blue-50 text-blue-600 hover:bg-blue-100 rounded-xl text-xs font-bold transition-all shadow-xs">Preview</button>`;
+        } else {
+            statusBadge = '<span class="px-2.5 py-1 bg-emerald-50 text-emerald-700 rounded-lg text-[10px] font-bold block text-center border border-emerald-200">🟢 Ready</span>';
+            previewButton = `<button type="button" onclick="previewEmailBeforeSend(${acc.dm_id}, '', '${acc.start_date || ''}', '${acc.end_date || ''}')" class="px-3 py-1.5 bg-blue-50 text-blue-600 hover:bg-blue-100 rounded-xl text-xs font-bold transition-all shadow-xs">Preview</button>`;
+        }
+        
+        let coverageDisplay = (acc.start_date && acc.end_date) ? 
+            `<span class="text-[11px] font-mono font-medium text-blue-600">${acc.start_date} to ${acc.end_date}</span>` : 
+            `<span class="text-[10px] text-gray-400 italic">As of current billing</span>`;
+
+        tr.innerHTML = `
+            <td class="p-3 text-center align-middle">${statusBadge}</td>
+            <td class="p-3 font-semibold text-gray-900 align-middle">${acc.account_number} <br><span class="text-[10px] text-gray-500 font-normal">${acc.company || ''}</span></td>
+            <td class="p-3 align-middle">${coverageDisplay}</td>
+            <td class="p-3 align-middle"><input type="email" value="${acc.recipient_email || ''}" oninput="updateRecipientEmailAndRefresh(${idx}, this.value)" class="w-full p-2 border border-gray-200 rounded-xl text-xs bg-white focus:ring-2 focus:ring-amber-500 focus:outline-none transition-all shadow-xs" placeholder="Enter recipient email..."></td>
+            <td class="p-3 align-middle"><input type="text" value="${acc.cc_emails || ''}" oninput="bulkAccountsCache[${idx}].cc_emails = this.value" class="w-full p-2 border border-gray-200 rounded-xl text-xs bg-white focus:ring-2 focus:ring-amber-500 focus:outline-none transition-all shadow-xs" placeholder="CC emails..."></td>
+            <td class="p-3 text-center align-middle">${previewButton}</td>
+        `;
+        tbody.appendChild(tr);
+    });
+}
+
+function updateRecipientEmailAndRefresh(index, value) {
+    bulkAccountsCache[index].recipient_email = value;
+    
+    let acc = bulkAccountsCache[index];
+    const tbody = document.getElementById('bulkReviewTableBody');
+    
+    if (tbody && tbody.rows[index]) {
+        const statusCell = tbody.rows[index].cells[0];
+        let statusBadge = '';
+        let emailVal = acc.recipient_email ? acc.recipient_email.trim() : '';
+        
+        if (!acc.has_data || !acc.has_dm || acc.dm_id == 0) {
+            statusBadge = '<span class="px-2.5 py-1 bg-gray-100 text-gray-600 rounded-lg text-[10px] font-bold block text-center border border-gray-200">⚪ No Data</span>';
+        } else if (emailVal === '' || !isValidEmail(emailVal)) {
+            statusBadge = '<span class="px-2.5 py-1 bg-rose-50 text-rose-700 rounded-lg text-[10px] font-bold block text-center border border-rose-200">🔴 Missing Email</span>';
+        } else if (!acc.has_soa) {
+            statusBadge = '<span class="px-2.5 py-1 bg-amber-50 text-amber-700 rounded-lg text-[10px] font-bold block text-center border border-amber-200">🟡 Without SOA</span>';
+        } else {
+            statusBadge = '<span class="px-2.5 py-1 bg-emerald-50 text-emerald-700 rounded-lg text-[10px] font-bold block text-center border border-emerald-200">🟢 Ready</span>';
+        }
+        
+        statusCell.innerHTML = statusBadge;
     }
+
+    updateBulkStatusCounters();
+}
+
+function isValidEmail(email) {
+    if (!email) return false;
+    // Simple regex para masigurong may username, @, domain, at extension (hal. .com)
+    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
+}
+
+function updateBulkStatusCounters() {
+    let readyCount = 0;
+    let missingEmailCount = 0;
+    let missingSoaCount = 0;
+    let noDataCount = 0;
+
+    bulkAccountsCache.forEach(acc => {
+        let emailVal = acc.recipient_email ? acc.recipient_email.trim() : '';
+        if (!acc.has_data || !acc.has_dm || acc.dm_id == 0) {
+            noDataCount++;
+        } else if (emailVal === '' || !isValidEmail(emailVal)) {
+            missingEmailCount++;
+        } else if (!acc.has_soa) {
+            missingSoaCount++;
+        } else {
+            readyCount++;
+        }
+    });
+
+    document.getElementById('countReady').innerText = readyCount;
+    document.getElementById('countMissingEmail').innerText = missingEmailCount;
+    document.getElementById('countMissingSOA').innerText = missingSoaCount;
+    document.getElementById('countNoData').innerText = noDataCount;
+}
+
+let currentSortColumn = '';
+let currentSortDirection = 'asc';
+
+function sortBulkTable(column) {
+    if (currentSortColumn === column) {
+        currentSortDirection = currentSortDirection === 'asc' ? 'desc' : 'asc';
+    } else {
+        currentSortColumn = column;
+        currentSortDirection = 'asc';
+    }
+
+    ['status', 'account', 'coverage'].forEach(col => {
+        const iconEl = document.getElementById(`sortIcon_${col}`);
+        if (iconEl) iconEl.innerHTML = '';
+    });
+
+    const activeIconEl = document.getElementById(`sortIcon_${column}`);
+    if (activeIconEl) {
+        activeIconEl.innerHTML = currentSortDirection === 'asc' ? '<i class="las la-sort-amount-up"></i>' : '<i class="las la-sort-amount-down"></i>';
+    }
+
+    bulkAccountsCache.sort((a, b) => {
+        let valA = '', valB = '';
+
+        if (column === 'status') {
+            valA = (!a.has_data || !a.has_dm || a.dm_id == 0) ? '3' : (!a.recipient_email || a.recipient_email.trim() === '' ? '0' : (!a.has_soa ? '1' : '2'));
+            valB = (!b.has_data || !b.has_dm || b.dm_id == 0) ? '3' : (!b.recipient_email || b.recipient_email.trim() === '' ? '0' : (!b.has_soa ? '1' : '2'));
+        } else if (column === 'account') {
+            valA = a.account_number || '';
+            valB = b.account_number || '';
+        } else if (column === 'coverage') {
+            valA = a.start_date || '';
+            valB = b.start_date || '';
+        }
+
+        if (valA < valB) return currentSortDirection === 'asc' ? -1 : 1;
+        if (valA > valB) return currentSortDirection === 'asc' ? 1 : -1;
+        return 0;
+    });
+
     renderBulkReviewTable();
 }
 
 function proceedBulkDispatchFromModal() {
-    saveCurrentBulkPageInputs();
-    closeBulkEmailReviewModal();
+    let validAccounts = bulkAccountsCache.filter(acc => acc.has_dm && acc.dm_id && acc.dm_id != 0);
 
-    let dmIds = [];
-    let recipients = [];
-    let ccs = [];
-
-    bulkAccountsCache.forEach(item => {
-        dmIds.push(item.dm_id);
-        recipients.push(item.recipient_email || '');
-        ccs.push(item.cc_emails || '');
-    });
-
-    if (dmIds.length === 0) {
-        alert("No accounts selected for dispatch.");
+    if (validAccounts.length === 0) {
+        alert("NO valid account number ");
         return;
     }
-    let startDate = document.querySelector('input[name="start_date"]') ? document.querySelector('input[name="start_date"]').value : '';
-    let endDate = document.querySelector('input[name="end_date"]') ? document.querySelector('input[name="end_date"]').value : '';
+
+    closeBulkEmailReviewModal();
+    
+    let dmIds = validAccounts.map(acc => acc.dm_id);
+    let recipients = validAccounts.map(acc => acc.recipient_email || '');
+    let ccs = validAccounts.map(acc => acc.cc_emails || '');
+    
+    // Gamitin ang raw ISO dates (YYYY-MM-DD) para tama ang kalkula ng email sa backend
+    let startDates = validAccounts.map(acc => acc.raw_start_date || '');
+    let endDates = validAccounts.map(acc => acc.raw_end_date || '');
 
     let formData = new FormData();
     formData.append('dm_ids', dmIds.join(','));
     formData.append('bulk_recipients', JSON.stringify(recipients));
     formData.append('bulk_ccs', JSON.stringify(ccs));
-    formData.append('start_date', startDate);
-    formData.append('end_date', endDate);
+    formData.append('bulk_start_dates', JSON.stringify(startDates));
+    formData.append('bulk_end_dates', JSON.stringify(endDates));
 
     executeDispatchFetch(formData, dmIds.length);
 }
+
+function previewEmailBeforeSend(dmId, itemIds = '') {
+    const startDate = document.querySelector('input[name="start_date"]') ? document.querySelector('input[name="start_date"]').value : '';
+    const endDate = document.querySelector('input[name="end_date"]') ? document.querySelector('input[name="end_date"]').value : '';
+
+    let cachedAccount = bulkAccountsCache.find(acc => acc.dm_id == dmId);
+    let accStart = (cachedAccount && cachedAccount.raw_start_date) ? cachedAccount.raw_start_date : startDate;
+    let accEnd = (cachedAccount && cachedAccount.raw_end_date) ? cachedAccount.raw_end_date : endDate;
+
+    let url = `list_dm.php?action=get_email_preview&dm_id=${dmId}&item_ids=${itemIds}&start_date=${accStart}&end_date=${accEnd}`;
+
+    fetch(url)
+    .then(res => res.json())
+    .then(data => {
+        if (data.status === 'success') {
+            document.getElementById('preview_dm_id').value = dmId;
+            document.getElementById('preview_item_ids').value = itemIds;
+            document.getElementById('preview_to').value = data.recipient_email;
+            document.getElementById('preview_cc').value = data.cc_emails || '';
+            document.getElementById('preview_subject').value = data.subject;
+            document.getElementById('preview_body').value = data.html_content;
+            document.getElementById('visualPreviewContainer').innerHTML = data.html_content;
+            switchPreviewMode('visual');
+
+            let attContainer = document.getElementById('preview_attachments_container');
+            attContainer.innerHTML = '';
+            
+            if (data.attachments && data.attachments.length > 0) {
+                data.attachments.forEach((att) => {
+                    attContainer.innerHTML += `
+                        <label class="flex items-center gap-2 py-0.5 px-1 hover:bg-gray-100 rounded cursor-pointer">
+                            <input type="checkbox" name="selected_attachments[]" value="${att.path}" checked class="rounded border-gray-300 text-blue-600">
+                            <span class="font-medium text-gray-700">${att.name}</span>
+                        </label>`;
+                });
+            } else {
+                attContainer.innerHTML = `<span class="text-gray-400 italic">No attachments found.</span>`;
+            }
+
+            document.getElementById('emailPreviewModal').style.display = 'flex';
+        } else {
+            alert("Error: " + data.message);
+        }
+    })
+    .catch(err => {
+        console.error("Preview fetch error:", err);
+        alert("Failed to fetch email preview details.");
+    });
+}
+
 
 function sendEmailFromBreakdown() {
     const breakdownModal = document.getElementById('breakdownModal');
@@ -1932,6 +2077,8 @@ function previewEmailBeforeSend(dmId, itemIds = '') {
             document.getElementById('preview_cc').value = data.cc_emails || '';
             document.getElementById('preview_subject').value = data.subject;
             document.getElementById('preview_body').value = data.html_content;
+            document.getElementById('visualPreviewContainer').innerHTML = data.html_content;
+switchPreviewMode('visual');
 
             let attContainer = document.getElementById('preview_attachments_container');
             attContainer.innerHTML = '';
@@ -1967,25 +2114,27 @@ function submitConfirmedEmail() {
     const form = document.getElementById('emailPreviewForm');
     const formData = new FormData(form);
 
-    // Kunin ang mga minanong type sa preview modal
     const recipientVal = document.getElementById('preview_to').value;
     const ccVal = document.getElementById('preview_cc').value;
     const dmId = document.getElementById('preview_dm_id').value;
+    const itemIds = document.getElementById('preview_item_ids').value;
+    
+    // Kunin ang mismong petsa na nakatakda sa preview hidden inputs
+    const previewStart = document.getElementById('preview_start_date').value;
+    const previewEnd = document.getElementById('preview_end_date').value;
 
-    // I-format para tanggapin ng backend handler kahit walang email mapping sa database
     formData.set('dm_ids', dmId);
+    formData.set('item_ids', itemIds); // Para mabasa ng backend kung anong partikular na items lang ang kinakalkula
     formData.set('bulk_recipients', JSON.stringify([recipientVal]));
     formData.set('bulk_ccs', JSON.stringify([ccVal]));
+    
+    // Ipasa ang eksaktong petsa na ginamit sa preview
+    formData.set('start_date', previewStart);
+    formData.set('end_date', previewEnd);
 
-    const mainStartDate = document.querySelector('input[name="start_date"]') ? document.querySelector('input[name="start_date"]').value : '';
-    const mainEndDate = document.querySelector('input[name="end_date"]') ? document.querySelector('input[name="end_date"]').value : '';
-
-    if (!formData.get('start_date') && mainStartDate) {
-        formData.append('start_date', mainStartDate);
-    }
-    if (!formData.get('end_date') && mainEndDate) {
-        formData.append('end_date', mainEndDate);
-    }
+    // Siguraduhing naipapasa ang na-customize na HTML body at subject
+    formData.set('bulk_subjects', JSON.stringify([document.getElementById('preview_subject').value]));
+    formData.set('bulk_bodies', JSON.stringify([document.getElementById('preview_body').value]));
 
     // Isama ang mga karagdagang in-upload na file kung meron man
     const fileInput = document.getElementById('additional_attachments');
@@ -1999,7 +2148,7 @@ function submitConfirmedEmail() {
     executeDispatchFetch(formData, 1);
 }
 
-function executeDispatchFetch(formData, countNum) {
+async function executeDispatchFetch(formData, countNum) {
     const progressModal = document.getElementById('dispatchProgressModal');
     const progressBar = document.getElementById('dispatchProgressBar');
     const progressText = document.getElementById('dispatchProgressText');
@@ -2007,46 +2156,99 @@ function executeDispatchFetch(formData, countNum) {
     const closeBtn = document.getElementById('closeDispatchModalBtn');
 
     if (progressModal) progressModal.style.display = 'flex';
-    if (progressBar) progressBar.style.width = '15%';
-    if (progressText) progressText.innerText = `Preparing email dispatch for ${countNum} account(s)...`;
-    if (progressLog) progressLog.innerHTML = `<div>Initializing connection and verifying recipients...</div>`;
+    if (progressBar) progressBar.style.width = '0%';
+    if (progressText) progressText.innerText = `Starting dispatch process for ${countNum} account(s)...`;
+    if (progressLog) progressLog.innerHTML = `<div>Initializing connection...</div>`;
     if (closeBtn) closeBtn.style.display = 'none';
 
-    fetch('send_bulk_email.php', {
-        method: 'POST',
-        body: formData
-    })
-    .then(response => {
-        if (!response.ok) { throw new Error(`HTTP error! Status: ${response.status}`); }
-        return response.json();
-    })
-    .then(data => {
-        if (progressBar) progressBar.style.width = '100%';
-        if (data.status === 'success') {
-            if (progressText) {
-                progressText.innerText = `Completed! Successful: ${data.success_count}, Failed: ${data.fail_count}`;
+    let dmIds = formData.get('dm_ids').split(',').filter(id => id.trim() !== '');
+    let recipients = JSON.parse(formData.get('bulk_recipients') || '[]');
+    let ccs = JSON.parse(formData.get('bulk_ccs') || '[]');
+    let startDates = JSON.parse(formData.get('bulk_start_dates') || '[]');
+    let endDates = JSON.parse(formData.get('bulk_end_dates') || '[]');
+    let subjects = JSON.parse(formData.get('bulk_subjects') || '[]');
+    let bodies = JSON.parse(formData.get('bulk_bodies') || '[]');
+
+    const chunkSize = 10; // Batching / Chunking bawat 10 accounts
+    let totalProcessed = 0;
+    let totalSuccess = 0;
+    let totalFail = 0;
+    let accumulatedReports = []; 
+
+    progressLog.innerHTML = '';
+
+    for (let i = 0; i < dmIds.length; i += chunkSize) {
+        let chunkDmIds = dmIds.slice(i, i + chunkSize);
+        let chunkRecipients = recipients.slice(i, i + chunkSize);
+        let chunkCcs = ccs.slice(i, i + chunkSize);
+        let chunkStartDates = startDates.slice(i, i + chunkSize);
+        let chunkEndDates = endDates.slice(i, i + chunkSize);
+        let chunkSubjects = subjects.slice(i, i + chunkSize);
+        let chunkBodies = bodies.slice(i, i + chunkSize);
+
+        let isLastBatch = (i + chunkSize >= dmIds.length) ? '1' : '0';
+
+        let chunkFormData = new FormData();
+        chunkFormData.append('dm_ids', chunkDmIds.join(','));
+        chunkFormData.append('bulk_recipients', JSON.stringify(chunkRecipients));
+        chunkFormData.append('bulk_ccs', JSON.stringify(chunkCcs));
+        chunkFormData.append('bulk_start_dates', JSON.stringify(chunkStartDates));
+        chunkFormData.append('bulk_end_dates', JSON.stringify(chunkEndDates));
+        chunkFormData.append('bulk_subjects', JSON.stringify(chunkSubjects));
+        chunkFormData.append('bulk_bodies', JSON.stringify(chunkBodies));
+        chunkFormData.append('is_final_batch', isLastBatch);
+        chunkFormData.append('accumulated_reports', JSON.stringify(accumulatedReports));
+
+        let fileInput = document.getElementById('additional_attachments');
+        if (fileInput && fileInput.files.length > 0 && i === 0) {
+            for (let f = 0; f < fileInput.files.length; f++) {
+                chunkFormData.append('additional_attachments[]', fileInput.files[f]);
             }
-            let logHtml = '';
-            if (data.success_details && data.success_details.length > 0) {
-                data.success_details.forEach(succ => { logHtml += `<div class="text-emerald-400">+ ${succ}</div>`; });
-            }
-            if (data.failed_details && data.failed_details.length > 0) {
-                data.failed_details.forEach(err => { logHtml += `<div class="text-rose-400">- ${err}</div>`; });
-            }
-            if (progressLog) progressLog.innerHTML = logHtml;
-        } else {
-            if (progressText) progressText.innerText = "Dispatch encountered an error.";
-            if (progressLog) progressLog.innerHTML = `<div class="text-rose-400">Error: ${data.message}</div>`;
         }
-        if (closeBtn) closeBtn.style.display = 'block';
-    })
-    .catch(error => {
-        console.error('Email Dispatch Error:', error);
-        if (progressBar) progressBar.style.width = '100%';
-        if (progressText) progressText.innerText = "An unexpected error occurred.";
-        if (progressLog) progressLog.innerHTML = `<div class="text-rose-400">Fetch Exception: ${error.message}</div>`;
-        if (closeBtn) closeBtn.style.display = 'block';
-    });
+
+        try {
+            let response = await fetch('send_bulk_email.php', {
+                method: 'POST',
+                body: chunkFormData
+            });
+
+            if (!response.ok) throw new Error(`HTTP error! Status: ${response.status}`);
+
+            let data = await response.json();
+
+            if (data.status === 'success') {
+                totalSuccess += data.success_count || 0;
+                totalFail += data.fail_count || 0;
+                totalProcessed += chunkDmIds.length;
+
+                if (data.accumulated_reports) {
+                    accumulatedReports = data.accumulated_reports;
+                }
+
+                let percent = Math.round((totalProcessed / dmIds.length) * 100);
+                if (progressBar) progressBar.style.width = percent + '%';
+                if (progressText) progressText.innerText = `Processed: ${totalProcessed} / ${dmIds.length} accounts (${percent}%)`;
+
+                const progressPercentEl = document.getElementById('dispatchProgressPercent');
+                if (progressPercentEl) progressPercentEl.innerText = percent + '%';
+
+                if (data.success_details) {
+                    data.success_details.forEach(succ => { progressLog.innerHTML += `<div class="text-emerald-400">+ ${succ}</div>`; });
+                }
+                if (data.failed_details) {
+                    data.failed_details.forEach(err => { progressLog.innerHTML += `<div class="text-rose-400">- ${err}</div>`; });
+                }
+                progressLog.scrollTop = progressLog.scrollHeight;
+            } else {
+                progressLog.innerHTML += `<div class="text-rose-400">Batch error: ${data.message}</div>`;
+            }
+        } catch (error) {
+            progressLog.innerHTML += `<div class="text-rose-400">Exception: ${error.message}</div>`;
+        }
+    }
+
+    if (progressText) progressText.innerText = `Completed! Success: ${totalSuccess}, Failed: ${totalFail}`;
+    if (closeBtn) closeBtn.style.display = 'block';
 }
 
 function closeDispatchModal() {
@@ -2129,7 +2331,7 @@ function downloadEmailCsvTemplate() {
 function processPasteEmailHub() {
     const rawText = document.getElementById('pasteAccountInput').value;
     if (!rawText.trim()) {
-        alert("Mangyaring mag-lagay ng account numbers o emails.");
+        alert("Please enter account numbers or emails.");
         return;
     }
 
@@ -2144,7 +2346,7 @@ function processPasteEmailHub() {
             closeEmailHubModal();
             openBulkEmailReviewModal(data.dm_ids);
         } else {
-            alert("Walang nakitang tumutugmang account sa iyong listahan.");
+            alert("No matching account found in your list.");
         }
     })
     .catch(err => console.error("Error:", err));
@@ -2184,7 +2386,31 @@ function updateCacheFieldAndRefreshBadge(index, field, value, inputElement) {
         }
     }
 }
+function switchPreviewMode(mode) {
+    const visualContainer = document.getElementById('visualPreviewContainer');
+    const codeTextarea = document.getElementById('preview_body');
+    const btnVisual = document.getElementById('btnVisualTab');
+    const btnCode = document.getElementById('btnCodeTab');
 
+    if (mode === 'visual') {
+        visualContainer.style.display = 'block';
+        codeTextarea.classList.add('hidden');
+        btnVisual.className = "px-3 py-1 bg-white shadow-xs text-xs font-bold text-blue-600 rounded-md transition-all";
+        btnCode.className = "px-3 py-1 text-xs font-bold text-gray-600 rounded-md transition-all";
+        visualContainer.innerHTML = codeTextarea.value;
+    } else {
+        visualContainer.style.display = 'none';
+        codeTextarea.classList.remove('hidden');
+        btnCode.className = "px-3 py-1 bg-white shadow-xs text-xs font-bold text-blue-600 rounded-md transition-all";
+        btnVisual.className = "px-3 py-1 text-xs font-bold text-gray-600 rounded-md transition-all";
+    }
+}
+
+function syncVisualPreviewFromCode() {
+    const codeTextarea = document.getElementById('preview_body');
+    const visualContainer = document.getElementById('visualPreviewContainer');
+    visualContainer.innerHTML = codeTextarea.value;
+}
 </script>
 
 <?php

@@ -15,6 +15,7 @@ header('Content-Type: application/json');
 require_once 'config.php'; 
 require_once 'fpdf/fpdf.php';
 require_once 'pdf_generator.php'; 
+require_once 'email_template.php';
 
 if (isset($conn)) {
     $pdo = $conn;
@@ -50,8 +51,24 @@ $bulk_end_dates   = isset($_POST['bulk_end_dates']) ? json_decode($_POST['bulk_e
 $bulk_subjects    = isset($_POST['bulk_subjects']) ? json_decode($_POST['bulk_subjects'], true) : [];
 $bulk_bodies      = isset($_POST['bulk_bodies']) ? json_decode($_POST['bulk_bodies'], true) : [];
 
+// Single preview form fallback inputs (kapag galing sa Single Email Preview modal)
+$single_recipient = isset($_POST['recipient_email']) ? trim($_POST['recipient_email']) : '';
+$single_cc        = isset($_POST['cc_emails']) ? trim($_POST['cc_emails']) : '';
+$single_subject   = isset($_POST['subject']) ? trim($_POST['subject']) : '';
+$single_body      = isset($_POST['html_content']) ? trim($_POST['html_content']) : '';
+
 $global_start     = isset($_POST['start_date']) ? trim($_POST['start_date']) : '';
 $global_end       = isset($_POST['end_date']) ? trim($_POST['end_date']) : '';
+$is_final_batch   = isset($_POST['is_final_batch']) ? trim($_POST['is_final_batch']) : '1';
+
+// LIGTAS NA PAGKUHA NG ACCUMULATED REPORTS (Para maiwasan ang HTTP 500 Error)
+$input_accumulated_reports = [];
+if (isset($_POST['accumulated_reports']) && !empty($_POST['accumulated_reports'])) {
+    $decoded = json_decode($_POST['accumulated_reports'], true);
+    if (is_array($decoded)) {
+        $input_accumulated_reports = $decoded;
+    }
+}
 
 // Kunin ang item_ids mula sa POST kung galing sa breakdown modal
 $item_ids_input = isset($_POST['item_ids']) ? trim($_POST['item_ids']) : '';
@@ -81,13 +98,25 @@ foreach ($dm_ids as $index => $dm_id) {
 
     $account_number = $dm['account_number'];
     
-    // Kunin ang per-account custom overrides kung meron
-    $recipient_email = isset($bulk_recipients[$index]) ? trim($bulk_recipients[$index]) : '';
-    $cc_emails       = isset($bulk_ccs[$index]) ? trim($bulk_ccs[$index]) : '';
+    // Kunin ang per-account custom overrides (Priority: Bulk Array -> Single Form Fallback -> Database)
+    $recipient_email = isset($bulk_recipients[$index]) && !empty($bulk_recipients[$index]) 
+        ? trim($bulk_recipients[$index]) 
+        : (!empty($single_recipient) ? $single_recipient : '');
+        
+    $cc_emails       = isset($bulk_ccs[$index]) && !empty($bulk_ccs[$index]) 
+        ? trim($bulk_ccs[$index]) 
+        : (!empty($single_cc) ? $single_cc : '');
+        
     $custom_start    = isset($bulk_start_dates[$index]) ? trim($bulk_start_dates[$index]) : $global_start;
     $custom_end      = isset($bulk_end_dates[$index]) ? trim($bulk_end_dates[$index]) : $global_end;
-    $custom_subject  = isset($bulk_subjects[$index]) ? trim($bulk_subjects[$index]) : '';
-    $custom_body     = isset($bulk_bodies[$index]) ? trim($bulk_bodies[$index]) : '';
+    
+    $custom_subject  = isset($bulk_subjects[$index]) && !empty($bulk_subjects[$index]) 
+        ? trim($bulk_subjects[$index]) 
+        : (!empty($single_subject) ? $single_subject : '');
+        
+    $custom_body     = isset($bulk_bodies[$index]) && !empty($bulk_bodies[$index]) 
+        ? trim($bulk_bodies[$index]) 
+        : (!empty($single_body) ? $single_body : '');
     
     $recipient_name  = '';
     $employee_id     = '';
@@ -97,24 +126,20 @@ foreach ($dm_ids as $index => $dm_id) {
     $email_stmt->execute([$account_number]);
     $account_email_row = $email_stmt->fetch();
 
-    // Kung walang laman ang galing sa modal, saka natin gamitin ang email mula sa database[cite: 11]
     if (empty($recipient_email)) {
         if ($account_email_row && !empty($account_email_row['email_address'])) {
             $recipient_email = trim($account_email_row['email_address']);
         }
     }
 
-    // Kunin ang full name kung available sa database[cite: 7, 11]
     if ($account_email_row && !empty($account_email_row['full_name'])) {
         $recipient_name = $account_email_row['full_name'];
     }
 
-    // Kunin ang employee_id kung available sa database[cite: 7, 11]
     if ($account_email_row && !empty($account_email_row['employee_id'])) {
         $employee_id = $account_email_row['employee_id'];
     }
 
-    // 3. Kung pagkatapos nito ay wala pa ring email, mag-fail[cite: 11]
     if (empty($recipient_email)) {
         $fail_count++;
         $error_msg = "Account {$account_number} (DM ID: {$dm_id}) - Failed: No email address provided or mapped.";
@@ -137,8 +162,8 @@ foreach ($dm_ids as $index => $dm_id) {
         continue;
     }
 
-    // 3.5 Pull details from debit_memo_items gamit ang custom date range kung naka-specify[cite: 11]
-   $itemQuery = "SELECT * FROM debit_memo_items WHERE dm_id = ?";
+    // 3.5 Pull details from debit_memo_items gamit ang custom date range[cite: 11]
+    $itemQuery = "SELECT * FROM debit_memo_items WHERE dm_id = ?";
     $itemParams = [$dm_id];
 
     if (!empty($breakdown_item_ids)) {
@@ -161,7 +186,7 @@ foreach ($dm_ids as $index => $dm_id) {
 
     $total_final_dm = 0.00;
     $total_approved_plan = 0.00;
-    $approved_plan_set = false;
+    $total_current_charges = 0.00;
     $mobile_number_val = 'N/A';
     $telco_val = 'N/A';
     
@@ -170,13 +195,16 @@ foreach ($dm_ids as $index => $dm_id) {
 
     if (!empty($items)) {
         foreach ($items as $it) {
+            // Kunin at i-sum ang current charges
+            $curr_charge_v = isset($it['current_charges']) ? (float)$it['current_charges'] : 0.00;
+            $total_current_charges += $curr_charge_v;
+
             $dm_v = isset($it['debit_memo_details']) ? (float)$it['debit_memo_details'] : 0.00;
             $ao_v = isset($it['add_ons']) ? (float)$it['add_ons'] : 0.00;
             $total_final_dm += isset($it['final_dm']) ? (float)$it['final_dm'] : ($dm_v - $ao_v);
             
-            if (!$approved_plan_set && isset($it['approved_plan'])) {
-                $total_approved_plan = (float)$it['approved_plan'];
-                $approved_plan_set = true;
+           if (isset($it['approved_plan'])) {
+                $total_approved_plan += (float)$it['approved_plan'];
             }
             if (!empty($it['mobile_number'])) $mobile_number_val = $it['mobile_number'];
             if (!empty($it['telco'])) $telco_val = $it['telco'];
@@ -194,13 +222,9 @@ foreach ($dm_ids as $index => $dm_id) {
         $data_coverage = "As of current billing";
     }
 
-    // Gamitin ang employee_id kung mayroon, kung wala ay mag-fallback sa account_number o mobile number
-    $identifier = !empty($employee_id) ? $employee_id : (!empty($mobile_number_val) && $mobile_number_val !== 'N/A' ? $mobile_number_val : $account_number);
-    $account_name_display = "{$recipient_name} / {$identifier}";
-
-    $approved_plan_display = number_format($total_approved_plan, 2, '.', ',');
+   $approved_plan_display = '₱ ' . number_format($total_approved_plan, 2, '.', ',');
+    $current_charges_display = '₱ ' . number_format($total_current_charges, 2, '.', ','); // <-- Gamitin na ang tamang total current charges
     $final_dm_val = number_format($total_final_dm, 2, '.', ',');
-
     // 4. Generate Debit Memo PDF attachment
     $pdf_result = createDebitMemoPDF($dm_id, $pdo, $breakdown_item_ids, $custom_start, $custom_end);
 
@@ -229,73 +253,26 @@ foreach ($dm_ids as $index => $dm_id) {
 
     $filename = 'Debit_Memo_' . $acc_num . '.pdf';
     
-    // Gamitin ang custom subject kung mayroon, kung wala ay default
-    $subject = !empty($custom_subject) ? $custom_subject : "Statement of Account/Excess Charges - " . $account_number;
+    // ----------------------------------------------------
+    // EMAIL TEMPLATE INTEGRATION
+    // ----------------------------------------------------
+    $company_name = $dm['company'] ?? $recipient_name;
+   // $current_charges_display = '₱ ' . number_format($total_final_dm, 2, '.', ',');
 
-    // Gamitin ang custom body kung mayroon, kung wala ay default HTML format na kapareho sa Email Hub
-    if (!empty($custom_body)) {
-        $html_content = $custom_body;
-    } else {
-        $html_content = "
-<div style='font-family: Arial, sans-serif; font-size: 11pt; color: #333; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e2e8f0; border-radius: 8px; background-color: #ffffff;'>
-    
-    <!-- Header / Branding -->
-    <div style='border-bottom: 2px solid #0f172a; padding-bottom: 12px; margin-bottom: 20px;'>
-        <h2 style='color: #0f172a; font-size: 16px; margin: 0;'>IT Telco Admin Team</h2>
-        <p style='font-size: 10px; color: #64748b; margin: 2px 0 0 0;'>Statement of Account & Debit Memo Notification</p>
-    </div>
-    
-    <p>Dear Ma'am/Sir,</p>
-    <p>Please find attached your Statement of Account (SOA) reflecting the applicable excess charges, with details below:</p>
-    
-    <!-- Summary Details Box / Card -->
-    <div style='background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 15px; margin: 15px 0;'>
-        <h3 style='font-size: 12px; color: #1e293b; margin-top: 0; margin-bottom: 10px; text-transform: uppercase; border-bottom: 1px solid #cbd5e1; padding-bottom: 5px;'>Summary Details</h3>
-        <table style='width: 100%; font-size: 11pt; border-collapse: collapse;'>
-            <tr>
-                <td style='padding: 6px 0; color: #64748b; width: 45%;'>Period Covered:</td>
-                <td style='padding: 6px 0; font-weight: bold; color: #0f172a;'>{$data_coverage}</td>
-            </tr>
-            <tr>
-                <td style='padding: 6px 0; color: #64748b;'>Account Name:</td>
-                <td style='padding: 6px 0; font-weight: bold; color: #0f172a;'>{$account_name_display}</td>
-            </tr>
-            
-            <tr>
-                <td style='padding: 6px 0; color: #64748b;'>Approved Plan (Company Share):</td>
-                <td style='padding: 6px 0; font-weight: bold; color: #0f172a;'>{$approved_plan_display}</td>
-            </tr>
-            <tr style='border-top: 1px solid #e2e8f0;'>
-                <td style='padding: 10px 0 4px 0; color: #0f172a; font-weight: bold;'>Total Excess Charges:</td>
-                <td style='padding: 10px 0 4px 0; font-weight: bold; color: #e11d48; font-size: 12pt;'>₱ {$final_dm_val}</td>
-            </tr>
-        </table>
-    </div>
+    $template = getEmailTemplate(
+        $account_number, 
+        $company_name, 
+        $recipient_name, 
+        $employee_id, 
+        $mobile_number_val, 
+        $data_coverage, 
+        $approved_plan_display, 
+        $current_charges_display, 
+        $final_dm_val
+    );
 
-    <p style='font-size: 10pt; color: #475569;'>This statement outlines the specific breakdown and descriptions of the charges applied to your telco account for your information.</p>
-    
-    <!-- Notice Box -->
-    <div style='background-color: #fffbeb; border-left: 4px solid #f59e0b; padding: 10px; margin: 15px 0; font-size: 10pt; color: #92400e; border-radius: 0 4px 4px 0;'>
-        <b>Note:</b> This email provides a detailed breakdown and description of your telco account charges for your reference. If your excess charges is zero (₱0.00), no action is required and you may disregard this notification.
-    </div>
-
-    <!-- Footer / Signature Section -->
-    <div style='margin-top: 30px; padding-top: 15px; border-top: 2px solid #e2e8f0; background-color: #f8fafc; padding: 12px; border-radius: 6px;'>
-        <p style='font-size: 10pt; color: #334155; margin: 0 0 10px 0; text-align: center;'>
-          Please review the attached SOA for full details.
-        </p>
-        <div style='background-color: #fef2f2; border: 1px solid #fecaca; padding: 8px 12px; border-radius: 4px; margin-bottom: 10px; text-align: center;'>
-            <p style='font-size: 9.5pt; color: #991b1b; margin: 0; font-weight: bold;'>
-                ⚠ This is an automated email, please do not reply.
-            </p>
-        </div>
-        <p style='font-size: 8.5pt; color: #64748b; margin: 0;'>
-            Thank you,<br>
-            <span style='color: #2563eb; font-size: 9pt; font-weight: bold;'>IT Telco Admin Team</span>
-        </p>
-    </div>
-</div>";
-    }
+    $subject = !empty($custom_subject) ? $custom_subject : $template['subject'];
+    $html_content = !empty($custom_body) ? $custom_body : $template['body'];
 
     $attachments = [
         [
@@ -304,6 +281,19 @@ foreach ($dm_ids as $index => $dm_id) {
             'type' => 'application/pdf'
         ]
     ];
+
+    if (!empty($template['attachments'])) {
+        foreach ($template['attachments'] as $att_path) {
+            if (file_exists($att_path)) {
+                $attachments[] = [
+                    'path' => $att_path,
+                    'name' => basename($att_path),
+                    'type' => 'application/pdf'
+                ];
+            }
+        }
+    }
+
     // 5. Dynamically attach matching PDFs from Google Drive[cite: 11]
     $soa_query = "
         SELECT DISTINCT pdf.filename, pdf.file_link 
@@ -404,8 +394,22 @@ foreach ($dm_ids as $index => $dm_id) {
     }
 }
 
-// 7. Dispatch Summary Report to Admins[cite: 11]
-send_dispatch_report_to_admins($pdo, $admin_report_items, $success_count, $fail_count);
+// Pagsamahin ang mga naunang batch reports at ang kasalukuyang batch reports
+$all_accumulated_reports = array_merge($input_accumulated_reports, $admin_report_items);
+
+// 7. Dispatch Summary Report to Admins kapag huling batch na[cite: 11]
+if ($is_final_batch === '1') {
+    $total_success_all = 0;
+    $total_fail_all = 0;
+    foreach ($all_accumulated_reports as $rep) {
+        if ($rep['status'] === 'SUCCESS') {
+            $total_success_all++;
+        } else {
+            $total_fail_all++;
+        }
+    }
+    send_dispatch_report_to_admins($pdo, $all_accumulated_reports, $total_success_all, $total_fail_all);
+}
 
 $detailed_message = "Bulk PDF dispatch completed. Successful: {$success_count}, Failed: {$fail_count}.";
 if (!empty($success_items)) {
@@ -421,8 +425,10 @@ echo json_encode([
     'success_count' => $success_count,
     'fail_count' => $fail_count,
     'success_details' => $success_items,
-    'failed_details' => $failed_items
+    'failed_details' => $failed_items,
+    'accumulated_reports' => $all_accumulated_reports // <--- Ipinababalik pabalik sa JS para sa susunod na batch
 ]);
+exit;
 
 // --- Helper Functions ---
 
@@ -546,63 +552,14 @@ function send_dispatch_report_to_admins($pdo, $report_items, $success_count, $fa
     if (file_exists($csv_temp_path)) @unlink($csv_temp_path);
 }
 
-/*function get_or_download_pdf_path($filename, $pdo = null) {
-    $filename = basename($filename);
-    $temp_file_path = sys_get_temp_dir() . '/' . md5($filename) . '.pdf';
-      
-    if (file_exists($temp_file_path) && filesize($temp_file_path) > 100) return $temp_file_path;
-    usleep(500000); 
-      
-    if ($pdo) {
-        try {
-            $stmtFile = $pdo->prepare("SELECT file_link FROM pdf_extracted_details WHERE filename = ? LIMIT 1");
-            $stmtFile->execute([$filename]);
-            if ($fRow = $stmtFile->fetch(PDO::FETCH_ASSOC)) {
-                $link = $fRow['file_link'] ?? '';
-                if (!empty($link)) {
-                    $gdrive_id = '';
-                    if (preg_match('/\/d\/([a-zA-Z0-9_-]+)/', $link, $m)) $gdrive_id = $m[1];
-                    elseif (preg_match('/[?&]id=([a-zA-Z0-9_-]+)/', $link, $m)) $gdrive_id = $m[1];
-                      
-                    if (!empty($gdrive_id)) {
-                        $download_url = "https://drive.google.com/uc?export=download&id=" . $gdrive_id;
-                        $ch = curl_init();
-                        curl_setopt($ch, CURLOPT_URL, $download_url);
-                        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-                        curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
-                        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
-                        curl_setopt($ch, CURLOPT_USERAGENT, 'Mozilla/5.0');
-                        curl_setopt($ch, CURLOPT_TIMEOUT, 30);
-                        $response = curl_exec($ch);
-                          
-                        if (strpos($response, 'confirm=') !== false && preg_match('/confirm=([a-zA-Z0-9_\-]+)/', $response, $matches)) {
-                            curl_setopt($ch, CURLOPT_URL, "https://drive.google.com/uc?export=download&confirm=" . $matches[1] . "&id=" . $gdrive_id);
-                            $response = curl_exec($ch);
-                        }
-                        curl_close($ch);
-                          
-                        if (!empty($response) && strlen($response) > 500 && stripos($response, '<html') === false) {
-                            file_put_contents($temp_file_path, $response);
-                            if (file_exists($temp_file_path) && filesize($temp_file_path) > 100) return $temp_file_path;
-                        }
-                    }
-                }
-            }
-        } catch (Exception $e) {}
-    }
-    return '';
-}*/
-
 function get_or_download_pdf_path($filename, $pdo = null) {
     $filename = basename($filename);
     $temp_file_path = sys_get_temp_dir() . '/' . md5($filename) . '.pdf';
       
-    // 1. Check muna kung may existing cache sa system temp folder
     if (file_exists($temp_file_path) && filesize($temp_file_path) > 100) {
         return $temp_file_path;
     }
 
-    // 2. Hanapin muna sa Local Server Uploads Directory (Dahil may local copies na tayo)
     if ($pdo) {
         try {
             $stmtLocal = $pdo->prepare("SELECT file_path FROM pdf_extracted_details WHERE filename = ? LIMIT 1");
@@ -612,7 +569,6 @@ function get_or_download_pdf_path($filename, $pdo = null) {
                 if (!empty($db_sub_path)) {
                     $local_server_path = __DIR__ . '/uploads/' . $db_sub_path . '/' . $filename;
                     if (file_exists($local_server_path) && filesize($local_server_path) > 100) {
-                        // Kopyahin muna pansamantala sa temp directory o direktang gamitin ang local path
                         @copy($local_server_path, $temp_file_path);
                         if (file_exists($temp_file_path) && filesize($temp_file_path) > 100) {
                             return $temp_file_path;
@@ -623,7 +579,6 @@ function get_or_download_pdf_path($filename, $pdo = null) {
         } catch (Exception $e) {}
     }
 
-    // 3. Fallback: Kung wala sa local server, mag-download via Google Drive Link mula sa Database
     usleep(500000); 
       
     if ($pdo) {
