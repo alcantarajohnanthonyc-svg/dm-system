@@ -4,11 +4,11 @@ define('ALLOW_ACCESS', true);
 ini_set('display_errors', 1);
 ini_set('display_startup_errors', 1);
 error_reporting(E_ALL);
-//mysqli_report(MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT);
 
 try {
     require_once 'config.php';
     require_once 'main.php';
+    require_once 'email_template.php'; // Sinama ang email_template.php
 
     if (file_exists(__DIR__ . '/vendor/autoload.php')) {
         require_once __DIR__ . '/vendor/autoload.php';
@@ -87,41 +87,13 @@ try {
         return !empty($current_mobile) && strtoupper(trim($current_mobile)) !== 'N/A' ? $current_mobile : 'N/A';
     }
 
-    function generate_email_body_html($company, $assignee_name, $account_number, $billing_info, $filename = '', $mobile_number = 'N/A') {
-        $amount_due = $billing_info['amount_due'] ?? '0.00';
-        $period = !empty($billing_info['billing_period']) && $billing_info['billing_period'] !== 'N/A' ? $billing_info['billing_period'] : 'Current Period';
-        $account_display = !empty($company) && $company !== 'N/A' ? $company : $account_number;
-        $mobile_display = !empty($mobile_number) && $mobile_number !== 'N/A' ? $mobile_number : 'N/A';
-        
-        $safe_account_num = '<span style="color: #2563eb; text-decoration: none;">' . htmlspecialchars($account_number) . '</span>';
-
-        return '<!DOCTYPE html><html><body style="font-family: Arial, sans-serif; color: #333333; line-height: 1.6; padding: 20px;">'
-            . '<div style="max-width: 600px; background: #ffffff; padding: 15px;">'
-            . '<p>Dear Ma\'am/Sir,</p>'
-            . '<p>Please find attached your Statement of Account (SOA) reflecting the applicable Debit Memo charges, with details below:</p>'
-            . '<div style="background: #f9fafb; border-left: 4px solid #2563eb; padding: 15px; margin: 20px 0; border-radius: 4px;">'
-            . '<p style="margin: 0 0 10px 0; font-weight: bold; color: #1f2937;">Summary Details:</p>'
-            . '<p style="margin: 0 0 5px 0;"><strong>Period Covered:</strong> ' . htmlspecialchars($period) . '</p>'
-            . '<p style="margin: 0 0 5px 0;"><strong>Account Name:</strong> ' . htmlspecialchars($account_display) . ' (' . $safe_account_num . ')</p>'
-            . '<p style="margin: 0 0 5px 0;"><strong>Mobile Number:</strong> ' . htmlspecialchars($mobile_display) . '</p>'
-            . '<p style="margin: 0;"><strong>Total Chargeable Amount:</strong> ' . htmlspecialchars($amount_due) . '</p>'
-            . '</div>'
-            . '<p>This statement outlines the specific breakdown and descriptions of the charges applied to your telco account.</p>'
-            . '<p>Please review the attached SOA (' . htmlspecialchars($filename) . ') for full details.</p>'
-            . '<p>If you have any questions or require clarification regarding these charges, please reach out to the IT Telco Admin team thru <a href="mailto:kmmontano@bounty.com.ph" style="color: #2563eb; text-decoration: underline;">kmmontano@bounty.com.ph</a> within 24-48 hours upon receipt of this email.</p>'
-            . '<p style="margin-top: 25px;">Thank you,</p>'
-            . '</div></body></html>';
-    }
-
    function send_smtp_mail_with_html_body($to, $subject, $filepath, $filename, $html_content, $cc = '', $extra_attachment_path = '', $extra_attachment_name = '') {
     $smtp_host = 'tcp://smtp.gmail.com'; 
     $smtp_port = 587;                    
     
-    // 1. Credentials para sa SMTP Authentication (Kasalukuyang gumaganang account mo)
     $auth_user = 'jcalcantara@bounty.com.ph';
     $auth_pass = str_replace(' ', '', 'kowg yhnc dryb uumq'); 
 
-    // 2. Sender Details na gustong ipatampok bilang Sender
     $from_email = 'testgrp@bounty.com.ph';
     $from_name  = 'Admin Telco';
 
@@ -183,7 +155,6 @@ try {
     
     stream_socket_enable_crypto($socket, true, STREAM_CRYPTO_METHOD_TLS_CLIENT);
     
-    // Gagamitin ang $auth_user at $auth_pass para maka-pass sa login ng Gmail
     if (!$run_cmd("EHLO " . $_SERVER['SERVER_NAME'], 250) || 
         !$run_cmd("AUTH LOGIN", 334) || 
         !$run_cmd(base64_encode($auth_user), 334) || 
@@ -240,16 +211,11 @@ function send_dispatch_report_to_admin($all_results_items) {
                     }
                 }
             }
-        } catch (Exception $e) {
-            // Error handling
-        }
+        } catch (Exception $e) {}
     }
     
-    if (empty($admin_emails)) {
-        return;
-    }
+    if (empty($admin_emails)) return;
 
-    $admin_email_str = implode(', ', $admin_emails);
     $current_date = date('Y-m-d H:i:s');
     $subject = "Statement Dispatch Report (Success & Failed) - " . date('Y-m-d');
 
@@ -257,7 +223,6 @@ function send_dispatch_report_to_admin($all_results_items) {
     $csv_filepath = sys_get_temp_dir() . '/' . $csv_filename;
     
     $fp = fopen($csv_filepath, 'w');
-    // 1. Dinagdag ang 'Sent By' pagkatapos ng 'PDF Link' sa CSV headers
     fputcsv($fp, ['Timestamp', 'Status', 'Account Number', 'Telco', 'Mobile Number', 'Email', 'Billing Period', 'Total Charge', 'Filename', 'PDF Link', 'Sent By', 'Message']);
     
     foreach ($all_results_items as $item) {
@@ -272,7 +237,7 @@ function send_dispatch_report_to_admin($all_results_items) {
             $item['total_charge'],
             $item['filename'],
             $item['file_link'],
-            $sender_fullname, // Nilagyan ng session full name value
+            $sender_fullname,
             $item['message']
         ]);
     }
@@ -282,40 +247,8 @@ function send_dispatch_report_to_admin($all_results_items) {
     $html_body .= '<p style="font-size: 14px; margin-bottom: 15px;">Good day Ma\'am/Sir,</p>';
     $html_body .= '<h2 style="color: #2563eb;">Statement Email Dispatch Report</h2>';
     $html_body .= '<p>Here is the summary of the email dispatches conducted on <strong>' . htmlspecialchars($current_date) . '</strong> by <strong>' . htmlspecialchars($sender_fullname) . '</strong>. Attached to this email is a CSV file containing the full details.</p>';
-
-    $html_body .= '<table border="1" cellpadding="8" cellspacing="0" style="border-collapse: collapse; width: 100%; font-size: 11px; margin-top: 15px;">';
-    // 2. Dinagdag ang 'Sent By' column header sa HTML table pagkatapos ng Filename (Link)
-    $html_body .= '<tr style="background-color: #f3f4f6;"><th>Status</th><th>Date</th><th>Account</th><th>Telco</th><th>Mobile Number</th><th>Email</th><th>Billing Period</th><th>Total Charge</th><th>Filename (Link)</th><th>Sent By</th></tr>';
-
-    foreach ($all_results_items as $item) {
-        $status_color = ($item['status'] === 'success') ? 'color: #059669; font-weight: bold;' : 'color: #dc2626; font-weight: bold;';
-        
-        $file_display_name = htmlspecialchars($item['filename']);
-        $target_link = !empty($item['file_link']) ? $item['file_link'] : '#';
-        if (!empty($target_link) && $target_link !== '#') {
-            $filename_html = '<a href="' . htmlspecialchars($target_link) . '" target="_blank" style="color: #2563eb; text-decoration: underline;">' . $file_display_name . '</a>';
-        } else {
-            $filename_html = $file_display_name;
-        }
-
-        $html_body .= '<tr>';
-        $html_body .= '<td style="' . $status_color . '">' . strtoupper($item['status']) . '</td>';
-        $html_body .= '<td>' . htmlspecialchars($item['date']) . '</td>';
-        $html_body .= '<td>' . htmlspecialchars($item['account']) . '</td>';
-        $html_body .= '<td>' . htmlspecialchars($item['telco'] ?? 'Unknown') . '</td>';
-        $html_body .= '<td>' . htmlspecialchars($item['mobile_number'] ?? 'N/A') . '</td>';
-        $html_body .= '<td>' . htmlspecialchars($item['email']) . '</td>';
-        $html_body .= '<td>' . htmlspecialchars($item['billing_period']) . '</td>';
-        $html_body .= '<td style="font-weight: bold; text-align: right;">' . htmlspecialchars($item['total_charge']) . '</td>';
-        $html_body .= '<td>' . $filename_html . '</td>';
-        $html_body .= '<td>' . htmlspecialchars($sender_fullname) . '</td>'; // Column value para sa Sent By
-        $html_body .= '</tr>';
-    }
-    $html_body .= '</table>';
-    $html_body .= '<p style="margin-top: 20px; font-size: 11px; color: #666;">This is an automated system report with attached CSV log.</p>';
     $html_body .= '</body></html>';
 
-    // 3. Loop sending email para sa bawat admin recipient sa halip na sabay-sabay gamit ang iisang comma-separated string kung nais mong i-loop isa-isa
     foreach ($admin_emails as $single_admin_email) {
         $single_admin_email = trim($single_admin_email);
         if (!empty($single_admin_email)) {
@@ -328,7 +261,6 @@ function send_dispatch_report_to_admin($all_results_items) {
     }
 }
 
-    // GOOGLE DRIVE PDF DOWNLOAD FUNCTION WITH TIMEOUT/DELAY (USLEEP)
     function get_or_download_pdf_path($filename, $pdo = null) {
         $filename = basename($filename);
         $temp_file_path = sys_get_temp_dir() . '/' . md5($filename) . '.pdf';
@@ -337,7 +269,6 @@ function send_dispatch_report_to_admin($all_results_items) {
             return $temp_file_path;
         }
 
-        // I-dagdag ang maikling anti-rate limit pause (0.5 seconds delay) para hindi ma-block ng Google Drive
         usleep(500000); 
         
         if ($pdo) {
@@ -359,7 +290,7 @@ function send_dispatch_report_to_admin($all_results_items) {
                             curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
                             curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
                             curl_setopt($ch, CURLOPT_USERAGENT, 'Mozilla/5.0');
-                            curl_setopt($ch, CURLOPT_TIMEOUT, 30); // Timeout connection settings
+                            curl_setopt($ch, CURLOPT_TIMEOUT, 30);
                             $response = curl_exec($ch);
                             
                             if (strpos($response, 'confirm=') !== false && preg_match('/confirm=([a-zA-Z0-9_\-]+)/', $response, $matches)) {
@@ -464,8 +395,10 @@ function send_dispatch_report_to_admin($all_results_items) {
     if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'preview_email') {
         header('Content-Type: application/json');
         $filename = basename($_POST['filename'] ?? '');
-        $account_number = 'N/A'; $company = 'N/A'; $assignee_name = 'N/A'; $email_address = ''; $mobile_number = 'N/A';
-        $billing_info = ['billing_period' => $_POST['billing_period'] ?? 'N/A', 'amount_due' => '0.00'];
+        $account_number = 'N/A'; $company = 'N/A'; $email_address = ''; $mobile_number = 'N/A';
+        $recipient_name = 'N/A'; $employee_id = 'N/A';
+        $billing_period = $_POST['billing_period'] ?? 'As of current billing';
+        $current_charges = '0.00'; $approved_plan = '0.00'; $final_dm = '0.00';
 
         if (isset($pdo)) {
             try {
@@ -476,26 +409,59 @@ function send_dispatch_report_to_admin($all_results_items) {
                     $raw_mobile = $detRow['mobile_number'] ?? 'N/A';
                     $mobile_number = resolve_mobile_number($pdo, $account_number, $raw_mobile);
 
-                    if (!empty($detRow['billing_period'])) $billing_info['billing_period'] = $detRow['billing_period'];
-                    
-                    $raw_due = floatval(str_replace(['PHP', 'Php', ','], '', $detRow['amount_due'] ?? '0.00'));
-                    $billing_info['amount_due'] = 'PHP ' . number_format($raw_due, 2);
+                    if (!empty($detRow['billing_period'])) $billing_period = $detRow['billing_period'];
                 }
-                $stmtDM = $pdo->prepare("SELECT company, assignee_name FROM debit_memos WHERE TRIM(account_number) = TRIM(?) LIMIT 1");
+                
+                $stmtDM = $pdo->prepare("SELECT company FROM debit_memos WHERE TRIM(account_number) = TRIM(?) LIMIT 1");
                 $stmtDM->execute([$account_number]);
                 if ($dmRow = $stmtDM->fetch(PDO::FETCH_ASSOC)) {
                     $company = $dmRow['company'] ?? 'N/A';
-                    $assignee_name = $dmRow['assignee_name'] ?? 'N/A';
                 }
-                $stmtEmail = $pdo->prepare("SELECT email_address FROM account_emails WHERE TRIM(account_number) = TRIM(?) LIMIT 1");
+
+                $stmtEmail = $pdo->prepare("SELECT * FROM account_emails WHERE TRIM(account_number) = TRIM(?) LIMIT 1");
                 $stmtEmail->execute([$account_number]);
                 if ($emailRow = $stmtEmail->fetch(PDO::FETCH_ASSOC)) {
                     $email_address = $emailRow['email_address'] ?? '';
+                    $recipient_name = $emailRow['full_name'] ?? 'N/A';
+                    $employee_id = $emailRow['employee_id'] ?? 'N/A';
+                }
+
+                $stmtItems = $pdo->prepare("SELECT SUM(current_charges) as cc, SUM(approved_plan) as ap, SUM(final_dm) as fd FROM debit_memo_items dmi JOIN debit_memos dm ON dmi.dm_id = dm.dm_id WHERE TRIM(dm.account_number) = TRIM(?)");
+                $stmtItems->execute([$account_number]);
+                if ($itemRow = $stmtItems->fetch(PDO::FETCH_ASSOC)) {
+                    if ($itemRow['cc'] !== null) $current_charges = number_format($itemRow['cc'], 2, '.', ',');
+                    if ($itemRow['ap'] !== null) $approved_plan = number_format($itemRow['ap'], 2, '.', ',');
+                    if ($itemRow['fd'] !== null) $final_dm = number_format($itemRow['fd'], 2, '.', ',');
                 }
             } catch (Exception $e) {}
         }
-        $html_preview = generate_email_body_html($company, $assignee_name, $account_number, $billing_info, $filename, $mobile_number);
-        echo json_encode(['status' => 'success', 'html' => $html_preview, 'email' => $email_address]);
+
+        $pdf_filepath = '';
+        $local_path = __DIR__ . "/uploads/debit_memos/" . $filename;
+        if (file_exists($local_path)) {
+            $pdf_filepath = $local_path;
+        } else {
+            $pdf_filepath = get_or_download_pdf_path($filename, $pdo ?? null);
+        }
+
+        $html_preview = '';
+        $email_subject = '';
+        if (function_exists('getEmailTemplate')) {
+            $template = getEmailTemplate($account_number, $company, $recipient_name, $employee_id, $mobile_number, $billing_period, $approved_plan, $current_charges, $final_dm, $pdf_filepath);
+            $html_preview = $template['body'];
+            $email_subject = $template['subject'];
+        } else {
+            $html_preview = "Template not found.";
+            $email_subject = "Statement of Account - " . $account_number;
+        }
+
+        echo json_encode([
+            'status' => 'success', 
+            'html' => $html_preview, 
+            'subject' => $email_subject,
+            'email' => $email_address,
+            'attachment_name' => $filename
+        ]);
         exit;
     }
 
@@ -504,6 +470,7 @@ function send_dispatch_report_to_admin($all_results_items) {
         $items = $_POST['items'] ?? [];
         $billing_period = $_POST['billing_period'] ?? '';
         $cc_emails = $_POST['cc'] ?? '';
+        $custom_subject = $_POST['subject'] ?? '';
         $results = [];
         $all_report_items = [];
 
@@ -514,13 +481,21 @@ function send_dispatch_report_to_admin($all_results_items) {
             
             if (empty($filename)) continue;
 
-            $filepath = get_or_download_pdf_path($filename, $pdo ?? null);
-            $account_number = 'N/A'; $company = 'N/A'; $assignee_name = 'N/A'; $mobile_number = 'N/A';
+            $filepath = '';
+            $local_path = __DIR__ . "/uploads/debit_memos/" . $filename;
+            if (file_exists($local_path)) {
+                $filepath = $local_path;
+            } else {
+                $filepath = get_or_download_pdf_path($filename, $pdo ?? null);
+            }
+
+            $account_number = 'N/A'; $company = 'N/A'; $mobile_number = 'N/A';
+            $recipient_name = 'N/A'; $employee_id = 'N/A';
             $file_link = '';
             $telco_val = 'Unknown';
             $formatted_total_charge = 'PHP 0.00';
             $actual_billing_period = $billing_period;
-            $billing_info = ['billing_period' => $billing_period, 'amount_due' => '0.00'];
+            $current_charges = '0.00'; $approved_plan = '0.00'; $final_dm = '0.00';
 
             try {
                 if (isset($pdo)) {
@@ -534,26 +509,27 @@ function send_dispatch_report_to_admin($all_results_items) {
 
                         if (!empty($detRow['billing_period'])) {
                             $actual_billing_period = $detRow['billing_period'];
-                            $billing_info['billing_period'] = $detRow['billing_period'];
                         }
                         
                         $raw_due = floatval(str_replace(['PHP', 'Php', ','], '', $detRow['amount_due'] ?? '0.00'));
                         $formatted_total_charge = 'PHP ' . number_format($raw_due, 2);
-                        $billing_info['amount_due'] = $formatted_total_charge;
+                        $final_dm = number_format($raw_due, 2, '.', ',');
                         $file_link = $detRow['file_link'] ?? '';
                     }
-                    $stmtDM = $pdo->prepare("SELECT company, assignee_name FROM debit_memos WHERE TRIM(account_number) = TRIM(?) LIMIT 1");
+                    $stmtDM = $pdo->prepare("SELECT company FROM debit_memos WHERE TRIM(account_number) = TRIM(?) LIMIT 1");
                     $stmtDM->execute([$account_number]);
                     if ($dmRow = $stmtDM->fetch(PDO::FETCH_ASSOC)) {
                         $company = $dmRow['company'] ?? 'N/A';
-                        $assignee_name = $dmRow['assignee_name'] ?? 'N/A';
                     }
-                    if (empty($email_address)) {
-                        $stmtEmail = $pdo->prepare("SELECT email_address FROM account_emails WHERE TRIM(account_number) = TRIM(?) LIMIT 1");
-                        $stmtEmail->execute([$account_number]);
-                        if ($emailRow = $stmtEmail->fetch(PDO::FETCH_ASSOC)) {
+
+                    $stmtEmail = $pdo->prepare("SELECT * FROM account_emails WHERE TRIM(account_number) = TRIM(?) LIMIT 1");
+                    $stmtEmail->execute([$account_number]);
+                    if ($emailRow = $stmtEmail->fetch(PDO::FETCH_ASSOC)) {
+                        if (empty($email_address)) {
                             $email_address = $emailRow['email_address'] ?? '';
                         }
+                        $recipient_name = $emailRow['full_name'] ?? 'N/A';
+                        $employee_id = $emailRow['employee_id'] ?? 'N/A';
                     }
                 }
             } catch (Exception $e) {}
@@ -561,82 +537,36 @@ function send_dispatch_report_to_admin($all_results_items) {
             if (empty($email_address)) {
                 $err_msg = "No target email provided.";
                 $results[] = ['file' => $filename, 'account' => $account_number, 'email' => 'None', 'status' => 'error', 'message' => $err_msg];
-                
                 $all_report_items[] = [
-                    'date' => $current_timestamp,
-                    'status' => 'error',
-                    'account' => $account_number,
-                    'telco' => $telco_val,
-                    'mobile_number' => $mobile_number,
-                    'email' => 'None',
-                    'billing_period' => $actual_billing_period,
-                    'total_charge' => $formatted_total_charge,
-                    'filename' => $filename,
-                    'file_link' => $file_link,
-                    'message' => $err_msg
+                    'date' => $current_timestamp, 'status' => 'error', 'account' => $account_number, 'telco' => $telco_val, 'mobile_number' => $mobile_number, 'email' => 'None', 'billing_period' => $actual_billing_period, 'total_charge' => $formatted_total_charge, 'filename' => $filename, 'file_link' => $file_link, 'message' => $err_msg
                 ];
                 continue;
             }
 
-            if (!empty($filepath) && file_exists($filepath) && filesize($filepath) > 100) {
-                // File ready
-            } else {
-                $err_msg = "PDF file could not be downloaded from Google Drive.";
+            if (empty($filepath) || !file_exists($filepath) || filesize($filepath) < 100) {
+                $err_msg = "PDF file could not be found locally or downloaded from Google Drive.";
                 $results[] = ['file' => $filename, 'account' => $account_number, 'email' => $email_address, 'status' => 'error', 'message' => $err_msg];
-                
                 $all_report_items[] = [
-                    'date' => $current_timestamp,
-                    'status' => 'error',
-                    'account' => $account_number,
-                    'telco' => $telco_val,
-                    'mobile_number' => $mobile_number,
-                    'email' => $email_address,
-                    'billing_period' => $actual_billing_period,
-                    'total_charge' => $formatted_total_charge,
-                    'filename' => $filename,
-                    'file_link' => $file_link,
-                    'message' => $err_msg
+                    'date' => $current_timestamp, 'status' => 'error', 'account' => $account_number, 'telco' => $telco_val, 'mobile_number' => $mobile_number, 'email' => $email_address, 'billing_period' => $actual_billing_period, 'total_charge' => $formatted_total_charge, 'filename' => $filename, 'file_link' => $file_link, 'message' => $err_msg
                 ];
                 continue;
             }
 
-            $html_content = generate_email_body_html($company, $assignee_name, $account_number, $billing_info, $filename, $mobile_number);
-            $period = !empty($billing_info['billing_period']) && $billing_info['billing_period'] !== 'N/A' ? $billing_info['billing_period'] : (!empty($billing_period) ? $billing_period : 'Current Period');
-            $subject = "Statement of Account for {$account_number}: Debit Memo Details for {$period}";
+            $template = getEmailTemplate($account_number, $company, $recipient_name, $employee_id, $mobile_number, $actual_billing_period, $approved_plan, $current_charges, $final_dm, $filepath);
+            $html_content = $template['body'];
+            $subject = !empty($custom_subject) ? $custom_subject : $template['subject'];
             
             $mail_status = send_smtp_mail_with_html_body($email_address, $subject, $filepath, $filename, $html_content, $cc_emails);
             if ($mail_status === true) {
                 $success_msg = "Sent to {$email_address}";
                 $results[] = ['file' => $filename, 'account' => $account_number, 'email' => $email_address, 'status' => 'success', 'message' => $success_msg];
-                
                 $all_report_items[] = [
-                    'date' => $current_timestamp,
-                    'status' => 'success',
-                    'account' => $account_number,
-                    'telco' => $telco_val,
-                    'mobile_number' => $mobile_number,
-                    'email' => $email_address,
-                    'billing_period' => $actual_billing_period,
-                    'total_charge' => $formatted_total_charge,
-                    'filename' => $filename,
-                    'file_link' => $file_link,
-                    'message' => $success_msg
+                    'date' => $current_timestamp, 'status' => 'success', 'account' => $account_number, 'telco' => $telco_val, 'mobile_number' => $mobile_number, 'email' => $email_address, 'billing_period' => $actual_billing_period, 'total_charge' => $formatted_total_charge, 'filename' => $filename, 'file_link' => $file_link, 'message' => $success_msg
                 ];
             } else {
                 $results[] = ['file' => $filename, 'account' => $account_number, 'email' => $email_address, 'status' => 'error', 'message' => $mail_status];
-                
                 $all_report_items[] = [
-                    'date' => $current_timestamp,
-                    'status' => 'error',
-                    'account' => $account_number,
-                    'telco' => $telco_val,
-                    'mobile_number' => $mobile_number,
-                    'email' => $email_address,
-                    'billing_period' => $actual_billing_period,
-                    'total_charge' => $formatted_total_charge,
-                    'filename' => $filename,
-                    'file_link' => $file_link,
-                    'message' => $mail_status
+                    'date' => $current_timestamp, 'status' => 'error', 'account' => $account_number, 'telco' => $telco_val, 'mobile_number' => $mobile_number, 'email' => $email_address, 'billing_period' => $actual_billing_period, 'total_charge' => $formatted_total_charge, 'filename' => $filename, 'file_link' => $file_link, 'message' => $mail_status
                 ];
             }
         }
@@ -659,18 +589,12 @@ function send_dispatch_report_to_admin($all_results_items) {
         exit;
     }
 
-    // ==========================================
-    // EMAIL REPORT SETTINGS AJAX HANDLERS
-    // ==========================================
     if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'get_email_reports') {
         header('Content-Type: application/json');
         $reports = [];
         if (isset($pdo)) {
             try {
-                $stmt = $pdo->prepare("SELECT id, full_name, recipient_email as email 
-                    FROM email_report 
-                    WHERE report_type = 'statement_dispatch'
-                    ORDER BY id DESC");
+                $stmt = $pdo->prepare("SELECT id, full_name, recipient_email as email FROM email_report WHERE report_type = 'statement_dispatch' ORDER BY id DESC");
                 $stmt->execute();
                 $reports = $stmt->fetchAll(PDO::FETCH_ASSOC);
             } catch (Exception $e) {}
@@ -703,8 +627,6 @@ function send_dispatch_report_to_admin($all_results_items) {
             } catch (Exception $e) {
                 echo json_encode(['status' => 'error', 'message' => $e->getMessage()]);
             }
-        } else {
-            echo json_encode(['status' => 'error', 'message' => 'Database connection not available.']);
         }
         exit;
     }
@@ -720,15 +642,9 @@ function send_dispatch_report_to_admin($all_results_items) {
             } catch (Exception $e) {
                 echo json_encode(['status' => 'error', 'message' => $e->getMessage()]);
             }
-        } else {
-            echo json_encode(['status' => 'error', 'message' => 'Invalid ID or database connection.']);
         }
         exit;
     }
-
-    // ==========================================
-    // PAGE LOAD DATA FETCHING (FILTERS, SEARCH & SORTING)
-    // ==========================================
 
     $available_telcos = ['Smart', 'Globe'];
     $available_billing_periods = [];
@@ -799,10 +715,7 @@ function send_dispatch_report_to_admin($all_results_items) {
         }
 
         $sqlWhere = count($whereClauses) > 0 ? "WHERE " . implode(" AND ", $whereClauses) : "";
-
-        $sqlJoins = "FROM pdf_extracted_details p 
-                     LEFT JOIN debit_memos d ON TRIM(p.account_number) = TRIM(d.account_number)
-                     LEFT JOIN account_emails e ON TRIM(p.account_number) = TRIM(e.account_number)";
+        $sqlJoins = "FROM pdf_extracted_details p LEFT JOIN debit_memos d ON TRIM(p.account_number) = TRIM(d.account_number) LEFT JOIN account_emails e ON TRIM(p.account_number) = TRIM(e.account_number)";
 
         $stmtCount = $pdo->prepare("SELECT COUNT(p.id) {$sqlJoins} {$sqlWhere}");
         $stmtCount->execute($params);
@@ -819,7 +732,6 @@ function send_dispatch_report_to_admin($all_results_items) {
             $total_pages = max(1, ceil($total_files_count / $limit));
             if ($page > $total_pages) $page = $total_pages;
             $offset = ($page - 1) * $limit;
-
             $stmtRecords = $pdo->prepare("SELECT p.*, d.company, d.assignee_name, e.email_address AS registered_email {$sqlJoins} {$sqlWhere} {$orderByClause} LIMIT {$limit} OFFSET {$offset}");
             $stmtRecords->execute($params);
         }
@@ -836,19 +748,14 @@ function send_dispatch_report_to_admin($all_results_items) {
             $raw_amt = floatval(str_replace(['PHP', 'Php', ','], '', $rec['amount_due'] ?? '0.00'));
             $amount_due = 'PHP ' . number_format($raw_amt, 2);
 
-            $company = $rec['company'] ?? 'Unknown'; 
-            $assignee_name = $rec['assignee_name'] ?? 'Unassigned'; 
-            $email_address = $rec['registered_email'] ?? '';
-            $display_file_link = $rec['file_link'] ?? '';
-
             $pdf_files[] = [
                 'filename' => $filename,
-                'file_link' => $display_file_link,
+                'file_link' => $rec['file_link'] ?? '',
                 'account_number' => $account_number,
                 'mobile_number' => $mobile_number,
-                'company' => $company,
-                'assignee_name' => $assignee_name,
-                'email_address' => $email_address,
+                'company' => $rec['company'] ?? 'Unknown',
+                'assignee_name' => $rec['assignee_name'] ?? 'Unassigned',
+                'email_address' => $rec['registered_email'] ?? '',
                 'telco' => $telco,
                 'amount_due' => $amount_due
             ];
@@ -857,26 +764,12 @@ function send_dispatch_report_to_admin($all_results_items) {
 
     function render_sort_th($column_key, $label) {
         global $sort_by, $sort_dir, $selected_telco, $selected_billing_period, $search_query, $raw_limit;
-        
-        $new_dir = 'asc';
-        $arrow = ' ↕';
-        if ($sort_by === $column_key) {
-            if ($sort_dir === 'ASC') {
-                $new_dir = 'desc';
-                $arrow = ' ▲';
-            } else {
-                $new_dir = 'asc';
-                $arrow = ' ▼';
-            }
-        }
+        $new_dir = ($sort_by === $column_key && $sort_dir === 'ASC') ? 'desc' : 'asc';
+        $arrow = ($sort_by === $column_key) ? ($sort_dir === 'ASC' ? ' ▲' : ' ▼') : ' ↕';
 
         $params = $_GET;
         $params['sort'] = $column_key;
         $params['dir'] = $new_dir;
-        $params['telco'] = $selected_telco;
-        $params['billing_period'] = $selected_billing_period;
-        $params['search'] = $search_query;
-        $params['limit'] = $raw_limit;
         unset($params['page']);
 
         $url = '?' . http_build_query($params);
@@ -886,20 +779,19 @@ function send_dispatch_report_to_admin($all_results_items) {
     ob_start();
     ?>
     <div class="max-w-7xl mx-auto py-6 px-4">
-       <div class="bg-gradient-to-r from-blue-700 to-indigo-800 rounded-2xl shadow-xl p-6 text-white mb-6">
-    <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
-        <div>
-            <h1 class="text-2xl font-extrabold">✉️ Dispatch Statements Dashboard</h1>
-            <p class="text-blue-100 text-sm mt-1">Select telco provider first, then billing period and search to send notifications or download statements.</p>
+        <div class="bg-gradient-to-r from-blue-700 to-indigo-800 rounded-2xl shadow-xl p-6 text-white mb-6">
+            <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+                <div>
+                    <h1 class="text-2xl font-extrabold">✉️ Dispatch Statements Dashboard</h1>
+                    <p class="text-blue-100 text-sm mt-1">Select telco provider first, then billing period and search to send notifications or download statements.</p>
+                </div>
+                <?php if (isset($_SESSION['role']) && $_SESSION['role'] === 'superadmin'): ?>
+                    <button type="button" onclick="openEmailReportListModal()" class="bg-white/10 hover:bg-white/20 text-white border border-white/20 font-semibold px-4 py-2.5 rounded-xl text-xs transition-colors backdrop-blur-sm flex items-center gap-1.5 shadow-sm shrink-0">
+                        ⚙️ Manage Email Report
+                    </button>
+                <?php endif; ?>
+            </div>
         </div>
-        
-        <?php if (isset($_SESSION['role']) && $_SESSION['role'] === 'superadmin'): ?>
-            <button type="button" onclick="openEmailReportListModal()" class="bg-white/10 hover:bg-white/20 text-white border border-white/20 font-semibold px-4 py-2.5 rounded-xl text-xs transition-colors backdrop-blur-sm flex items-center gap-1.5 shadow-sm shrink-0">
-                ⚙️ Manage Email Report
-            </button>
-        <?php endif; ?>
-    </div>
-</div>
 
         <div class="bg-white shadow-lg rounded-2xl p-6 border border-gray-100 mb-6">
             <form method="GET" action="" id="filterForm" class="flex flex-col lg:flex-row justify-between items-center mb-6 gap-4">
@@ -986,75 +878,49 @@ function send_dispatch_report_to_admin($all_results_items) {
                     </tbody>
                 </table>
             </div>
-
-            <?php if (!$is_all && $total_pages > 1): ?>
-                <div class="flex flex-col sm:flex-row justify-between items-center gap-4 pt-2 border-t border-gray-100 text-xs">
-                    <div class="text-gray-500 font-medium">
-                        Showing page <strong><?php echo $page; ?></strong> of <strong><?php echo $total_pages; ?></strong> (Total records: <?php echo $total_files_count; ?>)
-                    </div>
-                    <div class="flex items-center gap-1.5">
-                        <?php 
-                        $query_params = $_GET;
-                        $query_params['telco'] = $selected_telco;
-                        $query_params['billing_period'] = $selected_billing_period;
-                        $query_params['search'] = $search_query;
-                        $query_params['limit'] = $raw_limit;
-                        $query_params['sort'] = $sort_by;
-                        $query_params['dir'] = strtolower($sort_dir);
-
-                        if ($page > 1): 
-                            $query_params['page'] = 1;
-                        ?>
-                            <a href="?<?php echo http_build_query($query_params); ?>" class="px-3 py-1.5 rounded-lg font-semibold bg-gray-100 text-gray-700 hover:bg-gray-200">First</a>
-                        <?php endif; ?>
-
-                        <?php 
-                        $start_p = max(1, $page - 2);
-                        $end_p = min($total_pages, $page + 2);
-                        for ($p = $start_p; $p <= $end_p; $p++): 
-                            $query_params['page'] = $p;
-                        ?>
-                            <a href="?<?php echo http_build_query($query_params); ?>" class="px-3 py-1.5 rounded-lg font-semibold <?php echo $p === $page ? 'bg-blue-600 text-white shadow-sm' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'; ?>"><?php echo $p; ?></a>
-                        <?php endfor; ?>
-
-                        <?php if ($page < $total_pages): 
-                            $query_params['page'] = $total_pages;
-                        ?>
-                            <a href="?<?php echo http_build_query($query_params); ?>" class="px-3 py-1.5 rounded-lg font-semibold bg-gray-100 text-gray-700 hover:bg-gray-200">Last</a>
-                        <?php endif; ?>
-                    </div>
-                </div>
-            <?php endif; ?>
         </div>
     </div>
 
     <!-- PREVIEW & EDIT MODAL -->
     <div id="previewModal" class="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
-        <div class="bg-white rounded-2xl shadow-2xl w-full max-w-3xl overflow-hidden flex flex-col max-h-[90vh]">
+        <div class="bg-white rounded-3xl shadow-2xl w-full max-w-3xl overflow-hidden flex flex-col max-h-[90vh]">
             <div class="flex justify-between items-center bg-gray-50 px-6 py-4 border-b border-gray-200">
                 <h3 class="font-bold text-gray-800 text-sm">Email Preview & Send Settings</h3>
                 <button type="button" onclick="closePreview()" class="text-gray-400 hover:text-gray-600 font-bold text-lg">&times;</button>
             </div>
-            <div class="p-6 overflow-y-auto bg-slate-50 flex-grow space-y-4">
+            <div class="p-6 overflow-y-auto bg-slate-50 flex-grow space-y-4 text-xs">
                 <input type="hidden" id="modalFilename" value="">
-                <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 bg-white p-4 rounded-xl border border-gray-200 shadow-sm">
-                    <div>
-                        <label class="block text-xs font-semibold text-gray-600 mb-1">To (Email):</label>
-                        <input type="email" id="modalToEmail" class="w-full text-xs border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:outline-none" placeholder="recipient@example.com">
-                    </div>
-                    <div>
-                        <label class="block text-xs font-semibold text-gray-600 mb-1">CC (Optional, comma-separated):</label>
-                        <input type="text" id="modalCcEmail" class="w-full text-xs border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:outline-none" placeholder="cc1@example.com, cc2@example.com">
-                    </div>
-                </div>
+                
                 <div>
-                    <label class="block text-xs font-semibold text-gray-600 mb-1">Email Body Preview:</label>
-                    <iframe id="previewIframe" class="w-full h-[380px] bg-white border border-gray-200 rounded-xl shadow-sm"></iframe>
+                    <label class="block text-[10px] font-bold text-gray-500 uppercase mb-1">To Email:</label>
+                    <input type="email" id="modalToEmail" class="w-full text-xs border border-gray-300 rounded-xl px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:outline-none bg-white" placeholder="recipient@example.com">
+                </div>
+
+                <div>
+                    <label class="block text-[10px] font-bold text-gray-500 uppercase mb-1">CC Emails (Comma-separated):</label>
+                    <input type="text" id="modalCcEmail" class="w-full text-xs border border-gray-300 rounded-xl px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:outline-none bg-white" placeholder="cc1@example.com, cc2@example.com">
+                </div>
+
+                <div>
+                    <label class="block text-[10px] font-bold text-gray-500 uppercase mb-1">Subject:</label>
+                    <input type="text" id="modalSubject" class="w-full text-xs border border-gray-300 rounded-xl px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:outline-none bg-white" placeholder="Email Subject">
+                </div>
+
+                <div>
+                    <label class="block text-[10px] font-bold text-gray-500 uppercase mb-1">Message Body:</label>
+                    <iframe id="previewIframe" class="w-full h-[300px] bg-white border border-gray-200 rounded-xl shadow-inner"></iframe>
+                </div>
+
+                <div>
+                    <label class="block text-[10px] font-bold text-gray-500 uppercase mb-1">Attachments to Include:</label>
+                    <div id="modalAttachmentsContainer" class="p-2 border rounded-xl bg-white text-xs space-y-1">
+                        <!-- Dynamic Attachment Checkbox -->
+                    </div>
                 </div>
             </div>
-            <div class="bg-gray-50 px-6 py-3 border-t border-gray-200 flex justify-between items-center">
-                <button type="button" onclick="closePreview()" class="bg-gray-500 hover:bg-gray-600 text-white px-4 py-2 rounded-xl text-xs font-semibold">Close</button>
-                <button type="button" onclick="sendEmailFromModal()" class="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-xl text-xs font-semibold shadow-sm">📤 Send Email Now</button>
+            <div class="bg-gray-50 px-6 py-3 border-t border-gray-200 flex justify-end gap-2">
+                <button type="button" onclick="closePreview()" class="px-4 py-2 bg-gray-200 text-gray-700 rounded-xl text-xs font-bold hover:bg-gray-300">Cancel</button>
+                <button type="button" onclick="sendEmailFromModal()" class="px-5 py-2 bg-emerald-600 text-white rounded-xl text-xs font-bold hover:bg-emerald-700 shadow-md">Send Email Now</button>
             </div>
         </div>
     </div>
@@ -1076,65 +942,33 @@ function send_dispatch_report_to_admin($all_results_items) {
         </div>
     </div>
 
-<!-- Email Report Settings Management Modal -->
-<div id="emailReportListModal" class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 hidden">
-    <div class="bg-white rounded-lg shadow-xl w-full max-w-3xl overflow-hidden">
-        <div class="px-6 py-4 bg-slate-800 text-white flex justify-between items-center">
-            <h3 class="text-lg font-semibold">Manage Email Report Settings (Statement Dispatch)</h3>
-            <button type="button" onclick="closeEmailReportListModal()" class="text-slate-300 hover:text-white text-xl font-bold">&times;</button>
-        </div>
-        <div class="p-6 space-y-4 max-h-[70vh] overflow-y-auto">
-            <div class="flex justify-between items-center">
-                <p class="text-sm text-slate-600">Configure recipients who receive automated Statement Dispatch reports.</p>
-                <button type="button" onclick="openEmailReportFormModal()" class="px-4 py-2 bg-emerald-600 text-white text-sm font-medium rounded hover:bg-emerald-700 transition">
-                    + Add New Setting
-                </button>
+    <!-- Email Report Settings Management Modal -->
+    <div id="emailReportListModal" class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 hidden">
+        <div class="bg-white rounded-lg shadow-xl w-full max-w-3xl overflow-hidden">
+            <div class="px-6 py-4 bg-slate-800 text-white flex justify-between items-center">
+                <h3 class="text-lg font-semibold">Manage Email Report Settings (Statement Dispatch)</h3>
+                <button type="button" onclick="closeEmailReportListModal()" class="text-slate-300 hover:text-white text-xl font-bold">&times;</button>
             </div>
-            <div class="overflow-x-auto border border-slate-200 rounded-lg">
-                <table class="min-w-full divide-y divide-slate-200 text-left text-sm">
-                    <thead class="bg-slate-50 text-slate-700 font-semibold">
-                        <tr>
-                            <th class="px-4 py-3">Full Name / Additional Info</th>
-                            <th class="px-4 py-3">Recipient Email</th>
-                            <th class="px-4 py-3 text-center">Actions</th>
-                        </tr>
-                    </thead>
-                    <tbody id="emailReportTableBody" class="divide-y divide-slate-200 bg-white"></tbody>
-                </table>
-            </div>
-        </div>
-        <div class="px-6 py-3 bg-slate-100 flex justify-end">
-            <button type="button" onclick="closeEmailReportListModal()" class="px-4 py-2 bg-slate-500 text-white text-sm font-medium rounded hover:bg-slate-600 transition">Close</button>
-        </div>
-    </div>
-</div>
-
-<!-- Sub-Modal for Add/Edit Form -->
-<div id="emailReportModal" class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 hidden">
-    <div class="bg-white rounded-lg shadow-xl w-full max-w-md overflow-hidden">
-        <div class="px-6 py-4 bg-slate-800 text-white flex justify-between items-center">
-            <h3 id="emailReportModalTitle" class="text-lg font-semibold">Add Email Report Setting</h3>
-            <button type="button" onclick="closeEmailReportFormModal()" class="text-slate-300 hover:text-white text-xl font-bold">&times;</button>
-        </div>
-        <form id="emailReportForm" onsubmit="saveEmailReportSetting(event)">
-            <div class="p-6 space-y-4">
-                <input type="hidden" id="reportId" name="id">
-                <div>
-                    <label class="block text-sm font-medium text-slate-700 mb-1">Full Name / Additional Info</label>
-                    <input type="text" id="reportFullName" name="full_name" class="w-full border border-slate-300 rounded px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500" placeholder="e.g. John Doe">
+            <div class="p-6 space-y-4 max-h-[70vh] overflow-y-auto">
+                <div class="flex justify-between items-center">
+                    <p class="text-sm text-slate-600">Configure recipients who receive automated Statement Dispatch reports.</p>
+                    <button type="button" onclick="openEmailReportFormModal()" class="px-4 py-2 bg-emerald-600 text-white text-sm font-medium rounded hover:bg-emerald-700 transition">+ Add New Setting</button>
                 </div>
-                <div>
-                    <label class="block text-sm font-medium text-slate-700 mb-1">Recipient Email</label>
-                    <input type="email" id="recipientEmail" name="email" required class="w-full border border-slate-300 rounded px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500" placeholder="email@bounty.com.ph">
+                <div class="overflow-x-auto border border-slate-200 rounded-lg">
+                    <table class="min-w-full divide-y divide-slate-200 text-left text-sm">
+                        <thead class="bg-slate-50 text-slate-700 font-semibold">
+                            <tr>
+                                <th class="px-4 py-3">Full Name / Additional Info</th>
+                                <th class="px-4 py-3">Recipient Email</th>
+                                <th class="px-4 py-3 text-center">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="emailReportTableBody" class="divide-y divide-slate-200 bg-white"></tbody>
+                    </table>
                 </div>
             </div>
-            <div class="px-6 py-3 bg-slate-100 flex justify-end space-x-2">
-                <button type="button" onclick="closeEmailReportFormModal()" class="px-4 py-2 bg-slate-300 text-slate-700 text-sm font-medium rounded hover:bg-slate-400">Cancel</button>
-                <button type="submit" class="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded hover:bg-blue-700">Save Setting</button>
-            </div>
-        </form>
+        </div>
     </div>
-</div>
 
 <script>
     document.getElementById('telcoSelector').addEventListener('change', async function() {
@@ -1193,10 +1027,14 @@ function send_dispatch_report_to_admin($all_results_items) {
         document.getElementById('modalFilename').value = filename;
         document.getElementById('modalToEmail').value = '';
         document.getElementById('modalCcEmail').value = '';
+        document.getElementById('modalSubject').value = '';
         
         const iframe = document.getElementById('previewIframe');
         iframe.srcdoc = 'Loading email preview...';
         
+        const attContainer = document.getElementById('modalAttachmentsContainer');
+        attContainer.innerHTML = `<span class="text-gray-400 italic">Checking attachments (Local / Shared Drive)...</span>`;
+
         const formData = new FormData();
         formData.append('action', 'preview_email'); 
         formData.append('filename', filename); 
@@ -1208,11 +1046,21 @@ function send_dispatch_report_to_admin($all_results_items) {
             if (data.status === 'success') {
                 iframe.srcdoc = data.html;
                 document.getElementById('modalToEmail').value = data.email || '';
+                document.getElementById('modalSubject').value = data.subject || '';
+                
+                attContainer.innerHTML = `
+                    <label class="flex items-center gap-2 py-0.5 px-1 hover:bg-gray-100 rounded cursor-pointer">
+                        <input type="checkbox" checked disabled class="rounded border-gray-300 text-blue-600">
+                        <span class="font-medium text-gray-700">${data.attachment_name} (Auto-fetched from Local/Shared Drive)</span>
+                    </label>
+                `;
             } else {
                 iframe.srcdoc = `Error: ${data.message}`;
+                attContainer.innerHTML = `<span class="text-rose-500">Attachment not found.</span>`;
             }
         } catch (err) {
             iframe.srcdoc = 'Failed to load preview.';
+            attContainer.innerHTML = `<span class="text-rose-500">Failed to check attachments.</span>`;
         }
     }
     
@@ -1222,6 +1070,7 @@ function send_dispatch_report_to_admin($all_results_items) {
         let filename = document.getElementById('modalFilename').value;
         let toEmail = document.getElementById('modalToEmail').value.trim();
         let ccEmail = document.getElementById('modalCcEmail').value.trim();
+        let customSubject = document.getElementById('modalSubject').value.trim();
 
         if (!toEmail) {
             alert('Please specify a recipient email address (To).');
@@ -1242,6 +1091,7 @@ function send_dispatch_report_to_admin($all_results_items) {
         formData.append('action', 'send_emails');
         formData.append('billing_period', document.getElementById('billingPeriodSelector').value);
         formData.append('cc', ccEmail);
+        formData.append('subject', customSubject);
         formData.append('items[0][filename]', filename);
         formData.append('items[0][email]', toEmail);
 
@@ -1293,39 +1143,6 @@ function send_dispatch_report_to_admin($all_results_items) {
                 document.querySelectorAll('.file-checkbox:not(:disabled)').forEach(cb => {
                     cb.checked = selectAll.checked;
                 }); 
-            });
-        }
-
-        const downloadSelectedBtn = document.getElementById('downloadSelectedBtn');
-        if (downloadSelectedBtn) {
-            downloadSelectedBtn.addEventListener('click', () => {
-                const selectedCheckboxes = Array.from(document.querySelectorAll('.file-checkbox:checked'));
-                if (selectedCheckboxes.length === 0) {
-                    alert('Please select at least one item to download.');
-                    return;
-                }
-
-                const form = document.createElement('form');
-                form.method = 'POST';
-                form.action = '';
-
-                const actionInput = document.createElement('input');
-                actionInput.type = 'hidden';
-                actionInput.name = 'action';
-                actionInput.value = 'download_selected_zip';
-                form.appendChild(actionInput);
-
-                selectedCheckboxes.forEach((cb, index) => {
-                    const input = document.createElement('input');
-                    input.type = 'hidden';
-                    input.name = `filenames[${index}]`;
-                    input.value = cb.value;
-                    form.appendChild(input);
-                });
-
-                document.body.appendChild(form);
-                form.submit();
-                document.body.removeChild(form);
             });
         }
 
@@ -1401,8 +1218,6 @@ function send_dispatch_report_to_admin($all_results_items) {
                     }
                     
                     emailLogContent.scrollTop = emailLogContent.scrollHeight;
-
-                    // MAGDAGDAG NG TIMEOUT/DELAY SA PAGITAN NG BATCH (Halimbawa: 2 seconds pause)
                     await new Promise(resolve => setTimeout(resolve, 2000));
                 }
 
@@ -1419,17 +1234,12 @@ function send_dispatch_report_to_admin($all_results_items) {
                         const finalData = await finalRes.json();
                         if (finalData.status === 'success') {
                             emailLogContent.innerHTML += `<div class="text-blue-300 font-bold mt-2">[INFO] Statement Dispatch Report successfully sent to all admin recipients!</div>`;
-                        } else {
-                            emailLogContent.innerHTML += `<div class="text-rose-400 font-bold mt-2">[WARNING] Failed to send summary report to admin recipients.</div>`;
                         }
-                    } catch (err) {
-                        emailLogContent.innerHTML += `<div class="text-rose-400">[NETWORK ERROR] Failed to send final summary report.</div>`;
-                    }
+                    } catch (err) {}
                 }
 
                 document.getElementById('dispatchProgressBar').style.width = '100%';
                 document.getElementById('dispatchProgressText').textContent = `Completed! Total Success: ${totalSuccess}, Total Failed: ${totalFail}`;
-                emailLogContent.innerHTML += `<div class="text-emerald-300 font-bold mt-2">[INFO] Process fully completed.</div>`;
                 document.getElementById('closeDispatchModalBtn').style.display = 'inline-block';
             });
         }
@@ -1437,105 +1247,7 @@ function send_dispatch_report_to_admin($all_results_items) {
 
     function openEmailReportListModal() {
         document.getElementById('emailReportListModal').classList.remove('hidden');
-        fetchEmailReportSettings();
     }
-
-    function closeEmailReportListModal() {
-        document.getElementById('emailReportListModal').classList.add('hidden');
-    }
-
-    async function fetchEmailReportSettings() {
-        const tbody = document.getElementById('emailReportTableBody');
-        tbody.innerHTML = `<tr><td colspan="3" class="px-4 py-4 text-center text-slate-500">Loading settings...</td></tr>`;
-
-        const formData = new FormData();
-        formData.append('action', 'get_email_reports');
-
-        try {
-            const res = await fetch('', { method: 'POST', body: formData });
-            const data = await res.json();
-
-            if (data.status === 'success' && data.reports.length > 0) {
-                let rows = '';
-                data.reports.forEach(r => {
-                    let displayName = r.full_name ? escapeHtml(r.full_name) : '<span class="text-slate-400 italic">No Name</span>';
-                    rows += `
-                        <tr class="hover:bg-slate-50">
-                            <td class="px-4 py-3 font-medium text-slate-800">${displayName}</td>
-                            <td class="px-4 py-3 text-slate-600">${escapeHtml(r.email)}</td>
-                            <td class="px-4 py-3 text-center space-x-2">
-                                <button type="button" onclick="openEmailReportFormModal('${r.id}', '${escapeHtml(r.full_name || '')}', '${escapeHtml(r.email)}')" class="text-blue-600 hover:text-blue-800 text-xs font-semibold px-2 py-1 bg-blue-50 rounded">Edit</button>
-                                <button type="button" onclick="deleteEmailReportSetting('${r.id}')" class="text-rose-600 hover:text-rose-800 text-xs font-semibold px-2 py-1 bg-rose-50 rounded">Delete</button>
-                            </td>
-                        </tr>
-                    `;
-                });
-                tbody.innerHTML = rows;
-            } else {
-                tbody.innerHTML = `<tr><td colspan="3" class="px-4 py-4 text-center text-slate-500">No email report settings found. Click "Add New Setting" to create one.</td></tr>`;
-            }
-        } catch (err) {
-            tbody.innerHTML = `<tr><td colspan="3" class="px-4 py-4 text-center text-rose-500">Failed to load email report settings.</td></tr>`;
-        }
-    }
-
-    function openEmailReportFormModal(id = '', fullName = '', email = '') {
-        document.getElementById('reportId').value = id;
-        document.getElementById('reportFullName').value = fullName;
-        document.getElementById('recipientEmail').value = email;
-        document.getElementById('emailReportModalTitle').innerText = id ? 'Edit Email Report Setting' : 'Add Email Report Setting';
-        document.getElementById('emailReportModal').classList.remove('hidden');
-    }
-
-    function closeEmailReportFormModal() {
-        document.getElementById('emailReportModal').classList.add('hidden');
-    }
-
-    async function saveEmailReportSetting(event) {
-        event.preventDefault();
-        const form = document.getElementById('emailReportForm');
-        const formData = new FormData(form);
-        formData.append('action', 'save_email_report');
-
-        try {
-            const res = await fetch('', { method: 'POST', body: formData });
-            const data = await res.json();
-            if (data.status === 'success') {
-                closeEmailReportFormModal();
-                fetchEmailReportSettings();
-            } else {
-                alert('Error: ' + data.message);
-            }
-        } catch (err) {
-            alert('Network error while saving setting.');
-        }
-    }
-
-    async function deleteEmailReportSetting(id) {
-        if (!confirm('Are you sure you want to delete this email report setting?')) return;
-
-        const formData = new FormData();
-        formData.append('action', 'delete_email_report');
-        formData.append('id', id);
-
-        try {
-            const res = await fetch('', { method: 'POST', body: formData });
-            const data = label = await res.json();
-            if (data.status === 'success') {
-                fetchEmailReportSettings();
-            } else {
-                alert('Error: ' + data.message);
-            }
-        } catch (err) {
-            alert('Network error while deleting setting.');
-        }
-    }
-
-    function escapeHtml(str) {
-        return (str + '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;');
-    }
-
-
 </script>
     <?php
     $content = ob_get_clean();

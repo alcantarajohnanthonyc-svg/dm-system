@@ -823,8 +823,9 @@ ob_start();
 
     function downloadEmailCsvTemplate() {
         const csvContent = "data:text/csv;charset=utf-8,account_number,start_date,end_date,custom_to,custom_cc,custom_subject,custom_body\n" +
-            "6020304543,1/1/2026,1/31/2026,alcantarajohnathon@gmail.com,,Notice for Account 6020304543,\"Hello Client A, eto po ang SOA niyo...\"\n" +
-            "1157296866,,,,,,";
+            "6020304543,1/1/2026,1/31/2026,,,,, \n" +
+            "1157296866,1/1/2026,1/31/2026,client.b@company.com,,, \n" +
+            "9988776655,1/1/2026,1/31/2026,client.c@company.com,accounting@company.com,Statement of Account Notice,\"Hello Client C, attached is your billing statement for review.\"";
         
         const encodedUri = encodeURI(csvContent);
         const link = document.createElement("a");
