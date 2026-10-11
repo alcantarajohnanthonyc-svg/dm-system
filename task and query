@@ -1,0 +1,15 @@
+ALTER TABLE `debit_memo_items` 
+ADD COLUMN `add_ons` DECIMAL(10,2) DEFAULT 0.00 NULL AFTER `total_amount_due`;
+
+Checklist for DM Tracker Enhancement: 
+1. Add new columns
+[ ] Add the **"ADD ONS"** column to the table/dashboard.
+[ ] Add the **"FINAL DM"** column to the table/dashboard.
+
+2. Implement SOA download functionality
+[ ] Add a clickable **"Download SOA"** button for each cutoff period per account.
+[ ] Connect the button to generate and download the corresponding SOA file.
+
+3. Implement DM email notification
+[ ] Add a **"Send Email"** button (or configure an automatic trigger) for DM generation per account.
+[ ] Set up the email template for DM Charges emailing.
