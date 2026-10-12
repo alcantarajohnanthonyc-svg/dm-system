@@ -634,20 +634,28 @@ function get_or_download_pdf_path($filename, $pdo = null) {
                       
                     if (!empty($gdrive_id)) {
                         $download_url = "https://drive.google.com/uc?export=download&id=" . $gdrive_id;
-                        $ch = curl_init();
-                        curl_setopt($ch, CURLOPT_URL, $download_url);
-                        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-                        curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
-                        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
-                        curl_setopt($ch, CURLOPT_USERAGENT, 'Mozilla/5.0');
-                        curl_setopt($ch, CURLOPT_TIMEOUT, 30);
-                        $response = curl_exec($ch);
+                        
+                        $options = [
+                            "http" => [
+                                "method" => "GET",
+                                "header" => "User-Agent: Mozilla/5.0\r\n",
+                                "follow_location" => 1,
+                                "max_redirects" => 5
+                            ],
+                            "ssl" => [
+                                "verify_peer" => false,
+                                "verify_peer_name" => false
+                            ]
+                        ];
+                        $context = stream_context_create($options);
+                        $response = @file_get_contents($download_url, false, $context);
                           
-                        if (strpos($response, 'confirm=') !== false && preg_match('/confirm=([a-zA-Z0-9_\-]+)/', $response, $matches)) {
-                            curl_setopt($ch, CURLOPT_URL, "https://drive.google.com/uc?export=download&confirm=" . $matches[1] . "&id=" . $gdrive_id);
-                            $response = curl_exec($ch);
+                        if ($response !== false && (stripos($response, 'confirm=') !== false || stripos($response, 'download-warning') !== false)) {
+                            if (preg_match('/confirm=([a-zA-Z0-9_\-]+)/', $response, $matches)) {
+                                $confirm_url = "https://drive.google.com/uc?export=download&confirm=" . $matches[1] . "&id=" . $gdrive_id;
+                                $response = @file_get_contents($confirm_url, false, $context);
+                            }
                         }
-                        curl_close($ch);
                           
                         if (!empty($response) && strlen($response) > 500 && stripos($response, '<html') === false) {
                             file_put_contents($temp_file_path, $response);
