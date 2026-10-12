@@ -708,60 +708,84 @@ async function startUploadProcess() {
     if(logContent) logContent.innerHTML = '';
     if(modalSpinnerIcon) modalSpinnerIcon.style.display = 'inline-block';
 
-    const chunkSize = 10; 
+    const chunkSize = 20; // Itinaas para mas mabilis (20 files bawat batch)
+    const maxConcurrent = 2; // Sabay na mag-a-upload ang 2 batches para mas mabilis
     const totalFiles = fileQueue.length;
     let processedFiles = 0;
     let successTotal = 0;
     let failedTotal = 0;
 
-    if(progressText) progressText.textContent = 'Starting batch upload queue...';
+    if(progressText) progressText.textContent = 'Starting fast parallel upload queue...';
     if(progressCountDetail) progressCountDetail.textContent = `Processed: 0 / ${totalFiles} files`;
     if(progressBar) progressBar.style.width = '1%';
     if(progressPercentage) progressPercentage.textContent = '0%';
 
+    // Hatiin ang queue sa mga batches
+    let batches = [];
     for (let i = 0; i < totalFiles; i += chunkSize) {
-        if (abortUpload) break;
+        batches.push(fileQueue.slice(i, i + chunkSize));
+    }
 
-        const chunk = fileQueue.slice(i, i + chunkSize);
+    let batchIndex = 0;
+
+    async function uploadBatch(batch) {
+        if (abortUpload) return;
+
         const formData = new FormData();
-        
-        chunk.forEach(file => {
-            formData.append('pdf_files[]', file);
-        });
+        batch.forEach(file => formData.append('pdf_files[]', file));
 
         if (overwriteCheckbox && overwriteCheckbox.checked) {
             formData.append('overwrite', '1');
         }
 
-        let currentBatchEnd = Math.min(i + chunkSize, totalFiles);
-        if(progressText) progressText.textContent = `Uploading batch: files ${i + 1} to ${currentBatchEnd} of ${totalFiles}...`;
+        let success = false;
+        let retries = 3;
 
-        try {
-            const response = await fetch('debit_memo_upload.php', {
-                method: 'POST',
-                body: formData
-            });
-
-            const result = await response.json();
-
-            if (result.status === 'success') {
-                successTotal += result.success_files.length;
-                failedTotal += result.failed_files.length;
-
-                result.success_files.forEach(msg => {
-                    if(logContent) logContent.innerHTML += `<div class="text-emerald-400">[SUCCESS] ${msg}</div>`;
+        while (retries > 0 && !success && !abortUpload) {
+            try {
+                const response = await fetch('debit_memo_upload.php', {
+                    method: 'POST',
+                    body: formData
                 });
 
-                result.failed_files.forEach(msg => {
-                    if(logContent) logContent.innerHTML += `<div class="text-rose-400">[FAILED] ${msg}</div>`;
-                });
+                if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+
+                const result = await response.json();
+
+                if (result.status === 'success') {
+                    success = true;
+                    successTotal += result.success_files.length;
+                    failedTotal += result.failed_files.length;
+
+                    result.success_files.forEach(msg => {
+                        if(logContent) logContent.innerHTML += `<div class="text-emerald-400">[SUCCESS] ${msg}</div>`;
+                    });
+                    result.failed_files.forEach(msg => {
+                        if(logContent) logContent.innerHTML += `<div class="text-rose-400">[FAILED] ${msg}</div>`;
+                    });
+                }
+            } catch (error) {
+                retries--;
+                if (retries === 0) {
+                    // Magpapakita ng mensahe o prompt para tanungin ang user kung gusto niyang i-retry
+                    const userRetry = confirm(`May error sa pag-upload ng isang batch (${error.message}). Gusto mo bang i-retry ito?`);
+                    if (userRetry) {
+                        retries = 3; // I-reset ang retries para subukang muli
+                        if(logContent) logContent.innerHTML += `<div class="text-amber-400">[USER ACTION] Piniling i-retry ang batch...</div>`;
+                        await new Promise(resolve => setTimeout(resolve, 2000));
+                        continue;
+                    } else {
+                        if(logContent) logContent.innerHTML += `<div class="text-rose-400">[NETWORK ERROR] Batch failed and skipped: ${error.message}</div>`;
+                        failedTotal += batch.length;
+                    }
+                } else {
+                    if(logContent) logContent.innerHTML += `<div class="text-amber-400">[WARNING] Naputol ang koneksyon. Sinusubukang muli (${retries} na natitirang subok)...</div>`;
+                    await new Promise(resolve => setTimeout(resolve, 2000));
+                }
             }
-        } catch (error) {
-            if(logContent) logContent.innerHTML += `<div class="text-rose-400">[NETWORK ERROR] Batch ${i + 1}-${currentBatchEnd} failed: ${error.message}</div>`;
-            failedTotal += chunk.length;
         }
 
-        processedFiles += chunk.length;
+        processedFiles += batch.length;
         const percentage = Math.round((processedFiles / totalFiles) * 100);
         
         if(progressBar) progressBar.style.width = percentage + '%';
@@ -772,6 +796,15 @@ async function startUploadProcess() {
         if(logContainerElem) logContainerElem.scrollTop = logContainerElem.scrollHeight;
     }
 
+    // Patakbuhin ang batches nang may kontrol sa sabay-sabay na koneksyon (concurrency)
+    while (batchIndex < batches.length && !abortUpload) {
+        let currentWorkers = [];
+        for (let w = 0; w < maxConcurrent && batchIndex < batches.length; w++) {
+            currentWorkers.push(uploadBatch(batches[batchIndex++]));
+        }
+        await Promise.all(currentWorkers);
+    }
+
     isUploading = false;
     if(stopUploadBtn) stopUploadBtn.style.display = 'none';
     if(closeModalBtn) closeModalBtn.style.display = 'inline-flex';
@@ -779,8 +812,6 @@ async function startUploadProcess() {
     
     if (abortUpload) {
         if(progressText) progressText.textContent = 'Upload aborted by user.';
-        if(progressBar) progressBar.classList.remove('bg-blue-600');
-        if(progressBar) progressBar.classList.add('bg-rose-500');
     } else {
         if(progressText) progressText.textContent = `All files processed! (Success: ${successTotal}, Failed: ${failedTotal})`;
         fileQueue = [];

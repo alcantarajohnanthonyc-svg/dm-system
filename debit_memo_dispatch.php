@@ -25,6 +25,25 @@ try {
     // HELPER FUNCTIONS
     // ==========================================
 
+    function parse_billing_period_dates($billing_period) {
+        $start_date_sql = '';
+        $end_date_sql = '';
+        
+        if (!empty($billing_period)) {
+            // Split specifically by ' - ' or ' to ' without breaking YYYY-MM-DD
+            $parts = preg_split('/\s+(?:-|to)\s+/i', trim($billing_period));
+            if (count($parts) >= 2) {
+                $parsed_start = strtotime(trim($parts[0]));
+                $parsed_end   = strtotime(trim($parts[1]));
+                if ($parsed_start !== false && $parsed_end !== false) {
+                    $start_date_sql = date('Y-m-d', $parsed_start);
+                    $end_date_sql   = date('Y-m-d', $parsed_end);
+                }
+            }
+        }
+        return [$start_date_sql, $end_date_sql];
+    }
+
     function extract_pdf_billing_details($filepath) {
         $data = ['telco' => 'Unknown', 'amount_due' => '0.00', 'corporate_id' => 'N/A', 'invoice_date' => 'N/A', 'billing_period' => 'N/A', 'mobile_number' => 'N/A', 'invoice_number' => 'N/A', 'credit_limit' => 'N/A', 'due_date' => 'N/A', 'customer_tin' => 'N/A'];
         if (!file_exists($filepath)) return $data;
@@ -106,6 +125,7 @@ try {
             $itemQuery = "SELECT * FROM debit_memo_items WHERE dm_id = ?";
             $itemParams = [$dm_id];
 
+            // STRICT FILTER BY SELECTED COVERAGE RANGE
             if (!empty($start_date) && !empty($end_date)) {
                 $itemQuery .= " AND coverage_start >= ? AND coverage_end <= ?";
                 $itemParams[] = $start_date;
@@ -361,39 +381,37 @@ try {
                         elseif (preg_match('/[?&]id=([a-zA-Z0-9_-]+)/', $link, $m)) $gdrive_id = $m[1];
                         
                         if (!empty($gdrive_id)) {
-    $download_url = "https://drive.google.com/uc?export=download&id=" . $gdrive_id;
-    
-    // Paggamit ng Streams API sa halip na cURL
-    $options = [
-        "http" => [
-            "method" => "GET",
-            "header" => "User-Agent: Mozilla/5.0\r\n",
-            "follow_location" => 1,
-            "max_redirects" => 5
-        ],
-        "ssl" => [
-            "verify_peer" => false,
-            "verify_peer_name" => false
-        ]
-    ];
-    $context = stream_context_create($options);
-    $response = @file_get_contents($download_url, false, $context);
-    
-    // Check para sa Google Drive large file virus warning confirmation page
-    if ($response !== false && (stripos($response, 'confirm=') !== false || stripos($response, 'download-warning') !== false)) {
-        if (preg_match('/confirm=([a-zA-Z0-9_\-]+)/', $response, $matches)) {
-            $confirm_url = "https://drive.google.com/uc?export=download&confirm=" . $matches[1] . "&id=" . $gdrive_id;
-            $response = @file_get_contents($confirm_url, false, $context);
-        }
-    }
-    
-    if (!empty($response) && strlen($response) > 500 && stripos($response, '<html') === false) {
-        file_put_contents($temp_file_path, $response);
-        if (file_exists($temp_file_path) && filesize($temp_file_path) > 100) {
-            return $temp_file_path;
-        }
-    }
-}
+                            $download_url = "https://drive.google.com/uc?export=download&id=" . $gdrive_id;
+                            
+                            $options = [
+                                "http" => [
+                                    "method" => "GET",
+                                    "header" => "User-Agent: Mozilla/5.0\r\n",
+                                    "follow_location" => 1,
+                                    "max_redirects" => 5
+                                ],
+                                "ssl" => [
+                                    "verify_peer" => false,
+                                    "verify_peer_name" => false
+                                ]
+                            ];
+                            $context = stream_context_create($options);
+                            $response = @file_get_contents($download_url, false, $context);
+                            
+                            if ($response !== false && (stripos($response, 'confirm=') !== false || stripos($response, 'download-warning') !== false)) {
+                                if (preg_match('/confirm=([a-zA-Z0-9_\-]+)/', $response, $matches)) {
+                                    $confirm_url = "https://drive.google.com/uc?export=download&confirm=" . $matches[1] . "&id=" . $gdrive_id;
+                                    $response = @file_get_contents($confirm_url, false, $context);
+                                }
+                            }
+                            
+                            if (!empty($response) && strlen($response) > 500 && stripos($response, '<html') === false) {
+                                file_put_contents($temp_file_path, $response);
+                                if (file_exists($temp_file_path) && filesize($temp_file_path) > 100) {
+                                    return $temp_file_path;
+                                }
+                            }
+                        }
                     }
                 }
             } catch (Exception $e) {}
@@ -471,9 +489,11 @@ try {
     if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'preview_email') {
         header('Content-Type: application/json');
         $filename = basename($_POST['filename'] ?? '');
+        $selected_bp = trim($_POST['billing_period'] ?? '');
+        
         $account_number = 'N/A'; $company = 'N/A'; $email_address = ''; $mobile_number = 'N/A';
         $recipient_name = 'N/A'; $employee_id = 'N/A';
-        $billing_period = $_POST['billing_period'] ?? 'As of current billing';
+        $billing_period = !empty($selected_bp) ? $selected_bp : 'As of current billing';
         $start_date_sql = '';
         $end_date_sql = '';
         $dm_id = 0;
@@ -487,21 +507,14 @@ try {
                     $raw_mobile = $detRow['mobile_number'] ?? 'N/A';
                     $mobile_number = resolve_mobile_number($pdo, $account_number, $raw_mobile);
 
-                    if (!empty($detRow['billing_period'])) {
+                    if (empty($selected_bp) && !empty($detRow['billing_period'])) {
                         $billing_period = $detRow['billing_period'];
                     }
                 }
 
-                if (!empty($billing_period) && strpos($billing_period, '-') !== false) {
-                    $parts = explode('-', $billing_period);
-                    $parsed_start = strtotime(trim($parts[0]));
-                    $parsed_end = strtotime(trim($parts[1]));
-                    if ($parsed_start !== false && $parsed_end !== false) {
-                        $start_date_sql = date('Y-m-d', $parsed_start);
-                        $end_date_sql = date('Y-m-d', $parsed_end);
-                    }
-                }
-                
+                // Parse dates using regex helper
+                list($start_date_sql, $end_date_sql) = parse_billing_period_dates($billing_period);
+
                 $stmtDM = $pdo->prepare("SELECT dm_id, company FROM debit_memos WHERE TRIM(account_number) = TRIM(?) LIMIT 1");
                 $stmtDM->execute([$account_number]);
                 if ($dmRow = $stmtDM->fetch(PDO::FETCH_ASSOC)) {
@@ -609,21 +622,13 @@ try {
                         $raw_mobile = $detRow['mobile_number'] ?? 'N/A';
                         $mobile_number = resolve_mobile_number($pdo, $account_number, $raw_mobile);
 
-                        if (!empty($detRow['billing_period'])) {
+                        if (empty($actual_billing_period) && !empty($detRow['billing_period'])) {
                             $actual_billing_period = $detRow['billing_period'];
                         }
                         $file_link = $detRow['file_link'] ?? '';
                     }
 
-                    if (!empty($actual_billing_period) && strpos($actual_billing_period, '-') !== false) {
-                        $parts = explode('-', $actual_billing_period);
-                        $parsed_start = strtotime(trim($parts[0]));
-                        $parsed_end = strtotime(trim($parts[1]));
-                        if ($parsed_start !== false && $parsed_end !== false) {
-                            $start_date_sql = date('Y-m-d', $parsed_start);
-                            $end_date_sql = date('Y-m-d', $parsed_end);
-                        }
-                    }
+                    list($start_date_sql, $end_date_sql) = parse_billing_period_dates($actual_billing_period);
 
                     $stmtDM = $pdo->prepare("SELECT dm_id, company FROM debit_memos WHERE TRIM(account_number) = TRIM(?) LIMIT 1");
                     $stmtDM->execute([$account_number]);
@@ -925,19 +930,9 @@ try {
             $telco = $rec['telco'] ?? 'Unknown';
             $dm_id = $rec['dm_id'] ?? 0;
 
-            // Date filtering for Final DM metrics calculation
-            $start_date_sql = '';
-            $end_date_sql = '';
-            $rec_bp = $rec['billing_period'] ?? '';
-            if (!empty($rec_bp) && strpos($rec_bp, '-') !== false) {
-                $bp_parts = explode('-', $rec_bp);
-                $p_start = strtotime(trim($bp_parts[0]));
-                $p_end = strtotime(trim($bp_parts[1]));
-                if ($p_start !== false && $p_end !== false) {
-                    $start_date_sql = date('Y-m-d', $p_start);
-                    $end_date_sql = date('Y-m-d', $p_end);
-                }
-            }
+            // Strict date range parsing from selected billing period or record billing period
+            $rec_bp = !empty($selected_billing_period) ? $selected_billing_period : ($rec['billing_period'] ?? '');
+            list($start_date_sql, $end_date_sql) = parse_billing_period_dates($rec_bp);
 
             $summary_metrics = get_debit_memo_summary_metrics($pdo, $dm_id, $start_date_sql, $end_date_sql);
             
