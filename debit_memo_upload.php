@@ -15,7 +15,7 @@ if (!defined('ALLOW_ACCESS')) {
     define('ALLOW_ACCESS', true);
 }
 
-// Safe inclusions relative to script directory
+// 1. I-load ang config at main para makuha ang PDO database connection
 $config_file = __DIR__ . '/config.php';
 $main_file = __DIR__ . '/main.php';
 
@@ -26,7 +26,66 @@ if (file_exists($main_file)) {
     require_once $main_file;
 }
 
-// Include Composer autoloader for PDF text parsing and Google API Client
+// 2. I-set ang global database connection (PDO)
+$db_connection = null;
+if (isset($pdo) && $pdo instanceof PDO) {
+    $db_connection = $pdo;
+} elseif (isset($conn) && $conn instanceof PDO) {
+    $db_connection = $conn;
+} elseif (isset($db) && $db instanceof PDO) {
+    $db_connection = $db;
+}
+
+// =========================================================================
+// 3. DIRECT CSV REPORT EXPORT HANDLER (PDO - Fixed columns)
+// =========================================================================
+if (isset($_GET['export']) && $_GET['export'] === 'csv') {
+    if (ob_get_level()) {
+        ob_end_clean();
+    }
+
+    header('Content-Type: text/csv; charset=utf-8');
+    header('Content-Disposition: attachment; filename=Uploaded_Statements_Report_' . date('Y-m-d') . '.csv');
+    header('Pragma: no-cache');
+    header('Expires: 0');
+
+    $output = fopen('php://output', 'w');
+    
+    // CSV Column Headers
+    fputcsv($output, ['ID', 'Filename', 'File Link', 'File ID', 'File Path', 'Account Number', 'Mobile Number', 'Telco', 'Amount Due', 'Billing Period', 'Invoice Date', 'Due Date', 'Updated At']);
+
+    if ($db_connection) {
+        try {
+            $stmt = $db_connection->query("SELECT id, filename, file_link, file_id, file_path, account_number, mobile_number, telco, amount_due, billing_period, invoice_date, due_date, updated_at FROM pdf_extracted_details ORDER BY id DESC");
+            while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+                fputcsv($output, [
+                    $row['id'],
+                    $row['filename'],
+                    $row['file_link'],
+                    $row['file_id'],
+                    $row['file_path'],
+                    $row['account_number'],
+                    $row['mobile_number'],
+                    $row['telco'],
+                    $row['amount_due'],
+                    $row['billing_period'],
+                    $row['invoice_date'],
+                    $row['due_date'],
+                    $row['updated_at']
+                ]);
+            }
+        } catch (Exception $e) {
+            fputcsv($output, ['Error fetching data: ' . $e->getMessage()]);
+        }
+    } else {
+        fputcsv($output, ['Error: Database connection not found.']);
+    }
+
+    fclose($output);
+    exit;
+}
+
+// Include Composer autoloader para sa PDF parser at Google API Client
 if (file_exists(__DIR__ . '/vendor/autoload.php')) {
     require_once __DIR__ . '/vendor/autoload.php';
 }
@@ -189,7 +248,6 @@ if (!function_exists('extract_pdf_statement_details')) {
     }
 }
 
-// Helper function to find or create a Google Drive subfolder recursively
 if (!function_exists('get_or_create_drive_folder')) {
     function get_or_create_drive_folder($drive_service, $parent_id, $folder_name) {
         $escapedName = str_replace("'", "\\'", $folder_name);
@@ -221,24 +279,17 @@ if (!function_exists('get_or_create_drive_folder')) {
     }
 }
 
-// Handle AJAX Batch Uploads (10 files per request)
+// Handle AJAX Batch Uploads
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['pdf_files'])) {
     @ini_set('zlib.output_compression', 'Off');
-    @ob_end_clean();
+    if (ob_get_level()) {
+        ob_end_clean();
+    }
     header('Content-Type: application/json');
 
     $success_files = [];
     $failed_files = [];
     $overwrite = isset($_POST['overwrite']) && $_POST['overwrite'] === '1';
-
-    $db_connection = null;
-    if (isset($pdo) && $pdo instanceof PDO) {
-        $db_connection = $pdo;
-    } elseif (isset($conn) && $conn instanceof PDO) {
-        $db_connection = $conn;
-    } elseif (isset($db) && $db instanceof PDO) {
-        $db_connection = $db;
-    }
 
     $drive_service = null;
     try {
@@ -252,9 +303,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['pdf_files'])) {
             }
 
             if (class_exists('GuzzleHttp\Client')) {
-                $httpClient = new GuzzleHttp\Client([
-                    'verify' => false
-                ]);
+                $httpClient = new GuzzleHttp\Client(['verify' => false]);
                 $client->setHttpClient($httpClient);
             }
 
@@ -293,22 +342,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['pdf_files'])) {
         $billing_folder_name = !empty($details['billing_period']) ? str_replace(['/', '\\'], '-', $details['billing_period']) : 'Unknown_Period';
         $db_file_path = "{$telco_folder_name}/{$year_folder_name}/{$billing_folder_name}";
 
-        // =========================================================================
-        // 1. LOCAL SERVER UPLOAD / SAVE LOGIC (Na may anti-Access Denied patch)
-        // =========================================================================
         $local_dir = __DIR__ . '/uploads/' . $db_file_path;
         if (!file_exists($local_dir)) {
             @mkdir($local_dir, 0777, true);
         }
-
-        // Tiyaking writable ang direktoryo para hindi ma-deny ang access
         if (file_exists($local_dir) && !is_writable($local_dir)) {
             @chmod($local_dir, 0777);
         }
 
         $local_file_target = $local_dir . '/' . $basename;
-        
-        // Kung may existing file na sa local, i-clear ang permission at i-delete muna para maiwasan ang Access Denied
         if (file_exists($local_file_target)) {
             @chmod($local_file_target, 0777);
             @unlink($local_file_target);
@@ -317,9 +359,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['pdf_files'])) {
         @copy($tmp_name, $local_file_target);
         @chmod($local_file_target, 0644);
 
-        // =========================================================================
-        // 2. GOOGLE DRIVE UPLOAD LOGIC
-        // =========================================================================
         if ($drive_service) {
             try {
                 $telco_folder_id = get_or_create_drive_folder($drive_service, $google_drive_folder_id, $telco_folder_name);
@@ -350,9 +389,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['pdf_files'])) {
                         ]);
                         $file_id = $updatedFile->getId();
                         $file_link = $updatedFile->getWebViewLink();
-                        $gdrive_status = "Overwritten in Shared Drive ({$db_file_path})";
+                        $gdrive_status = "Overwritten in Shared Drive";
                     } else {
-                        $failed_files[] = "$basename (Upload Failed: File already exists in Google Drive and Overwrite is disabled)";
+                        $failed_files[] = "$basename (File already exists in Google Drive and Overwrite is disabled)";
                         continue;
                     }
                 } else {
@@ -370,20 +409,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['pdf_files'])) {
                     ]);
                     $file_id = $createdFile->getId();
                     $file_link = $createdFile->getWebViewLink();
-                    $gdrive_status = "Uploaded to Shared Drive ({$db_file_path})";
+                    $gdrive_status = "Uploaded to Shared Drive";
                 }
             } catch (Exception $e) {
                 $failed_files[] = "$basename (Drive Error: " . $e->getMessage() . ")";
                 continue;
             }
-        } else {
-            $failed_files[] = "$basename (Drive Service Unavailable)";
-            continue;
         }
 
-        // =========================================================================
-        // 3. DATABASE INSERT / UPDATE LOGIC
-        // =========================================================================
         if ($db_connection) {
             try {
                 $stmt = $db_connection->prepare("
@@ -415,7 +448,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['pdf_files'])) {
                     $file_id, 
                     $db_file_path
                 ]);
-                $success_files[] = "$basename (Saved to DB & Local Server | Telco: {$details['telco']} | {$gdrive_status})";
+                $success_files[] = "$basename (Saved successfully)";
             } catch (Exception $e) {
                 $failed_files[] = "$basename (DB Error: " . $e->getMessage() . ")";
             }
@@ -433,67 +466,218 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['pdf_files'])) {
 // Layout Rendering Block
 ob_start();
 ?>
-<!-- UPLOAD TAB VIEW HTML -->
-<div class="bg-white shadow-lg rounded-2xl p-6 border border-gray-100 max-w-5xl mx-auto mt-6">
-    <div class="mb-6">
-        <h2 class="text-lg font-bold text-gray-800">Upload Statements (Batch Size: 10)</h2>
-        <p class="text-xs text-gray-500 mt-0.5">Drag and drop folders or PDF files safely. All PDF files inside dropped folders/subfolders will be automatically queued, saved locally, and synced to Google Drive in batches of 10.</p>
-    </div>
 
-    <div id="dropZone" class="border-2 border-dashed border-gray-300 rounded-2xl p-8 text-center bg-gray-50/50 hover:bg-gray-50 transition-colors mb-6 relative">
-        <div class="flex flex-col items-center">
-            <div class="w-10 h-10 mb-3 text-gray-400 flex items-center justify-center bg-white rounded-full shadow-sm border border-gray-100">
-                📁
-            </div>
-            <p class="text-sm font-medium text-gray-700 mb-3">Drag & drop folders or PDF files here, or choose an option below:</p>
-            
-            <div class="flex flex-wrap justify-center gap-3">
-                <!-- Button para sa Folder Selection -->
-                <label class="cursor-pointer bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold py-2.5 px-4 rounded-xl shadow transition-colors inline-flex items-center space-x-2">
-                    <span>📂</span>
-                    <span>Browse Folder</span>
-                    <input type="file" id="folder_input" name="folder_input[]" webkitdirectory directory class="hidden">
-                </label>
+<!-- TAB NAVIGATION BUTTONS -->
+<div class="max-w-6xl mx-auto mt-6 flex border-b border-gray-200">
+    <button type="button" onclick="switchTab('upload')" id="uploadTabBtn" class="py-3 px-6 text-sm font-bold border-b-2 border-blue-600 text-blue-600 focus:outline-none flex items-center space-x-2">
+        <span>📤</span>
+        <span>Upload Statements</span>
+    </button>
+    <button type="button" onclick="switchTab('filemanager')" id="fileManagerTabBtn" class="py-3 px-6 text-sm font-bold border-b-2 border-transparent text-gray-500 hover:text-gray-700 focus:outline-none flex items-center space-x-2">
+        <span>📂</span>
+        <span>File Manager & Reports</span>
+    </button>
+</div>
 
-                <!-- Button para sa Individual/Multiple PDF Files Selection -->
-                <label class="cursor-pointer bg-gray-700 hover:bg-gray-800 text-white text-xs font-semibold py-2.5 px-4 rounded-xl shadow transition-colors inline-flex items-center space-x-2">
-                    <span>📄</span>
-                    <span>Select PDF Files</span>
-                    <input type="file" id="file_input" name="file_input[]" multiple accept=".pdf" class="hidden">
-                </label>
-            </div>
-
-            <p class="text-xs text-gray-400 mt-3">Supports bulk folder drop/selection or individual PDF file selection</p>
-        </div>
-    </div>
-    
-    <div class="mb-6 flex items-center bg-blue-50/60 border border-blue-100 rounded-xl p-3.5">
-        <input type="checkbox" id="overwriteCheckbox" class="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500">
-        <label for="overwriteCheckbox" class="ml-2.5 text-xs font-medium text-blue-900 cursor-pointer">
-            <strong>Overwrite existing files</strong> in Google Drive if they already exist.
-        </label>
-    </div>
-
-    <!-- QUEUE SECTION -->
-    <div class="bg-white border border-gray-200 rounded-2xl shadow-sm p-5 mb-6">
-        <div class="flex justify-between items-center mb-3 pb-2 border-b border-gray-100">
-            <div class="text-xs font-bold text-gray-700 uppercase tracking-wider" id="queueHeaderLabel">SELECTED FILES QUEUE (0)</div>
-            <div class="flex items-center space-x-4">
-                <span id="queueCountText" class="text-xs font-medium text-blue-600">0 file(s) loaded in queue.</span>
-                <button type="button" id="clearBtn" class="text-xs text-gray-400 hover:text-rose-600 font-medium">Clear Queue</button>
-            </div>
+<!-- TAB 1: UPLOAD STATEMENTS VIEW -->
+<div id="uploadTabView">
+    <div class="bg-white shadow-lg rounded-2xl p-6 border border-gray-100 max-w-6xl mx-auto mt-6">
+        <div class="mb-6">
+            <h2 class="text-lg font-bold text-gray-800">Upload Statements (Batch Size: 10)</h2>
+            <p class="text-xs text-gray-500 mt-0.5">Drag and drop folders or PDF files safely. All PDF files inside dropped folders/subfolders will be automatically queued, saved locally, and synced to Google Drive in batches of 10.</p>
         </div>
 
-        <div id="fileListContainer" class="min-h-[60px] max-h-48 overflow-y-auto p-1 divide-y divide-gray-50 mb-4">
-            <p class="text-xs text-gray-400 text-center py-4 italic" id="emptyQueueMsg">No files selected yet.</p>
+        <div id="dropZone" class="border-2 border-dashed border-gray-300 rounded-2xl p-8 text-center bg-gray-50/50 hover:bg-gray-50 transition-colors mb-6 relative">
+            <div class="flex flex-col items-center">
+                <div class="w-10 h-10 mb-3 text-gray-400 flex items-center justify-center bg-white rounded-full shadow-sm border border-gray-100">
+                    📁
+                </div>
+                <p class="text-sm font-medium text-gray-700 mb-3">Drag & drop folders or PDF files here, or choose an option below:</p>
+                
+                <div class="flex flex-wrap justify-center gap-3">
+                    <label class="cursor-pointer bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold py-2.5 px-4 rounded-xl shadow transition-colors inline-flex items-center space-x-2">
+                        <span>📂</span>
+                        <span>Browse Folder</span>
+                        <input type="file" id="folder_input" name="folder_input[]" webkitdirectory directory class="hidden">
+                    </label>
+
+                    <label class="cursor-pointer bg-gray-700 hover:bg-gray-800 text-white text-xs font-semibold py-2.5 px-4 rounded-xl shadow transition-colors inline-flex items-center space-x-2">
+                        <span>📄</span>
+                        <span>Select PDF Files</span>
+                        <input type="file" id="file_input" name="file_input[]" multiple accept=".pdf" class="hidden">
+                    </label>
+                </div>
+            </div>
+        </div>
+        
+        <div class="mb-6 flex items-center bg-blue-50/60 border border-blue-100 rounded-xl p-3.5">
+            <input type="checkbox" id="overwriteCheckbox" class="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500">
+            <label for="overwriteCheckbox" class="ml-2.5 text-xs font-medium text-blue-900 cursor-pointer">
+                <strong>Overwrite existing files</strong> in Google Drive if they already exist.
+            </label>
         </div>
 
-        <div class="flex justify-end pt-2">
-            <button type="button" id="uploadBtn" onclick="startUploadProcess()" class="bg-rose-500 hover:bg-rose-600 text-white font-semibold py-2.5 px-5 rounded-xl shadow-md transition-colors text-xs flex items-center space-x-2 disabled:opacity-40 disabled:cursor-not-allowed" disabled>
-                <span>❌</span><span>Start Batch Upload (10 per batch)</span>
+        <!-- QUEUE SECTION -->
+        <div class="bg-white border border-gray-200 rounded-2xl shadow-sm p-5 mb-6">
+            <div class="flex justify-between items-center mb-3 pb-2 border-b border-gray-100">
+                <div class="text-xs font-bold text-gray-700 uppercase tracking-wider" id="queueHeaderLabel">SELECTED FILES QUEUE (0)</div>
+                <div class="flex items-center space-x-4">
+                    <span id="queueCountText" class="text-xs font-medium text-blue-600">0 file(s) loaded in queue.</span>
+                    <button type="button" id="clearBtn" class="text-xs text-gray-400 hover:text-rose-600 font-medium">Clear Queue</button>
+                </div>
+            </div>
+
+            <div id="fileListContainer" class="min-h-[60px] max-h-48 overflow-y-auto p-1 divide-y divide-gray-50 mb-4">
+                <p class="text-xs text-gray-400 text-center py-4 italic" id="emptyQueueMsg">No files selected yet.</p>
+            </div>
+
+            <div class="flex justify-end pt-2">
+                <button type="button" id="uploadBtn" onclick="startUploadProcess()" class="bg-rose-500 hover:bg-rose-600 text-white font-semibold py-2.5 px-5 rounded-xl shadow-md transition-colors text-xs flex items-center space-x-2 disabled:opacity-40 disabled:cursor-not-allowed" disabled>
+                    <span>❌</span><span>Start Batch Upload (10 per batch)</span>
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- TAB 2: FILE MANAGER & DOWNLOAD REPORT VIEW -->
+<div id="fileManagerTabView" style="display: none;" class="bg-white shadow-lg rounded-2xl p-6 border border-gray-100 max-w-6xl mx-auto mt-6">
+    <div class="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-6">
+        <div>
+            <h2 class="text-lg font-bold text-gray-800">Uploaded Statements List</h2>
+            <p class="text-xs text-gray-500 mt-0.5">Manage uploaded PDF statements, search records, download files, and export CSV reports.</p>
+        </div>
+        <div class="flex items-center gap-3">
+            <button type="button" onclick="downloadSelectedFiles()" class="bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-4 rounded-xl shadow text-xs flex items-center space-x-2 transition-colors">
+                <span>📥</span>
+                <span>Download Selected</span>
             </button>
+            <a href="debit_memo_upload.php?export=csv" class="bg-emerald-600 hover:bg-emerald-700 text-white font-semibold py-2 px-4 rounded-xl shadow text-xs flex items-center space-x-2 transition-colors whitespace-nowrap">
+                <span>📊</span>
+                <span>Export Report (CSV)</span>
+            </a>
         </div>
     </div>
+
+    <!-- Search Bar Filter & Limit Selector -->
+<div class="flex flex-col md:flex-row justify-between items-center gap-3 mb-4">
+    <input type="text" id="tableSearchInput" onkeyup="filterTableRecords()" placeholder="🔍 Search by filename, telco account number, amount due, billing period..." class="w-full text-xs border border-gray-300 rounded-xl px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-blue-500 bg-gray-50/50">
+    
+    <div class="flex items-center space-x-2 whitespace-nowrap">
+        <span class="text-xs text-gray-500">Show:</span>
+        <?php 
+            $limit_val = isset($_GET['limit']) ? $_GET['limit'] : '15';
+        ?>
+        <select onchange="window.location.href='debit_memo_upload.php?tab=filemanager&limit=' + this.value" class="text-xs border border-gray-300 rounded-xl px-3 py-2 bg-gray-50/50 focus:outline-none focus:ring-2 focus:ring-blue-500">
+            <option value="15" <?php echo ($limit_val == '15') ? 'selected' : ''; ?>>15</option>
+            <option value="50" <?php echo ($limit_val == '50') ? 'selected' : ''; ?>>50</option>
+            <option value="100" <?php echo ($limit_val == '100') ? 'selected' : ''; ?>>100</option>
+            <option value="all" <?php echo ($limit_val == 'all') ? 'selected' : ''; ?>>Show All</option>
+        </select>
+    </div>
+</div>
+
+    <!-- DATA TABLE WITH PAGINATION -->
+    <div class="overflow-x-auto border border-gray-200 rounded-xl">
+        <table id="statementsTable" class="min-w-full divide-y divide-gray-200 text-xs">
+            <thead class="bg-gray-50 text-gray-700 uppercase font-semibold">
+                <tr>
+                    <th class="py-3 px-3 text-center w-10">
+                        <input type="checkbox" id="selectAllCheckbox" onclick="toggleSelectAll(this)" class="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500 cursor-pointer">
+                    </th>
+                    <th class="py-3 px-4 text-left">Filename</th>
+                    <th class="py-3 px-4 text-left">Telco</th>
+                    <th class="py-3 px-4 text-left">Account #</th>
+                    <th class="py-3 px-4 text-left">Amount Due</th>
+                    <th class="py-3 px-4 text-left">Billing Period</th>
+                    <th class="py-3 px-4 text-center">Action / Download</th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-100 bg-white" id="tableBodyContent">
+                <?php
+                // Pagination & Limit setup
+                $page = isset($_GET['page']) ? (int)$_GET['page'] : 1;
+                if ($page < 1) $page = 1;
+
+                $total_records = 0;
+                if ($db_connection) {
+                    try {
+                        $count_stmt = $db_connection->query("SELECT COUNT(*) FROM pdf_extracted_details");
+                        $total_records = $count_stmt->fetchColumn();
+
+                        if ($limit_val === 'all') {
+                            $stmt = $db_connection->query("SELECT * FROM pdf_extracted_details ORDER BY id DESC");
+                        } else {
+                            $limit = (int)$limit_val;
+                            $offset = ($page - 1) * $limit;
+                            $stmt = $db_connection->prepare("SELECT * FROM pdf_extracted_details ORDER BY id DESC LIMIT :limit OFFSET :offset");
+                            $stmt->bindValue(':limit', $limit, PDO::PARAM_INT);
+                            $stmt->bindValue(':offset', $offset, PDO::PARAM_INT);
+                            $stmt->execute();
+                        }
+
+                        while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+    $local_file = 'uploads/' . $row['file_path'] . '/' . $row['filename'];
+    
+    echo "<tr class='hover:bg-gray-50 search-row'>";
+    
+    // Checkbox column
+    echo "<td class='py-3 px-3 text-center'>";
+    echo "<input type='checkbox' name='row_select' value='" . htmlspecialchars($local_file) . "' class='row-checkbox w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500 cursor-pointer'>";
+    echo "</td>";
+
+    // 1. Filename
+    echo "<td class='py-3 px-4 font-medium text-gray-900 search-filename'>" . htmlspecialchars($row['filename']) . "</td>";
+    // Telco (optional to include or keep separate)
+    echo "<td class='py-3 px-4 text-gray-600 search-telco'>" . htmlspecialchars($row['telco']) . "</td>";
+    // 2. Account Number
+    echo "<td class='py-3 px-4 text-gray-600 search-account'>" . htmlspecialchars($row['account_number']) . "</td>";
+    // 3. Amount Due
+    echo "<td class='py-3 px-4 text-gray-600 search-amount'>₱" . htmlspecialchars($row['amount_due']) . "</td>";
+    // 4. Billing Period
+    echo "<td class='py-3 px-4 text-gray-600 search-period'>" . htmlspecialchars($row['billing_period']) . "</td>";
+    
+    // Action / Download buttons
+    echo "<td class='py-3 px-4 text-center whitespace-nowrap'>";
+    echo "<div class='inline-flex items-center justify-center gap-2'>";
+    
+    if (!empty($row['file_link'])) {
+        echo "<a href='" . htmlspecialchars($row['file_link']) . "' target='_blank' class='bg-blue-50 text-blue-600 px-2.5 py-1.5 rounded-lg border border-blue-200 font-semibold hover:bg-blue-100 inline-flex items-center gap-1'>Drive Link ↗</a>";
+    }
+    
+    echo "<a href='" . htmlspecialchars($local_file) . "' download class='bg-gray-100 text-gray-700 px-2.5 py-1.5 rounded-lg border border-gray-300 font-semibold hover:bg-gray-200 inline-flex items-center gap-1'>Download ⬇</a>";
+
+    echo "</div>";
+    echo "</td>";
+    echo "</tr>";
+}
+                    } catch (Exception $e) {
+                        echo "<tr><td colspan='7' class='py-4 text-center text-rose-500'>Error loading records: " . htmlspecialchars($e->getMessage()) . "</td></tr>";
+                    }
+                } else {
+                    echo "<tr><td colspan='7' class='py-4 text-center text-gray-400'>Database connection unavailable.</td></tr>";
+                }
+                ?>
+            </tbody>
+        </table>
+    </div>
+
+    <!-- PAGINATION CONTROLS -->
+    <?php if ($limit_val !== 'all' && $total_records > $limit): ?>
+    <div class="flex justify-between items-center mt-4 px-2">
+        <div class="text-xs text-gray-500">
+            Showing page <strong><?php echo $page; ?></strong> of <strong><?php echo ceil($total_records / $limit); ?></strong> (Total: <?php echo $total_records; ?> files)
+        </div>
+        <div class="flex space-x-2">
+            <?php if ($page > 1): ?>
+                <a href="debit_memo_upload.php?tab=filemanager&limit=<?php echo $limit_val; ?>&page=<?php echo $page - 1; ?>" class="px-3 py-1.5 bg-gray-100 hover:bg-gray-200 text-gray-700 text-xs font-semibold rounded-lg border border-gray-300">Previous</a>
+            <?php endif; ?>
+            <?php if ($page * $limit < $total_records): ?>
+                <a href="debit_memo_upload.php?tab=filemanager&limit=<?php echo $limit_val; ?>&page=<?php echo $page + 1; ?>" class="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded-lg">Next</a>
+            <?php endif; ?>
+        </div>
+    </div>
+    <?php endif; ?>
 </div>
 
 <!-- CENTERED POP-UP MODAL PANEL FOR UPLOAD PROGRESS -->
@@ -544,6 +728,12 @@ let isUploading = false;
 let abortUpload = false;
 
 document.addEventListener('DOMContentLoaded', function () {
+    // Awtomatikong buksan ang File Manager tab kung may ?tab=filemanager sa URL (para hindi bumalik sa Tab 1)
+    const urlParams = new URLSearchParams(window.location.search);
+    if (urlParams.get('tab') === 'filemanager' || urlParams.get('page') || urlParams.get('limit')) {
+        switchTab('filemanager');
+    }
+
     const folderInput = document.getElementById('folder_input');
     const fileInput = document.getElementById('file_input');
     const dropZone = document.getElementById('dropZone');
@@ -607,6 +797,70 @@ document.addEventListener('DOMContentLoaded', function () {
         });
     }
 });
+
+function switchTab(tab) {
+    const uploadTabView = document.getElementById('uploadTabView');
+    const fileManagerTabView = document.getElementById('fileManagerTabView');
+    const uploadTabBtn = document.getElementById('uploadTabBtn');
+    const fileManagerTabBtn = document.getElementById('fileManagerTabBtn');
+
+    if (tab === 'upload') {
+        uploadTabView.style.display = 'block';
+        fileManagerTabView.style.display = 'none';
+
+        uploadTabBtn.className = 'py-3 px-6 text-sm font-bold border-b-2 border-blue-600 text-blue-600 focus:outline-none flex items-center space-x-2';
+        fileManagerTabBtn.className = 'py-3 px-6 text-sm font-bold border-b-2 border-transparent text-gray-500 hover:text-gray-700 focus:outline-none flex items-center space-x-2';
+    } else {
+        uploadTabView.style.display = 'none';
+        fileManagerTabView.style.display = 'block';
+
+        fileManagerTabBtn.className = 'py-3 px-6 text-sm font-bold border-b-2 border-blue-600 text-blue-600 focus:outline-none flex items-center space-x-2';
+        uploadTabBtn.className = 'py-3 px-6 text-sm font-bold border-b-2 border-transparent text-gray-500 hover:text-gray-700 focus:outline-none flex items-center space-x-2';
+    }
+}
+
+function filterTableRecords() {
+    const input = document.getElementById('tableSearchInput').value.toLowerCase();
+    const rows = document.querySelectorAll('.search-row');
+
+    rows.forEach(row => {
+        const textContent = row.innerText.toLowerCase();
+        if (textContent.includes(input)) {
+            row.style.display = '';
+        } else {
+            row.style.display = 'none';
+        }
+    });
+}
+
+function toggleSelectAll(source) {
+    const checkboxes = document.querySelectorAll('.row-checkbox');
+    checkboxes.forEach(cb => {
+        if (cb.closest('tr').style.display !== 'none') {
+            cb.checked = source.checked;
+        }
+    });
+}
+
+function downloadSelectedFiles() {
+    const checkedBoxes = document.querySelectorAll('.row-checkbox:checked');
+    if (checkedBoxes.length === 0) {
+        alert('Mangyaring pumili kahit isang file bago mag-download.');
+        return;
+    }
+
+    checkedBoxes.forEach((cb, index) => {
+        const fileUrl = cb.value;
+        setTimeout(() => {
+            const a = document.createElement('a');
+            a.href = fileUrl;
+            a.download = '';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+        }, index * 300);
+    });
+}
 
 async function traverseFileTree(item) {
     if (item.isFile) {
@@ -694,7 +948,7 @@ async function startUploadProcess() {
     const progressModal = document.getElementById('progressModal');
     const stopUploadBtn = document.getElementById('stopUploadBtn');
     const closeModalBtn = document.getElementById('closeModalBtn');
-    const logContent = document.getElementById('logContent');
+    const logContent = document.getElementById('logContainer');
     const progressBar = document.getElementById('progressBar');
     const progressPercentage = document.getElementById('progressPercentage');
     const progressText = document.getElementById('progressText');
@@ -708,8 +962,8 @@ async function startUploadProcess() {
     if(logContent) logContent.innerHTML = '';
     if(modalSpinnerIcon) modalSpinnerIcon.style.display = 'inline-block';
 
-    const chunkSize = 20; // Itinaas para mas mabilis (20 files bawat batch)
-    const maxConcurrent = 2; // Sabay na mag-a-upload ang 2 batches para mas mabilis
+    const chunkSize = 20; 
+    const maxConcurrent = 2; 
     const totalFiles = fileQueue.length;
     let processedFiles = 0;
     let successTotal = 0;
@@ -720,7 +974,6 @@ async function startUploadProcess() {
     if(progressBar) progressBar.style.width = '1%';
     if(progressPercentage) progressPercentage.textContent = '0%';
 
-    // Hatiin ang queue sa mga batches
     let batches = [];
     for (let i = 0; i < totalFiles; i += chunkSize) {
         batches.push(fileQueue.slice(i, i + chunkSize));
@@ -767,10 +1020,9 @@ async function startUploadProcess() {
             } catch (error) {
                 retries--;
                 if (retries === 0) {
-                    // Magpapakita ng mensahe o prompt para tanungin ang user kung gusto niyang i-retry
                     const userRetry = confirm(`May error sa pag-upload ng isang batch (${error.message}). Gusto mo bang i-retry ito?`);
                     if (userRetry) {
-                        retries = 3; // I-reset ang retries para subukang muli
+                        retries = 3; 
                         if(logContent) logContent.innerHTML += `<div class="text-amber-400">[USER ACTION] Piniling i-retry ang batch...</div>`;
                         await new Promise(resolve => setTimeout(resolve, 2000));
                         continue;
@@ -796,7 +1048,6 @@ async function startUploadProcess() {
         if(logContainerElem) logContainerElem.scrollTop = logContainerElem.scrollHeight;
     }
 
-    // Patakbuhin ang batches nang may kontrol sa sabay-sabay na koneksyon (concurrency)
     while (batchIndex < batches.length && !abortUpload) {
         let currentWorkers = [];
         for (let w = 0; w < maxConcurrent && batchIndex < batches.length; w++) {
