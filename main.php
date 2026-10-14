@@ -22,7 +22,39 @@
     
         // Determine which menu tab to highlight based on active filename context
         $current_script = basename($_SERVER['SCRIPT_NAME']);
-        $is_soa_active = in_array($current_script, ['debit_memo_dispatch.php', 'email_mapping.php', 'debit_memo_upload.php', 'upload.php', 'dispatch.php', 'mappings.php']);
+        $is_soa_active = in_array($current_script, ['debit_memo_upload.php', 'upload.php', 'debit_memo_dispatch.php', 'dispatch.php']);
+        $is_super           = (($_SESSION['role'] ?? '') === 'superadmin');
+        $is_settings_active = in_array($current_script, ['users.php', 'logs.php', 'backup.php']);
+
+        // Top-level sidebar link
+        $nav_item = function ($href, $icon, $label, $active) {
+            $cls = $active ? 'bg-blue-600 text-white shadow-md' : 'text-gray-400 hover:bg-slate-800 hover:text-white';
+            echo '<a href="' . $href . '" class="flex items-center space-x-3 px-4 py-2.5 rounded-md transition ' . $cls . '"' . ($active ? ' aria-current="page"' : '') . '>'
+               . '<i class="las ' . $icon . ' text-xl"></i> <span>' . $label . '</span></a>';
+        };
+
+        // Link inside a dropdown group
+        $nav_child = function ($href, $icon, $label, $active) {
+            $cls = $active ? 'bg-blue-500/15 text-blue-300 font-semibold' : 'text-gray-400 hover:bg-slate-800 hover:text-white';
+            echo '<a href="' . $href . '" class="flex items-center space-x-2.5 px-3 py-2 rounded-md text-sm transition ' . $cls . '"' . ($active ? ' aria-current="page"' : '') . '>'
+               . '<i class="las ' . $icon . ' text-lg"></i> <span>' . $label . '</span></a>';
+        };
+
+        // Dropdown group header + wrapper open
+        $nav_group_open = function ($key, $icon, $label, $active) {
+            $btn = $active ? 'text-white font-semibold' : 'text-gray-400 hover:bg-slate-800 hover:text-white';
+            echo '<div>'
+               . '<button type="button" id="navBtn-' . $key . '" onclick="toggleNavGroup(\'' . $key . '\')" aria-expanded="' . ($active ? 'true' : 'false') . '" aria-controls="navSub-' . $key . '" '
+               . 'class="w-full flex items-center justify-between px-4 py-2.5 rounded-md transition ' . $btn . '">'
+               . '<span class="flex items-center space-x-3"><i class="las ' . $icon . ' text-xl"></i><span>' . $label . '</span></span>'
+               . '<i class="las la-angle-down text-sm transition-transform duration-200 nav-arrow ' . ($active ? 'rotate-180' : '') . '"></i>'
+               . '</button>'
+               . '<div id="navSub-' . $key . '" class="nav-sub ' . ($active ? 'open' : '') . '"><div>'
+               . '<div class="ml-6 mt-1 mb-1 pl-3 border-l border-slate-700 space-y-1">';
+        };
+        $nav_group_close = function () {
+            echo '</div></div></div></div>';
+        };
     ?>
     <!DOCTYPE html>
     <html lang="en">
@@ -42,6 +74,15 @@
                 font-size: 1rem;
                 -webkit-text-size-adjust: 100%;
             }
+
+            /* Sidebar dropdown groups: smooth open/close, hidden links are not tabbable */
+            .nav-sub { display: grid; grid-template-rows: 0fr; transition: grid-template-rows .2s ease; }
+            .nav-sub.open { grid-template-rows: 1fr; }
+            .nav-sub > div { overflow: hidden; visibility: hidden; transition: visibility 0s linear .2s; }
+            .nav-sub.open > div { visibility: visible; transition-delay: 0s; }
+            @media (prefers-reduced-motion: reduce) {
+                .nav-sub, .nav-sub > div, .nav-arrow { transition: none !important; }
+            }
         </style>
 
         <script src="https://cdn.tailwindcss.com"></script>
@@ -56,67 +97,42 @@
                     <p class="text-xs text-gray-400">Management Portal</p>
                 </div>
         
-                <nav class="mt-6 px-4 space-y-2">
-                    <a href="dashboard.php" class="flex items-center space-x-3 px-4 py-2.5 rounded-md transition <?php echo $current_script === 'dashboard.php' ? 'bg-blue-600 text-white shadow-md' : 'text-gray-400 hover:bg-slate-800 hover:text-white'; ?>">
-                        <i class="las la-chart-pie text-xl"></i> <span>Dashboard</span>
-                    </a>
-        
-                    <a href="list_dm.php" class="flex items-center space-x-3 px-4 py-2.5 rounded transition <?php echo $current_script === 'list_dm.php' ? 'bg-blue-600 text-white shadow-md' : 'text-gray-400 hover:bg-slate-800 hover:text-white'; ?>">
-                        <i class="las la-file-invoice-dollar text-xl"></i> <span>Debit Memos List</span>
-                    </a>
+                <nav class="mt-6 px-4 space-y-1.5" aria-label="Main navigation">
 
-                    <a href="reports.php" class="flex items-center space-x-3 px-4 py-2.5 rounded transition <?php echo $current_script === 'reports.php' ? 'bg-blue-600 text-white shadow-md' : 'text-gray-400 hover:bg-slate-800 hover:text-white'; ?>">
-                        <i class="las la-chart-bar text-xl"></i> <span>Reports</span>
-                    </a>
+                    <?php
+                    // Everyday pages
+                    $nav_item('dashboard.php', 'la-th-large',            'Overview',          $current_script === 'dashboard.php');
+                    $nav_item('list_dm.php',   'la-file-invoice-dollar', 'Debit Masterfile',  $current_script === 'list_dm.php');
+                    $nav_item('reports.php',   'la-chart-bar',           'Reports',           $current_script === 'reports.php');
+                    ?>
 
-                    <!-- SOA Management Dropdown para sa Superadmin -->
-                    <?php if ($_SESSION['role'] === 'superadmin'): ?>
-                    <div class="space-y-1">
-                        <button onclick="toggleSoaDropdown()" class="w-full flex items-center justify-between px-4 py-2.5 rounded-md transition <?php echo $is_soa_active ? 'bg-slate-800 text-white font-semibold' : 'text-gray-400 hover:bg-slate-800 hover:text-white'; ?>">
-                            <div class="flex items-center space-x-3">
-                                <i class="las la-address-book text-xl"></i> 
-                                <span>Manage SOA</span>
-                            </div>
-                            <i id="soaDropdownArrow" class="las la-angle-down transition-transform duration-200 <?php echo $is_soa_active ? 'rotate-180' : ''; ?>"></i>
-                        </button>
-                        
-                        <!-- Sub-links container -->
-                        <div id="soaSubMenu" class="<?php echo $is_soa_active ? 'block' : 'hidden'; ?> pl-4 space-y-1 mt-1 border-l-2 border-slate-700 ml-4">
-                            <a href="debit_memo_upload.php" class="flex items-center space-x-2 px-3 py-2 rounded text-xs transition <?php echo in_array($current_script, ['debit_memo_upload.php', 'upload.php']) ? 'text-blue-400 font-bold bg-slate-800/50' : 'text-gray-400 hover:text-white'; ?>">
-                                <i class="las la-file-upload text-lg"></i> <span>Upload Statements</span>
-                            </a>
-                            <a href="debit_memo_dispatch.php" class="flex items-center space-x-2 px-3 py-2 rounded text-xs transition <?php echo in_array($current_script, ['debit_memo_dispatch.php', 'dispatch.php']) ? 'text-blue-400 font-bold bg-slate-800/50' : 'text-gray-400 hover:text-white'; ?>">
-                                <i class="las la-paper-plane text-lg"></i> <span>Dispatch Hub</span>
-                            </a>
-                            <a href="email_mapping.php" class="flex items-center space-x-2 px-3 py-2 rounded text-xs transition <?php echo in_array($current_script, ['email_mapping.php', 'mappings.php']) ? 'text-blue-400 font-bold bg-slate-800/50' : 'text-gray-400 hover:text-white'; ?>">
-                                <i class="las la-envelope text-lg"></i> <span>Email Mappings</span>
-                            </a>
-                        </div>
-                    </div>
-                    <?php endif; ?>
+                    <?php if ($is_super): ?>
+                        <div class="my-3 border-t border-slate-800" role="separator"></div>
 
-                    <?php if ($_SESSION['role'] !== 'superadmin'): ?>
-                    <a href="change_password.php" class="flex items-center space-x-3 px-4 py-2.5 rounded transition <?php echo $current_script === 'change_password.php' ? 'bg-blue-600 text-white shadow-md' : 'text-gray-400 hover:bg-slate-800 hover:text-white'; ?>">
-                        <i class="las la-key text-xl"></i> <span>Change Password</span>
-                    </a>
-                    <?php endif; ?>
-        
-                    <?php if ($_SESSION['role'] === 'superadmin'): ?>
-                        <a href="users.php" class="flex items-center space-x-3 px-4 py-2.5 rounded-md transition <?php echo $current_script === 'users.php' ? 'bg-blue-600 text-white shadow-md' : 'text-gray-400 hover:bg-slate-800 hover:text-white'; ?>">
-                            <i class="las la-users text-xl"></i> <span>User Management</span>
-                        </a>
-                    <?php endif; ?>
+                        <?php
+                        // Maps accounts to their email recipients (set up once, used by Email SOA)
+                        $nav_item('email_mapping.php', 'la-sitemap', 'Account Mapping', in_array($current_script, ['email_mapping.php', 'mappings.php']));
+                        ?>
 
-                    <?php if ($_SESSION['role'] === 'superadmin'): ?>
-                    <a href="logs.php" class="flex items-center space-x-3 px-4 py-2.5 rounded-md transition <?php echo $current_script === 'logs.php' ? 'bg-blue-600 text-white shadow-md' : 'text-gray-400 hover:bg-slate-800 hover:text-white'; ?>">
-                        <i class="las la-history text-xl"></i> <span>System Logs</span>
-                    </a>
-                    <?php endif; ?>
+                        <!-- Manage SOA: import statements, then email them -->
+                        <?php
+                        $nav_group_open('soa', 'la-address-book', 'Manage SOA', $is_soa_active);
+                            $nav_child('debit_memo_upload.php',   'la-file-upload', 'Import SOA', in_array($current_script, ['debit_memo_upload.php', 'upload.php']));
+                            $nav_child('debit_memo_dispatch.php', 'la-mail-bulk',   'Email SOA',  in_array($current_script, ['debit_memo_dispatch.php', 'dispatch.php']));
+                        $nav_group_close();
+                        ?>
 
-                    <?php if ($_SESSION['role'] === 'superadmin'): ?>
-                    <a href="backup.php" class="flex items-center space-x-3 px-4 py-2.5 rounded-md transition <?php echo $current_script === 'backup.php' ? 'bg-blue-600 text-white shadow-md' : 'text-gray-400 hover:bg-slate-800 hover:text-white'; ?>">
-                        <i class="las la-database text-xl"></i> <span>Database Backup</span>
-                    </a>
+                        <!-- Settings: system administration -->
+                        <?php
+                        $nav_group_open('settings', 'la-cog', 'Settings', $is_settings_active);
+                            $nav_child('users.php',  'la-users',    'User Management', $current_script === 'users.php');
+                            $nav_child('logs.php',   'la-history',  'System Logs',     $current_script === 'logs.php');
+                            $nav_child('backup.php', 'la-database', 'Database Backup', $current_script === 'backup.php');
+                        $nav_group_close();
+                        ?>
+                    <?php else: ?>
+                        <div class="my-3 border-t border-slate-800" role="separator"></div>
+                        <?php $nav_item('change_password.php', 'la-key', 'Change Password', $current_script === 'change_password.php'); ?>
                     <?php endif; ?>
 
                 </nav>
@@ -166,11 +182,13 @@
         <!-- DROPDOWN TOGGLE & 5-MINUTE HEARTBEAT SCRIPT -->
         <!-- ========================================== -->
        <script>
-        function toggleSoaDropdown() {
-            const subMenu = document.getElementById('soaSubMenu');
-            const arrow = document.getElementById('soaDropdownArrow');
-            subMenu.classList.toggle('hidden');
-            arrow.classList.toggle('rotate-180');
+        function toggleNavGroup(key) {
+            const btn = document.getElementById('navBtn-' + key);
+            const sub = document.getElementById('navSub-' + key);
+            if (!btn || !sub) return;
+            const isOpen = sub.classList.toggle('open');
+            btn.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+            btn.querySelector('.nav-arrow').classList.toggle('rotate-180', isOpen);
         }
 
         function sendSharedHeartbeat() {

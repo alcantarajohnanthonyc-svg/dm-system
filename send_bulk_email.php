@@ -477,13 +477,44 @@ function get_failed_report_item($account, $telco, $mobile, $email, $details, $pe
     ];
 }
 
-function send_dispatch_report_to_admins($pdo, $report_items, $success_count, $fail_count) {
-    $stmt = $pdo->prepare("SELECT DISTINCT recipient_email FROM email_report WHERE report_type = ?");
+function send_dispatch_report_to_admins($pdo,$report_items, $success_count,$fail_count) {
+    // -------------------------------------------------------------------------
+    // 1. ISAVE MUNA SA DATABASE TABLE (`dispatch_logs`) ANG LAHAT NG REPORT ITEMS
+    // -------------------------------------------------------------------------
+    try {
+        $insert_sql = "INSERT INTO dispatch_logs 
+            (status, dispatch_date, account_number, telco, mobile_number, recipient_email, billing_period, total_charge, filename, file_link, sent_by, details) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+        
+        $insert_stmt = $pdo->prepare($insert_sql);
+
+        foreach ($report_items as$item) {
+            // Linisin ang charge amount para maging malinis na numeric decimal value
+            $clean_charge = (float)str_replace(['PHP ', '₱', ',', ' '], '',$item['total_charge'] ?? '0');
+
+            $insert_stmt->execute([
+                $item['status'] ?? 'UNKNOWN',$item['date'] ?? date('Y-m-d H:i:s'),
+                $item['account'] ?? 'N/A',$item['telco'] ?? 'N/A',
+                $item['mobile_number'] ?? 'N/A',$item['email'] ?? 'N/A',
+                $item['billing_period'] ?? 'N/A',$clean_charge,
+                $item['filename'] ?? 'N/A',$item['file_link'] ?? '',
+                $item['sent_by'] ?? 'System Administrator',$item['details'] ?? ''
+            ]);
+        }
+    } catch (Exception $e) {
+        // I-log ang error kung sakaling may usapin sa database para tuloy pa rin ang email report
+        error_log("Failed to insert dispatch logs into database: " . $e->getMessage());
+    }
+
+    // -------------------------------------------------------------------------
+    // 2. KUNIN MGA RECIPIENTS (ADMINS AT CURRENT USER)
+    // -------------------------------------------------------------------------
+    $stmt =$pdo->prepare("SELECT DISTINCT recipient_email FROM email_report WHERE report_type = ?");
     $stmt->execute(['statement_dispatch']);
-    $admins = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    $admins =$stmt->fetchAll(PDO::FETCH_ASSOC);
 
     $recipient_emails = [];
-    foreach ($admins as $admin) {
+    foreach ($admins as$admin) {
         if (!empty($admin['recipient_email'])) {
             $recipient_emails[] = trim($admin['recipient_email']);
         }
@@ -492,9 +523,9 @@ function send_dispatch_report_to_admins($pdo, $report_items, $success_count, $fa
     if (isset($_SESSION['user_email']) && !empty($_SESSION['user_email'])) {
         $recipient_emails[] = trim($_SESSION['user_email']);
     } elseif (isset($_SESSION['username']) && !empty($_SESSION['username'])) {
-        $user_stmt = $pdo->prepare("SELECT email FROM users WHERE username = ? LIMIT 1");
+        $user_stmt =$pdo->prepare("SELECT email FROM users WHERE username = ? LIMIT 1");
         $user_stmt->execute([$_SESSION['username']]);
-        $user_row = $user_stmt->fetch(PDO::FETCH_ASSOC);
+        $user_row =$user_stmt->fetch(PDO::FETCH_ASSOC);
         if ($user_row && !empty($user_row['email'])) {
             $recipient_emails[] = trim($user_row['email']);
         }
@@ -503,19 +534,19 @@ function send_dispatch_report_to_admins($pdo, $report_items, $success_count, $fa
     $unique_recipients = array_unique(array_filter($recipient_emails));
     if (empty($unique_recipients)) return; 
 
-    $current_timestamp = date('Y-m-d H:i:s');
-    $sender_name = $_SESSION['full_name'] ?? ($_SESSION['username'] ?? 'System Administrator');
+    $current_timestamp = date('Y-m-d H:i:s');$sender_name = $_SESSION['full_name'] ?? ($_SESSION['username'] ?? 'System Administrator');
     $total_processed = count($report_items);
 
+    // -------------------------------------------------------------------------
+    // 3. I-GENERATE ANG CSV ATTACHMENT REPORT
+    // -------------------------------------------------------------------------
     $csv_filename = 'Statement_Dispatch_Report_' . date('Ymd_His') . '.csv';
     $csv_temp_path = tempnam(sys_get_temp_dir(), 'csv_report_');
     $csv_file = fopen($csv_temp_path, 'w');
     
-    fputcsv($csv_file, ['Status', 'Date', 'Account', 'Telco', 'Mobile Number', 'Email', 'Billing Period', 'Total Charge', 'Filename', 'Sent By', 'Details']);
-    
-    $table_rows_html = '';
-    foreach ($report_items as $item) {
-        fputcsv($csv_file, [$item['status'], $item['date'], $item['account'], $item['telco'], $item['mobile_number'], $item['email'], $item['billing_period'], $item['total_charge'], $item['filename'], $item['sent_by'], $item['details']]);
+    fputcsv($csv_file, ['Status', 'Date', 'Account', 'Telco', 'Mobile Number', 'Email', 'Billing Period', 'Total Charge', 'Filename', 'Sent By', 'Details']);$table_rows_html = '';
+    foreach ($report_items as$item) {
+        fputcsv($csv_file, [$item['status'], $item['date'],$item['account'], $item['telco'],$item['mobile_number'], $item['email'],$item['billing_period'], $item['total_charge'],$item['filename'], $item['sent_by'],$item['details']]);
 
         $status_color = ($item['status'] === 'SUCCESS') ? '#065f46' : '#991b1b';
         $status_bg = ($item['status'] === 'SUCCESS') ? '#d1fae5' : '#fee2e2';
@@ -537,6 +568,9 @@ function send_dispatch_report_to_admins($pdo, $report_items, $success_count, $fa
     }
     fclose($csv_file);
 
+    // -------------------------------------------------------------------------
+    // 4. I-GENERATE ANG HTML EMAIL BODY
+    // -------------------------------------------------------------------------
     $html_body = "
     <!DOCTYPE html>
     <html>
@@ -582,21 +616,23 @@ function send_dispatch_report_to_admins($pdo, $report_items, $success_count, $fa
                     <tbody>{$table_rows_html}</tbody>
                 </table>
             </div>
-            <p style='margin-top: 15px; font-size: 11px; color: #64748b; font-style: italic;'>Note: Complete dispatch logs are also attached as a CSV file for your records.</p>
+            <p style='margin-top: 15px; font-size: 11px; color: #64748b; font-style: italic;'>Note: Complete dispatch logs are also saved in the system database and attached as a CSV file for your records.</p>
         </div>
     </body>
     </html>";
 
-    $admin_attachments = [['path' => $csv_temp_path, 'name' => $csv_filename, 'type' => 'text/csv']];
+    // -------------------------------------------------------------------------
+    // 5. I-SEND ANG EMAIL REPORT SA LAHAT NG ADMINS
+    // -------------------------------------------------------------------------
+    $admin_attachments = [['path' => $csv_temp_path, 'name' =>$csv_filename, 'type' => 'text/csv']];
     
-    foreach ($unique_recipients as $recipient_email) {
+    foreach ($unique_recipients as$recipient_email) {
         if (filter_var($recipient_email, FILTER_VALIDATE_EMAIL)) {
-            send_smtp_mail_with_multi_attachments($recipient_email, "Statement Dispatch Report - " . date('Y-m-d'), $admin_attachments, $html_body);
+            send_smtp_mail_with_multi_attachments($recipient_email, "Statement Dispatch Report - " . date('Y-m-d'), $admin_attachments,$html_body);
         }
     }
     if (file_exists($csv_temp_path)) @unlink($csv_temp_path);
 }
-
 function get_or_download_pdf_path($filename, $pdo = null) {
     $filename = basename($filename);
     $temp_file_path = sys_get_temp_dir() . '/' . md5($filename) . '.pdf';
