@@ -49,28 +49,34 @@ if (isset($_GET['action'])) {
     }
 
     // Helper function para i-check kung may Shared Drive SOA
-    function checkSharedDriveSOA($conn, $account_number, $dm_id, $start_date, $end_date) {
-        if (empty($dm_id) || $dm_id == 0) return false;
-        
-        $soa_query = "SELECT COUNT(*) as cnt 
-                      FROM debit_memo_items dmi 
-                      JOIN pdf_extracted_details pdf ON pdf.account_number = ? 
-                      WHERE dmi.dm_id = ?";
-        $soa_params = [$account_number, $dm_id];
-        
-        if (!empty($start_date) && !empty($end_date)) {
-            $soa_query .= " AND dmi.coverage_start >= ? AND dmi.coverage_end <= ?";
-            array_push($soa_params, $start_date, $end_date);
-        }
-
-        $soa_query .= " AND ABS(DATEDIFF(dmi.coverage_end, STR_TO_DATE(SUBSTRING_INDEX(pdf.billing_period, ' - ', -1), '%Y-%m-%d'))) <= 5";
-
-        $stmt = $conn->prepare($soa_query);
-        $stmt->execute($soa_params);
-        $res = $stmt->fetch(PDO::FETCH_ASSOC);
-        
-        return ($res && $res['cnt'] > 0);
+ function checkSharedDriveSOA($conn, $account_number, $dm_id, $start_date, $end_date) {
+    if (empty($dm_id) || $dm_id == 0) return false;
+    
+    $soa_query = "SELECT COUNT(*) as cnt 
+                  FROM debit_memo_items dmi 
+                  JOIN pdf_extracted_details pdf ON pdf.account_number = ? 
+                  WHERE dmi.dm_id = ?";
+    $soa_params = [$account_number, $dm_id];
+    
+    if (!empty($start_date) && !empty($end_date)) {
+        $soa_query .= " AND dmi.coverage_start >= ? AND dmi.coverage_end <= ?";
+        array_push($soa_params, $start_date, $end_date);
     }
+
+    $soa_query .= " AND ABS(DATEDIFF(dmi.coverage_end, STR_TO_DATE(SUBSTRING_INDEX(pdf.billing_period, ' - ', -1), '%Y-%m-%d'))) <= 5
+                    AND (
+                        pdf.mobile_number IS NULL 
+                        OR pdf.mobile_number = '' 
+                        OR pdf.mobile_number = 'N/A' 
+                        OR RIGHT(REGEXP_REPLACE(pdf.mobile_number, '[^0-9]', ''), 10) = RIGHT(REGEXP_REPLACE(dmi.mobile_number, '[^0-9]', ''), 10)
+                    )";
+
+    $stmt = $conn->prepare($soa_query);
+    $stmt->execute($soa_params);
+    $res = $stmt->fetch(PDO::FETCH_ASSOC);
+    
+    return ($res && $res['cnt'] > 0);
+}
 
     // Helper function para ma-check kung may actual data items
     function checkDataCoverageExists($conn, $dm_id, $start_date, $end_date) {
@@ -1319,6 +1325,29 @@ async function executeDispatchFetch(formData, countNum) {
     function isValidEmail(email) {
     return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 }
+
+document.addEventListener('DOMContentLoaded', () => {
+    const urlParams = new URLSearchParams(window.location.search);
+    if (urlParams.get('auto_process') === '1') {
+        const pasted = sessionStorage.getItem('pending_email_accounts');
+        const start = sessionStorage.getItem('pending_start_date');
+        const end = sessionStorage.getItem('pending_end_date');
+
+        if (pasted) {
+            if (document.getElementById('pasteAccountInput')) document.getElementById('pasteAccountInput').value = pasted;
+            if (document.getElementById('hubStartDate')) document.getElementById('hubStartDate').value = start;
+            if (document.getElementById('hubEndDate')) document.getElementById('hubEndDate').value = end;
+
+            // Linisin ang storage at i-process
+            sessionStorage.removeItem('pending_email_accounts');
+            sessionStorage.removeItem('pending_start_date');
+            sessionStorage.removeItem('pending_end_date');
+
+            processPasteEmailHub();
+        }
+    }
+});
+
 </script>
 <?php
 $content = ob_get_clean();

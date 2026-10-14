@@ -17,8 +17,13 @@ $sql = "SELECT dmi.*, pdf.file_link, pdf.filename
         FROM `debit_memo_items` dmi 
         JOIN debit_memos dm ON dm.dm_id = dmi.dm_id
         LEFT JOIN pdf_extracted_details pdf ON pdf.account_number = dm.account_number 
-             AND pdf.mobile_number = dmi.mobile_number 
              AND ABS(DATEDIFF(dmi.coverage_end, STR_TO_DATE(SUBSTRING_INDEX(pdf.billing_period, ' - ', -1), '%Y-%m-%d'))) <= 5
+             AND (
+                 pdf.mobile_number IS NULL 
+                 OR pdf.mobile_number = '' 
+                 OR pdf.mobile_number = 'N/A' 
+                 OR RIGHT(REGEXP_REPLACE(pdf.mobile_number, '[^0-9]', ''), 10) = RIGHT(REGEXP_REPLACE(dmi.mobile_number, '[^0-9]', ''), 10)
+             )
         WHERE dmi.dm_id = :dm_id";
 
 
@@ -103,12 +108,14 @@ if (empty($items)) {
         $final_dm_val = isset($row['final_dm']) ? (float)$row['final_dm'] : ($dm_val - $add_ons_val);
         echo "<td class='p-2 border font-bold text-green-600'>" . number_format($final_dm_val, 2) . "</td>";
         
-        // Huling Column para sa Status (WITH SOA o Blank)
-      echo "<td class='p-2 border text-center font-bold text-xs'>";
-        if ($has_soa) {$file_link = htmlspecialchars($row['file_link']);$filename = !empty($row['filename']) ? htmlspecialchars($row['filename']) : 'View SOA File';
-            echo "<a href='" . $file_link . "' target='_blank' class='text-green-700 font-extrabold underline hover:text-green-900' title='" . $filename . "'>WITH SOA</a>";
+        // Huling Column para sa Status (WITH SOA Badge o Dash)
+       echo "<td class='p-2 border text-center font-bold text-xs'>";
+        if ($has_soa) {
+            $file_link = htmlspecialchars($row['file_link']);
+            $filename = !empty($row['filename']) ? htmlspecialchars($row['filename']) : 'View SOA File';
+            echo "<a href='" . $file_link . "' target='_blank' title='" . $filename . "' class='inline-block px-2 py-0.5 rounded text-[9px] font-bold bg-green-100 text-green-700 border border-green-300 shadow-xs hover:bg-green-200 transition-colors'>WITH SOA</a>";
         } else {
-            echo ""; // Blank kapag walang match o walang file link
+            echo ""; // Blank / walang ilalagay na kahit ano
         }
         echo "</td>";
 

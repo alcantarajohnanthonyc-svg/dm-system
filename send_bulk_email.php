@@ -61,7 +61,7 @@ $global_start     = isset($_POST['start_date']) ? trim($_POST['start_date']) : '
 $global_end       = isset($_POST['end_date']) ? trim($_POST['end_date']) : '';
 $is_final_batch   = isset($_POST['is_final_batch']) ? trim($_POST['is_final_batch']) : '1';
 
-// LIGTAS NA PAGKUHA NG ACCUMULATED REPORTS (Para maiwasan ang HTTP 500 Error)
+// LIGTAS NA PAGKUHA NG ACCUMULATED REPORTS
 $input_accumulated_reports = [];
 if (isset($_POST['accumulated_reports']) && !empty($_POST['accumulated_reports'])) {
     $decoded = json_decode($_POST['accumulated_reports'], true);
@@ -70,9 +70,13 @@ if (isset($_POST['accumulated_reports']) && !empty($_POST['accumulated_reports']
     }
 }
 
-// Kunin ang item_ids mula sa POST kung galing sa breakdown modal
-$item_ids_input = isset($_POST['item_ids']) ? trim($_POST['item_ids']) : '';
-$breakdown_item_ids = !empty($item_ids_input) ? array_filter(explode(',', $item_ids_input)) : [];
+// -------------------------------------------------------------------------
+// FIX: ISANG BAGSAK NA PAGKUHA NG ITEM_IDS PARA SA LAHAT NG PROCESS (PDF & SOA)
+// -------------------------------------------------------------------------
+$base_breakdown_item_ids = [];
+if (!empty($_POST['item_ids'])) {
+    $base_breakdown_item_ids = array_filter(explode(',', $_POST['item_ids']));
+}
 
 $success_count = 0;
 $fail_count = 0;
@@ -83,6 +87,15 @@ $admin_report_items = [];
 foreach ($dm_ids as $index => $dm_id) {
     $dm_id = trim($dm_id);
     
+    // Determine breakdown_item_ids for this specific index/account
+    $breakdown_item_ids = $base_breakdown_item_ids;
+    if (empty($breakdown_item_ids) && isset($_POST['bulk_item_ids'])) {
+        $bulk_item_ids_arr = json_decode($_POST['bulk_item_ids'], true);
+        if (isset($bulk_item_ids_arr[$index]) && !empty($bulk_item_ids_arr[$index])) {
+            $breakdown_item_ids = array_filter(explode(',', $bulk_item_ids_arr[$index]));
+        }
+    }
+
     // 1. Fetch debit memo record
     $stmt = $pdo->prepare("SELECT * FROM debit_memos WHERE dm_id = ?");
     $stmt->execute([$dm_id]);
@@ -98,7 +111,7 @@ foreach ($dm_ids as $index => $dm_id) {
 
     $account_number = $dm['account_number'];
     
-    // Kunin ang per-account custom overrides (Priority: Bulk Array -> Single Form Fallback -> Database)
+    // Priority: Bulk Array -> Single Form Fallback -> Database
     $recipient_email = isset($bulk_recipients[$index]) && !empty($bulk_recipients[$index]) 
         ? trim($bulk_recipients[$index]) 
         : (!empty($single_recipient) ? $single_recipient : '');
@@ -121,15 +134,13 @@ foreach ($dm_ids as $index => $dm_id) {
     $recipient_name  = '';
     $employee_id     = '';
 
-    // 2. Kunin ang impormasyon mula sa 'account_emails' table para sa pangalan, employee_id, o fallback ng email[cite: 7, 11]
+    // Query database if no email was entered in the modal
     $email_stmt = $pdo->prepare("SELECT * FROM account_emails WHERE account_number = ?");
     $email_stmt->execute([$account_number]);
     $account_email_row = $email_stmt->fetch();
 
-    if (empty($recipient_email)) {
-        if ($account_email_row && !empty($account_email_row['email_address'])) {
-            $recipient_email = trim($account_email_row['email_address']);
-        }
+    if (empty($recipient_email) && $account_email_row && !empty($account_email_row['email_address'])) {
+        $recipient_email = trim($account_email_row['email_address']);
     }
 
     if ($account_email_row && !empty($account_email_row['full_name'])) {
@@ -162,7 +173,7 @@ foreach ($dm_ids as $index => $dm_id) {
         continue;
     }
 
-    // 3.5 Pull details from debit_memo_items gamit ang custom date range[cite: 11]
+    // 3.5 Pull details from debit_memo_items
     $itemQuery = "SELECT * FROM debit_memo_items WHERE dm_id = ?";
     $itemParams = [$dm_id];
 
@@ -170,7 +181,7 @@ foreach ($dm_ids as $index => $dm_id) {
         $placeholders = implode(',', array_fill(0, count($breakdown_item_ids), '?'));
         $itemQuery .= " AND id IN ($placeholders)";
         foreach ($breakdown_item_ids as $iid) {
-            $itemParams[] = $iid;
+            $itemParams[] = (int)$iid;
         }
     } elseif (!empty($custom_start) && !empty($custom_end)) {
         $itemQuery .= " AND coverage_start >= ? AND coverage_end <= ?";
@@ -195,7 +206,6 @@ foreach ($dm_ids as $index => $dm_id) {
 
     if (!empty($items)) {
         foreach ($items as $it) {
-            // Kunin at i-sum ang current charges
             $curr_charge_v = isset($it['current_charges']) ? (float)$it['current_charges'] : 0.00;
             $total_current_charges += $curr_charge_v;
 
@@ -203,12 +213,10 @@ foreach ($dm_ids as $index => $dm_id) {
             $ao_v = isset($it['add_ons']) ? (float)$it['add_ons'] : 0.00;
             $total_final_dm += isset($it['final_dm']) ? (float)$it['final_dm'] : ($dm_v - $ao_v);
             
-           if (isset($it['approved_plan'])) {
+            if (isset($it['approved_plan'])) {
                 $total_approved_plan += (float)$it['approved_plan'];
             }
             if (!empty($it['mobile_number'])) $mobile_number_val = $it['mobile_number'];
-            if (!empty($it['telco'])) $telco_val = $it['telco'];
-
 
             if (!empty($it['carrier_name'])) {
                 $telco_val = $it['carrier_name'];
@@ -218,8 +226,6 @@ foreach ($dm_ids as $index => $dm_id) {
 
             if (!empty($it['coverage_start'])) $raw_start_dates[] = $it['coverage_start'];
             if (!empty($it['coverage_end'])) $raw_end_dates[] = $it['coverage_end'];
-        
-        
         }
     }
 
@@ -239,10 +245,11 @@ foreach ($dm_ids as $index => $dm_id) {
         }
     }
 
-   $approved_plan_display = '₱ ' . number_format($total_approved_plan, 2, '.', ',');
-    $current_charges_display = '₱ ' . number_format($total_current_charges, 2, '.', ','); // <-- Gamitin na ang tamang total current charges
+    $approved_plan_display = '₱ ' . number_format($total_approved_plan, 2, '.', ',');
+    $current_charges_display = '₱ ' . number_format($total_current_charges, 2, '.', ',');
     $final_dm_val = number_format($total_final_dm, 2, '.', ',');
-    // 4. Generate Debit Memo PDF attachment
+
+    // 4. Generate Debit Memo PDF attachment gamit ang filtered item IDs
     $pdf_result = createDebitMemoPDF($dm_id, $pdo, $breakdown_item_ids, $custom_start, $custom_end);
 
     if (!is_array($pdf_result) || count($pdf_result) != 2) {
@@ -269,12 +276,8 @@ foreach ($dm_ids as $index => $dm_id) {
     }
 
     $filename = 'Debit_Memo_' . $acc_num . '.pdf';
-    
-    // ----------------------------------------------------
-    // EMAIL TEMPLATE INTEGRATION
-    // ----------------------------------------------------
+
     $company_name = $dm['company'] ?? $recipient_name;
-   // $current_charges_display = '₱ ' . number_format($total_final_dm, 2, '.', ',');
 
     $template = getEmailTemplate(
         $account_number, 
@@ -311,21 +314,24 @@ foreach ($dm_ids as $index => $dm_id) {
         }
     }
 
-    // 5. Dynamically attach matching PDFs from Google Drive[cite: 11]
+    // -------------------------------------------------------------------------
+    // 5. SOA ATTACHMENT STRICT FILTERING FIX
+    // Filter strictly by checked item IDs OR supplied coverage date range
+    // -------------------------------------------------------------------------
     $soa_query = "
         SELECT DISTINCT pdf.filename, pdf.file_link 
         FROM debit_memo_items dmi
         JOIN pdf_extracted_details pdf ON pdf.account_number = ?
         WHERE dmi.dm_id = ?
     ";
-    
+
     $soa_params = [$account_number, $dm_id];
 
     if (!empty($breakdown_item_ids)) {
         $placeholders = implode(',', array_fill(0, count($breakdown_item_ids), '?'));
         $soa_query .= " AND dmi.id IN ($placeholders)";
-        foreach ($breakdown_item_ids as $iid) {
-            $soa_params[] = $iid;
+        foreach ($breakdown_item_ids as $iid) { 
+            $soa_params[] = (int)$iid; 
         }
     } elseif (!empty($custom_start) && !empty($custom_end)) {
         $soa_query .= " AND dmi.coverage_start >= ? AND dmi.coverage_end <= ?";
@@ -334,7 +340,12 @@ foreach ($dm_ids as $index => $dm_id) {
     }
 
     $soa_query .= " AND ABS(DATEDIFF(dmi.coverage_end, STR_TO_DATE(SUBSTRING_INDEX(pdf.billing_period, ' - ', -1), '%Y-%m-%d'))) <= 5
-                    AND (pdf.mobile_number IS NULL OR pdf.mobile_number = '' OR pdf.mobile_number = 'N/A' OR pdf.mobile_number = dmi.mobile_number)";
+                    AND (
+                        pdf.mobile_number IS NULL 
+                        OR pdf.mobile_number = '' 
+                        OR pdf.mobile_number = 'N/A' 
+                        OR RIGHT(REGEXP_REPLACE(pdf.mobile_number, '[^0-9]', ''), 10) = RIGHT(REGEXP_REPLACE(dmi.mobile_number, '[^0-9]', ''), 10)
+                    )";
 
     $soa_stmt = $pdo->prepare($soa_query);
     $soa_stmt->execute($soa_params);
@@ -342,6 +353,7 @@ foreach ($dm_ids as $index => $dm_id) {
 
     $downloaded_pdf_paths = [];
     $primary_file_link = '';
+    
     foreach ($soa_files as $idx_f => $soa) {
         $pdf_filename = $soa['filename'];
         if ($idx_f === 0) $primary_file_link = $soa['file_link'] ?? '';
@@ -378,9 +390,8 @@ foreach ($dm_ids as $index => $dm_id) {
         }
     }
 
-    // 6. Send Email via SMTP[cite: 11]
+    // 6. Send Email via SMTP
     $mail_sent = send_smtp_mail_with_multi_attachments($recipient_email, $subject, $attachments, $html_content, $cc_emails);
- 
 
     if ($mail_sent === true) {
         $success_count++;
@@ -411,13 +422,12 @@ foreach ($dm_ids as $index => $dm_id) {
     foreach ($downloaded_pdf_paths as $temp_pdf) {
         if (file_exists($temp_pdf)) @unlink($temp_pdf);
     }
-     sleep(2);
+    sleep(2);
 }
 
 // Pagsamahin ang mga naunang batch reports at ang kasalukuyang batch reports
 $all_accumulated_reports = array_merge($input_accumulated_reports, $admin_report_items);
 
-// 7. Dispatch Summary Report to Admins kapag huling batch na[cite: 11]
 if ($is_final_batch === '1') {
     $total_success_all = 0;
     $total_fail_all = 0;
@@ -446,11 +456,9 @@ echo json_encode([
     'fail_count' => $fail_count,
     'success_details' => $success_items,
     'failed_details' => $failed_items,
-    'accumulated_reports' => $all_accumulated_reports // <--- Ipinababalik pabalik sa JS para sa susunod na batch
+    'accumulated_reports' => $all_accumulated_reports
 ]);
 exit;
-
-// --- Helper Functions ---
 
 function get_failed_report_item($account, $telco, $mobile, $email, $details, $period = 'N/A', $charge = '0.00', $filename = 'N/A', $link = '') {
     return [
@@ -499,7 +507,6 @@ function send_dispatch_report_to_admins($pdo, $report_items, $success_count, $fa
     $sender_name = $_SESSION['full_name'] ?? ($_SESSION['username'] ?? 'System Administrator');
     $total_processed = count($report_items);
 
-    // 1. GENERATE CSV ATTACHMENT
     $csv_filename = 'Statement_Dispatch_Report_' . date('Ymd_His') . '.csv';
     $csv_temp_path = tempnam(sys_get_temp_dir(), 'csv_report_');
     $csv_file = fopen($csv_temp_path, 'w');
@@ -530,7 +537,6 @@ function send_dispatch_report_to_admins($pdo, $report_items, $success_count, $fa
     }
     fclose($csv_file);
 
-    // 2. BUILD RICH HTML WITH SUMMARY BADGES/CARDS
     $html_body = "
     <!DOCTYPE html>
     <html>
@@ -539,7 +545,6 @@ function send_dispatch_report_to_admins($pdo, $report_items, $success_count, $fa
         <div style='max-width: 900px; margin: 0 auto; background: #ffffff; padding: 24px; border-radius: 12px; border: 1px solid #e2e8f0;'>
             <p style='font-size: 13px; margin-bottom: 8px; color: #475569;'>Here is the summary of the email dispatches conducted on <strong>{$current_timestamp}</strong> by <strong>{$sender_name}</strong>.</p>
             
-            <!-- SUMMARY STAT CARDS -->
             <table style='width: 100%; border-collapse: separate; border-spacing: 12px 0; margin-top: 15px; margin-bottom: 20px;'>
                 <tr>
                     <td style='width: 33%; padding: 14px; background-color: #eff6ff; border: 1px solid #bfdbfe; text-align: center; border-radius: 8px;'>
