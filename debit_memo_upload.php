@@ -971,6 +971,245 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     exit;
 }
 
+// =========================================================================
+// RECORDS TAB: list / edit / delete (database + server file + Google Drive)
+// =========================================================================
+function dm_rec_na_sql($col) { return "($col IS NULL OR TRIM($col) = '' OR UPPER(TRIM($col)) = 'N/A')"; }
+
+function dm_rec_flags() {
+    return [
+        'na_account'    => dm_rec_na_sql('account_number'),
+        'na_mobile'     => dm_rec_na_sql('mobile_number'),
+        'unknown_telco' => "(telco IS NULL OR TRIM(telco) = '' OR telco = 'Unknown')",
+        'zero_amount'   => "(amount_due IS NULL OR TRIM(amount_due) = '' OR amount_due IN ('0', '0.0', '0.00'))",
+        'na_billing'    => dm_rec_na_sql('billing_period'),
+        'na_invoice'    => dm_rec_na_sql('invoice_date'),
+        'na_due'        => dm_rec_na_sql('due_date'),
+        'pending'       => "(account_number = 'PENDING_SYNC' OR file_path = 'sync')",
+        'no_link'       => "(file_link IS NULL OR file_link = '')",
+    ];
+}
+function dm_rec_any_na_sql() {
+    $f = dm_rec_flags();
+    return '(' . implode(' OR ', [$f['na_account'], $f['na_mobile'], $f['unknown_telco'], $f['zero_amount'], $f['na_billing'], $f['na_invoice'], $f['na_due']]) . ')';
+}
+
+function dm_rec_where(&$params) {
+    $flags = dm_rec_flags();
+    $w = [];
+    $q = trim((string)($_POST['q'] ?? ''));
+    if ($q !== '') {
+        $like = '%' . str_replace(['\\', '%', '_'], ['\\\\', '\\%', '\\_'], $q) . '%';
+        $w[] = '(filename LIKE ? OR account_number LIKE ? OR mobile_number LIKE ? OR billing_period LIKE ? OR file_path LIKE ?)';
+        for ($i = 0; $i < 5; $i++) $params[] = $like;
+    }
+    $telco = trim((string)($_POST['telco'] ?? ''));
+    if ($telco !== '') { $w[] = 'telco = ?'; $params[] = $telco; }
+
+    $flag = (string)($_POST['flag'] ?? '');
+    if ($flag === 'any_na')        $w[] = dm_rec_any_na_sql();
+    elseif ($flag === 'complete')  $w[] = 'NOT ' . dm_rec_any_na_sql() . " AND NOT {$flags['pending']}";
+    elseif (isset($flags[$flag]))  $w[] = $flags[$flag];
+
+    return $w ? 'WHERE ' . implode(' AND ', $w) : '';
+}
+
+function dm_rec_counts($db) {
+    $flags = dm_rec_flags();
+    $sel = ['COUNT(*) AS total'];
+    foreach ($flags as $k => $sql) $sel[] = "SUM(CASE WHEN $sql THEN 1 ELSE 0 END) AS $k";
+    $sel[] = 'SUM(CASE WHEN ' . dm_rec_any_na_sql() . ' THEN 1 ELSE 0 END) AS any_na';
+    $sel[] = 'SUM(CASE WHEN NOT ' . dm_rec_any_na_sql() . " AND NOT {$flags['pending']} THEN 1 ELSE 0 END) AS complete";
+    $row = $db->query('SELECT ' . implode(', ', $sel) . ' FROM pdf_extracted_details')->fetch(PDO::FETCH_ASSOC) ?: [];
+    $out = [];
+    foreach ($row as $k => $v) $out[$k] = (int)$v;
+    $telcos = [];
+    foreach ($db->query("SELECT COALESCE(NULLIF(TRIM(telco), ''), 'Unknown') AS t, COUNT(*) AS c FROM pdf_extracted_details GROUP BY t ORDER BY c DESC") as $r) {
+        $telcos[] = ['name' => $r['t'], 'count' => (int)$r['c']];
+    }
+    return ['counts' => $out, 'telcos' => $telcos];
+}
+
+// Possible local locations of a record's PDF (always inside /uploads)
+function dm_rec_local_candidates($row) {
+    $base = __DIR__ . '/uploads';
+    $name = basename((string)($row['filename'] ?? ''));
+    $fp   = str_replace('\\', '/', (string)($row['file_path'] ?? ''));
+    $c = [];
+    if ($name === '') return $c;
+    $rel = dm_safe_path($fp);
+    $c[] = $base . ($rel !== '' ? '/' . $rel : '') . '/' . dm_safe_segment($name);
+    $raw = trim($fp, '/');
+    if ($raw !== '' && strpos($raw, '..') === false) $c[] = $base . '/' . $raw . '/' . $name;
+    return array_values(array_unique($c));
+}
+function dm_rec_local_exists($row) {
+    foreach (dm_rec_local_candidates($row) as $p) if (is_file($p)) return true;
+    return false;
+}
+function dm_rec_drive_id($row) {
+    if (!empty($row['file_id'])) return (string)$row['file_id'];
+    $l = (string)($row['file_link'] ?? '');
+    if (preg_match('#/d/([A-Za-z0-9_-]+)#', $l, $m)) return $m[1];
+    if (preg_match('#[?&]id=([A-Za-z0-9_-]+)#', $l, $m)) return $m[1];
+    return '';
+}
+
+// Delete one record completely: Google Drive (moved to Drive trash) -> server file -> database row.
+// If Drive or the server file cannot be removed, the DB row is KEPT so you can retry.
+function dm_rec_delete_one($db, $drive, $id) {
+    $st = $db->prepare('SELECT * FROM pdf_extracted_details WHERE id = ? LIMIT 1');
+    $st->execute([$id]);
+    $row = $st->fetch(PDO::FETCH_ASSOC);
+    if (!$row) return ['id' => $id, 'filename' => '#' . $id, 'status' => 'success', 'warning' => 'Already deleted'];
+
+    $out = ['id' => $id, 'filename' => $row['filename'], 'status' => 'error', 'message' => '', 'warning' => ''];
+    $warn = [];
+
+    // 1. Google Drive
+    $fid = dm_rec_drive_id($row);
+    if ($fid !== '') {
+        if (!$drive) { $out['message'] = 'Google Drive is not configured, file was not deleted'; return $out; }
+        try {
+            dm_drive_retry(function () use ($drive, $fid) {
+                $drive->files->update($fid, new Google_Service_Drive_DriveFile(['trashed' => true]), ['supportsAllDrives' => true, 'fields' => 'id']);
+            });
+        } catch (Throwable $e) {
+            if ((int)$e->getCode() !== 404) { $out['message'] = 'Drive delete failed: ' . dm_short_error($e); return $out; }
+            $warn[] = 'Not found on Drive (already removed)';
+        }
+    } else {
+        $warn[] = 'No Drive file id, Drive copy not touched';
+    }
+
+    // 2. Server file (only inside /uploads)
+    $base = realpath(__DIR__ . '/uploads');
+    foreach (dm_rec_local_candidates($row) as $p) {
+        if (!is_file($p)) continue;
+        $rp = realpath($p);
+        if (!$base || !$rp || strpos($rp, $base . DIRECTORY_SEPARATOR) !== 0) continue;
+        if (!@unlink($rp)) { $out['message'] = 'Could not delete the server file (permission?)'; return $out; }
+        $dir = dirname($rp);                                   // remove empty parent folders
+        while ($dir && strlen($dir) > strlen($base) && strpos($dir, $base . DIRECTORY_SEPARATOR) === 0) {
+            if (count(@scandir($dir) ?: []) > 2) break;
+            if (!@rmdir($dir)) break;
+            $dir = dirname($dir);
+        }
+    }
+
+    // 3. Database
+    try {
+        $db->prepare('DELETE FROM pdf_extracted_details WHERE id = ?')->execute([$id]);
+    } catch (Throwable $e) {
+        $out['message'] = 'Database delete failed: ' . dm_short_error($e);
+        return $out;
+    }
+    $out['status']  = 'success';
+    $out['warning'] = implode(' | ', $warn);
+    return $out;
+}
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && strpos((string)$_POST['action'], 'records_') === 0) {
+    dm_json_start();
+    @set_time_limit(300);
+    if (!$db_connection) { echo dm_json(['status' => 'error', 'message' => 'No database connection']); exit; }
+    $db = $db_connection;
+    $action = (string)$_POST['action'];
+
+    try {
+        if ($action === 'records_list') {
+            $per  = max(10, min(200, (int)($_POST['per_page'] ?? 25)));
+            $page = max(1, (int)($_POST['page'] ?? 1));
+            $cols = ['id' => 'id', 'filename' => 'filename', 'account_number' => 'account_number', 'mobile_number' => 'mobile_number',
+                     'telco' => 'telco', 'amount_due' => "CAST(REPLACE(amount_due, ',', '') AS DECIMAL(14,2))",
+                     'billing_period' => 'billing_period', 'invoice_date' => 'invoice_date', 'due_date' => 'due_date', 'updated_at' => 'updated_at'];
+            $sort = $cols[$_POST['sort'] ?? ''] ?? 'updated_at';
+            $dir  = (($_POST['dir'] ?? 'desc') === 'asc') ? 'ASC' : 'DESC';
+
+            $params = [];
+            $where  = dm_rec_where($params);
+            $c = $db->prepare("SELECT COUNT(*) FROM pdf_extracted_details $where");
+            $c->execute($params);
+            $total = (int)$c->fetchColumn();
+            $pages = max(1, (int)ceil($total / $per));
+            if ($page > $pages) $page = $pages;
+            $offset = ($page - 1) * $per;
+
+            $s = $db->prepare("SELECT id, file_link, file_id, file_path, filename, account_number, mobile_number, telco, amount_due,
+                                      billing_period, invoice_date, due_date, updated_at
+                               FROM pdf_extracted_details $where ORDER BY $sort $dir, id DESC LIMIT $per OFFSET $offset");
+            $s->execute($params);
+            $rows = $s->fetchAll(PDO::FETCH_ASSOC);
+            foreach ($rows as &$r) {
+                $r['local'] = dm_rec_local_exists($r);
+                $r['drive'] = dm_rec_drive_id($r) !== '';
+                unset($r['file_id']);
+            }
+            unset($r);
+            $cn = dm_rec_counts($db);
+            echo dm_json(['status' => 'success', 'rows' => $rows, 'total' => $total, 'page' => $page, 'pages' => $pages,
+                          'per_page' => $per, 'counts' => $cn['counts'], 'telcos' => $cn['telcos']]);
+
+        } elseif ($action === 'records_ids') {
+            $params = [];
+            $where  = dm_rec_where($params);
+            $s = $db->prepare("SELECT id FROM pdf_extracted_details $where ORDER BY id LIMIT 100000");
+            $s->execute($params);
+            echo dm_json(['status' => 'success', 'ids' => array_map('intval', $s->fetchAll(PDO::FETCH_COLUMN))]);
+
+        } elseif ($action === 'records_update') {
+            $id = (int)($_POST['id'] ?? 0);
+            $in = json_decode((string)($_POST['data'] ?? '{}'), true);
+            if ($id <= 0 || !is_array($in)) { echo dm_json(['status' => 'error', 'message' => 'Invalid request']); exit; }
+            $rules = [   // field => [max length, value used when left empty]
+                'account_number' => [50, null], 'mobile_number' => [50, 'N/A'], 'telco' => [50, 'Unknown'],
+                'amount_due' => [50, '0.00'], 'billing_period' => [100, 'N/A'], 'invoice_date' => [50, 'N/A'], 'due_date' => [50, 'N/A'],
+            ];
+            $set = []; $vals = [];
+            foreach ($rules as $f => $rule) {
+                if (!array_key_exists($f, $in)) continue;
+                $v = trim((string)$in[$f]);
+                if ($v === '') {
+                    if ($rule[1] === null) { echo dm_json(['status' => 'error', 'message' => 'Account number cannot be empty']); exit; }
+                    $v = $rule[1];
+                }
+                if (function_exists('mb_substr')) $v = mb_substr($v, 0, $rule[0]); else $v = substr($v, 0, $rule[0]);
+                $set[] = "$f = ?"; $vals[] = $v;
+            }
+            if (!$set) { echo dm_json(['status' => 'error', 'message' => 'Nothing to update']); exit; }
+            $vals[] = $id;
+            $db->prepare('UPDATE pdf_extracted_details SET ' . implode(', ', $set) . ' WHERE id = ?')->execute($vals);
+            $s = $db->prepare('SELECT id, file_link, file_id, file_path, filename, account_number, mobile_number, telco, amount_due, billing_period, invoice_date, due_date, updated_at FROM pdf_extracted_details WHERE id = ?');
+            $s->execute([$id]);
+            $r = $s->fetch(PDO::FETCH_ASSOC);
+            if (!$r) { echo dm_json(['status' => 'error', 'message' => 'Record not found']); exit; }
+            $r['local'] = dm_rec_local_exists($r);
+            $r['drive'] = dm_rec_drive_id($r) !== '';
+            unset($r['file_id']);
+            $cn = dm_rec_counts($db);
+            echo dm_json(['status' => 'success', 'row' => $r, 'counts' => $cn['counts'], 'telcos' => $cn['telcos']]);
+
+        } elseif ($action === 'records_delete_batch') {
+            $ids = json_decode((string)($_POST['ids'] ?? '[]'), true);
+            if (!is_array($ids) || !$ids) { echo dm_json(['status' => 'error', 'message' => 'No records supplied']); exit; }
+            $dc = dm_drive_client();
+            $drive = $dc ? $dc['drive'] : null;
+            $results = [];
+            foreach (array_slice($ids, 0, 25) as $id) {
+                try { $results[] = dm_rec_delete_one($db, $drive, (int)$id); }
+                catch (Throwable $e) { $results[] = ['id' => (int)$id, 'filename' => '#' . (int)$id, 'status' => 'error', 'message' => dm_short_error($e)]; }
+            }
+            echo dm_json(['status' => 'success', 'results' => $results]);
+
+        } else {
+            echo dm_json(['status' => 'error', 'message' => 'Unknown action']);
+        }
+    } catch (Throwable $e) {
+        echo dm_json(['status' => 'error', 'message' => dm_short_error($e)]);
+    }
+    exit;
+}
+
 ob_start();
 ?>
 
@@ -990,11 +1229,86 @@ ob_start();
               box-shadow:0 6px 16px rgba(79,70,229,.3); display:inline-flex; align-items:center; gap:10px; transition:all .15s; cursor:pointer; }
     .dm-cta:hover:not(:disabled) { background:#4338ca; border-color:#4338ca; transform:translateY(-1px); }
     .dm-cta:disabled { background:#e2e8f0; border-color:#cbd5e1; color:#475569; box-shadow:none; cursor:not-allowed; }
+    .dm-action { background:#fff; border:1px solid #e2e8f0; border-radius:16px; box-shadow:0 1px 2px rgba(15,23,42,.05); transition:all .15s; overflow:hidden; display:flex; flex-direction:column; }
+    .dm-action:hover { box-shadow:0 10px 24px rgba(15,23,42,.10); transform:translateY(-1px); }
+    .dm-action-sync   { border-left:5px solid #4f46e5; }
+    .dm-action-mirror { border-left:5px solid #0ea5e9; }
+    .dm-action-main { display:flex; align-items:center; gap:12px; padding:12px 14px; width:100%; text-align:left; background:transparent; border:0; cursor:pointer; }
+    .dm-action-icon { width:42px; height:42px; border-radius:12px; display:flex; align-items:center; justify-content:center; font-size:20px; flex:none; }
+    .dm-action-sync .dm-action-icon   { background:#eef2ff; color:#4f46e5; }
+    .dm-action-mirror .dm-action-icon { background:#e0f2fe; color:#0284c7; }
+    .dm-action-arrow { margin-left:auto; font-weight:800; font-size:18px; color:#94a3b8; transition:transform .15s, color .15s; }
+    .dm-action:hover .dm-action-arrow { transform:translateX(4px); color:#4f46e5; }
+    .dm-action-opt { padding:7px 14px; background:#f8fafc; border-top:1px solid #f1f5f9; font-size:11px; font-weight:600; color:#64748b; display:flex; align-items:center; gap:7px; }
+    .dm-dot { width:8px; height:8px; border-radius:9999px; display:inline-block; flex:none; }
+    /* ---- Records tab ---- */
+    .rc-tabs { display:flex; gap:6px; margin-bottom:14px; border-bottom:2px solid #e2e8f0; }
+    .rc-tab { padding:9px 18px; font-weight:800; font-size:13px; color:#64748b; border:0; background:transparent; cursor:pointer; border-bottom:3px solid transparent; margin-bottom:-2px; border-radius:10px 10px 0 0; display:flex; align-items:center; gap:8px; }
+    .rc-tab:hover { color:#4f46e5; background:#f8fafc; }
+    .rc-tab.active { color:#4f46e5; border-bottom-color:#4f46e5; background:#eef2ff; }
+    .rc-pill { background:#e2e8f0; color:#475569; border-radius:9999px; font-size:11px; padding:1px 8px; font-weight:800; }
+    .rc-tab.active .rc-pill { background:#4f46e5; color:#fff; }
+    .rc-cards { display:grid; grid-template-columns:repeat(auto-fill,minmax(128px,1fr)); gap:8px; margin-bottom:12px; }
+    .rc-card { background:#fff; border:1px solid #e2e8f0; border-radius:12px; padding:8px 12px; text-align:left; cursor:pointer; transition:all .12s; border-left:4px solid var(--c,#94a3b8); }
+    .rc-card:hover { box-shadow:0 6px 16px rgba(15,23,42,.10); transform:translateY(-1px); }
+    .rc-card.active { background:var(--bg,#f1f5f9); box-shadow:0 0 0 2px var(--c,#94a3b8) inset; }
+    .rc-card .n { font-size:20px; font-weight:900; color:#0f172a; line-height:1.1; }
+    .rc-card .l { font-size:10.5px; font-weight:700; color:#64748b; text-transform:uppercase; letter-spacing:.04em; }
+    .rc-chart { background:#fff; border:1px solid #e2e8f0; border-radius:14px; padding:14px 16px; margin-bottom:12px; }
+    .rc-chart h4 { font-size:12px; font-weight:900; color:#334155; text-transform:uppercase; letter-spacing:.05em; margin-bottom:8px; }
+    .rc-stack { display:flex; height:22px; border-radius:9999px; overflow:hidden; background:#e2e8f0; }
+    .rc-stack > div { height:100%; transition:width .3s; }
+    .rc-legend { display:flex; flex-wrap:wrap; gap:14px; margin:8px 0 14px; font-size:11.5px; font-weight:700; color:#475569; }
+    .rc-legend i { display:inline-block; width:10px; height:10px; border-radius:3px; margin-right:5px; }
+    .rc-crow { display:grid; grid-template-columns:150px 1fr 90px; gap:10px; align-items:center; padding:3px 6px; border-radius:8px; cursor:pointer; font-size:12px; }
+    .rc-crow:hover { background:#f8fafc; }
+    .rc-crow.active { background:#eef2ff; }
+    .rc-crow .lb { font-weight:700; color:#334155; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .rc-crow .tr { height:14px; background:#f1f5f9; border-radius:9999px; overflow:hidden; }
+    .rc-crow .fl { height:100%; border-radius:9999px; transition:width .3s; min-width:0; }
+    .rc-crow .ct { font-weight:900; color:#0f172a; text-align:right; }
+    .rc-crow .ct small { color:#94a3b8; font-weight:700; margin-left:4px; }
+    .rc-bar { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-bottom:8px; }
+    .rc-input, .rc-select { border:1px solid #cbd5e1; border-radius:10px; padding:7px 10px; font-size:13px; background:#fff; }
+    .rc-input:focus, .rc-select:focus { outline:2px solid #818cf8; border-color:#818cf8; }
+    .rc-btn { border:1px solid #cbd5e1; background:#fff; border-radius:10px; padding:7px 13px; font-size:12px; font-weight:800; color:#334155; cursor:pointer; }
+    .rc-btn:hover { background:#f1f5f9; }
+    .rc-btn:disabled { opacity:.45; cursor:not-allowed; }
+    .rc-btn-danger { background:#e11d48; border-color:#e11d48; color:#fff; }
+    .rc-btn-danger:hover:not(:disabled) { background:#be123c; }
+    .rc-btn-primary { background:#4f46e5; border-color:#4f46e5; color:#fff; }
+    .rc-btn-primary:hover:not(:disabled) { background:#4338ca; }
+    .rc-banner { background:#eef2ff; border:1px solid #c7d2fe; color:#3730a3; border-radius:10px; padding:7px 12px; font-size:12px; font-weight:700; margin-bottom:8px; display:none; }
+    .rc-banner a { color:#4f46e5; text-decoration:underline; cursor:pointer; font-weight:800; }
+    .rc-wrap { background:#fff; border:1px solid #e2e8f0; border-radius:14px; overflow:auto; max-height:68vh; }
+    .rc-table { width:100%; border-collapse:collapse; font-size:12.5px; }
+    .rc-table th { position:sticky; top:0; background:#f8fafc; text-align:left; font-size:10.5px; text-transform:uppercase; letter-spacing:.05em; color:#64748b; padding:9px 10px; border-bottom:1px solid #e2e8f0; white-space:nowrap; cursor:pointer; user-select:none; z-index:1; }
+    .rc-table th.nosort { cursor:default; }
+    .rc-table td { padding:7px 10px; border-bottom:1px solid #f1f5f9; vertical-align:middle; }
+    .rc-table tr:hover td { background:#f8fafc; }
+    .rc-table tr.sel td { background:#eef2ff; }
+    .rc-na { background:#fef3c7; color:#92400e; border-radius:6px; padding:1px 7px; font-weight:800; font-size:11px; }
+    .rc-ok { color:#059669; font-weight:900; } .rc-no { color:#e11d48; font-weight:900; }
+    .rc-fn { max-width:300px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:700; color:#1e293b; }
+    .rc-sub { font-size:10.5px; color:#94a3b8; }
+    .rc-act { border:0; background:transparent; cursor:pointer; font-size:12px; font-weight:800; padding:4px 8px; border-radius:8px; }
+    .rc-act.e { color:#4f46e5; } .rc-act.e:hover { background:#eef2ff; }
+    .rc-act.d { color:#e11d48; } .rc-act.d:hover { background:#fff1f2; }
+    .rc-modal { position:fixed; inset:0; z-index:99998; background:rgba(15,23,42,.6); backdrop-filter:blur(3px); display:none; align-items:center; justify-content:center; padding:12px; }
+    .rc-modal.open { display:flex; }
+    .rc-box { background:#fff; border-radius:20px; width:100%; max-width:480px; max-height:94vh; overflow:auto; padding:20px; box-shadow:0 25px 50px rgba(0,0,0,.25); }
+    .rc-box h3 { font-weight:900; font-size:16px; color:#0f172a; margin-bottom:4px; }
+    .rc-field { display:block; margin-top:10px; font-size:11px; font-weight:800; color:#64748b; text-transform:uppercase; letter-spacing:.04em; }
+    .rc-field input { display:block; width:100%; margin-top:3px; border:1px solid #cbd5e1; border-radius:10px; padding:8px 10px; font-size:13px; color:#0f172a; text-transform:none; letter-spacing:0; font-weight:600; }
+    .rc-field input:focus { outline:2px solid #818cf8; border-color:#818cf8; }
+    .rc-prog { height:10px; background:#e2e8f0; border-radius:9999px; overflow:hidden; margin-top:12px; }
+    .rc-prog > div { height:100%; width:0; background:linear-gradient(90deg,#e11d48,#fb7185); transition:width .25s; }
+    .rc-log { margin-top:10px; max-height:140px; overflow:auto; font-size:11px; font-family:monospace; background:#0f172a; color:#fda4af; border-radius:10px; padding:8px; display:none; }
     .dm-drop-active { border-color: #6366f1 !important; background: rgba(99,102,241,.08) !important; transform: scale(1.005); }
 </style>
 
 <!-- UPLOAD & SYNC PAGE -->
-<div class="max-w-4xl mx-auto mt-2 px-2 md:px-0">
+<div id="dmWrap" class="max-w-4xl mx-auto mt-2 px-2 md:px-0">
 
     <!-- HERO -->
     <div class="relative overflow-hidden rounded-2xl bg-gradient-to-br from-indigo-600 to-violet-600 text-white px-5 py-4 mb-4 shadow-md shadow-indigo-200/50">
@@ -1002,28 +1316,53 @@ ob_start();
             <div class="min-w-0">
                 <p class="text-[10px] font-bold uppercase tracking-widest text-indigo-200">Debit Memo</p>
                 <h2 class="text-lg md:text-xl font-black tracking-tight leading-tight">Upload &amp; Sync Statements</h2>
-                <p class="text-xs text-indigo-100 mt-0.5">Drop PDFs to save them instantly. Sync then reads each statement and files it by telco, year and billing period (local + Google Drive).</p>
+                <p class="text-xs text-indigo-100 mt-0.5">Drop PDFs and they are uploaded, then synced and read automatically. Each statement is filed by telco, year and billing period (local + Google Drive).</p>
                 <div class="mt-2.5 flex flex-wrap items-center gap-1.5 text-[11px] font-bold">
                     <span class="bg-white/15 rounded-full px-2.5 py-1">1 · Upload PDFs</span>
                     <span class="text-indigo-200">→</span>
-                    <span class="bg-white/15 rounded-full px-2.5 py-1">2 · Sync &amp; Read</span>
+                    <span class="bg-white/15 rounded-full px-2.5 py-1">2 · Auto Sync &amp; Read</span>
                     <span class="text-indigo-200">→</span>
                     <span class="bg-white/15 rounded-full px-2.5 py-1">3 · Organized by Telco / Year / Period</span>
                 </div>
             </div>
-            <div class="shrink-0 flex flex-col items-stretch md:items-end gap-1.5">
-                <div class="flex flex-wrap gap-2">
-                    <button type="button" onclick="startSyncProcess()" class="bg-white text-indigo-700 hover:bg-indigo-50 text-xs font-extrabold px-4 py-2.5 rounded-xl shadow transition-all flex items-center justify-center gap-2">
-                        <span>⚡</span><span>Sync &amp; Read Uploaded PDFs</span>
-                    </button>
-                    <button type="button" onclick="startMirrorProcess()" title="Compare ALL files on Google Drive with this server, download the missing ones and read them into the database" class="bg-indigo-800/40 hover:bg-indigo-800/60 border border-white/40 text-white text-xs font-extrabold px-4 py-2.5 rounded-xl shadow transition-all flex items-center justify-center gap-2">
-                        <span>☁</span><span>Mirror ALL from Google Drive</span>
-                    </button>
-                </div>
-                <label class="text-[11px] text-indigo-100 flex items-center gap-1.5 cursor-pointer">
-                    <input type="checkbox" id="mirrorForce"> Re-read data of every PDF (slower)
-                </label>
-            </div>
+
+        </div>
+    </div>
+
+    <!-- TABS -->
+    <div class="rc-tabs">
+        <button type="button" id="tabBtnUpload" class="rc-tab active" onclick="showTab('upload')">⬆ Upload &amp; Sync</button>
+        <button type="button" id="tabBtnRecords" class="rc-tab" onclick="showTab('records')">📋 Records <span class="rc-pill" id="tabRecCount">…</span></button>
+    </div>
+
+    <div id="tabUpload">
+
+    <!-- ACTIONS -->
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-3 mb-4">
+        <div class="dm-action dm-action-sync">
+            <button type="button" onclick="startSyncProcess()" class="dm-action-main">
+                <span class="dm-action-icon">⚡</span>
+                <span class="min-w-0 flex-1">
+                    <span class="block text-sm font-extrabold text-slate-800">Sync &amp; Read Uploaded PDFs</span>
+                    <span class="block text-xs text-slate-500">Process the PDFs waiting in the sync folder</span>
+                </span>
+                <span class="dm-action-arrow">→</span>
+            </button>
+            <div class="dm-action-opt"><span class="dm-dot" style="background:#22c55e"></span> Runs automatically after every upload. Use this only for leftovers.</div>
+        </div>
+
+        <div class="dm-action dm-action-mirror">
+            <button type="button" onclick="startMirrorProcess()" class="dm-action-main" title="Compare ALL files on Google Drive with this server, download the missing ones and read them into the database">
+                <span class="dm-action-icon">☁</span>
+                <span class="min-w-0 flex-1">
+                    <span class="block text-sm font-extrabold text-slate-800">Mirror ALL from Google Drive</span>
+                    <span class="block text-xs text-slate-500">Download what is missing and read it into the database</span>
+                </span>
+                <span class="dm-action-arrow">→</span>
+            </button>
+            <label class="dm-action-opt cursor-pointer">
+                <input type="checkbox" id="mirrorForce"> Re-read data of every PDF (slower)
+            </label>
         </div>
     </div>
 
@@ -1036,7 +1375,7 @@ ob_start();
                 </div>
                 <div class="flex-1 text-center md:text-left pointer-events-none min-w-0">
                     <p class="text-sm font-bold text-slate-800">Drag &amp; drop PDF files or whole folders here</p>
-                    <p class="text-xs text-slate-500">Files are saved to <strong>uploads/sync/</strong> right away. Drive is handled during Sync.</p>
+                    <p class="text-xs text-slate-500">Files are saved to <strong>uploads/sync/</strong> first, then synced to Google Drive and read automatically.</p>
                 </div>
                 <div class="flex flex-wrap justify-center gap-2 relative z-10 shrink-0">
                     <label class="cursor-pointer bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold py-2.5 px-4 rounded-lg shadow transition-all inline-flex items-center gap-2">
@@ -1070,10 +1409,95 @@ ob_start();
         </div>
 
         <div class="flex flex-wrap justify-between items-center gap-3 px-4 py-3 rounded-xl bg-slate-50 border border-slate-200">
-            <p class="text-xs text-slate-600 font-medium">Tip: keep this tab open while uploading. You will see a live time estimate.</p>
+            <p class="text-xs text-slate-600 font-medium">Tip: upload and sync run one after the other automatically. Keep this tab open, you will see a live time estimate.</p>
             <button type="button" id="uploadBtn" onclick="startUploadProcess()" class="dm-cta" disabled>
-                <span>🚀</span><span id="uploadBtnLabel">Start Fast Upload</span>
+                <span>🚀</span><span id="uploadBtnLabel">Upload &amp; Auto-Sync</span>
             </button>
+        </div>
+    </div>
+    </div><!-- /tabUpload -->
+
+    <!-- RECORDS TAB -->
+    <div id="tabRecords" style="display:none;">
+        <div class="rc-chart" id="rcChart"></div>
+
+        <div class="rc-bar">
+            <input type="search" id="rcSearch" class="rc-input" style="flex:1;min-width:200px;" placeholder="Search filename, account, mobile, billing period…">
+            <select id="rcFlag" class="rc-select" title="Filter by status / N/A"></select>
+            <select id="rcTelco" class="rc-select"><option value="">All telcos</option></select>
+            <select id="rcPer" class="rc-select" title="Rows per page">
+                <option value="25">25 / page</option><option value="50">50 / page</option><option value="100">100 / page</option><option value="200">200 / page</option>
+            </select>
+            <button type="button" class="rc-btn" onclick="recLoad()">↻ Refresh</button>
+            <button type="button" id="rcDelSel" class="rc-btn rc-btn-danger" onclick="recAskDelete('selected')" disabled>🗑 Delete selected (0)</button>
+        </div>
+
+        <div class="rc-banner" id="rcBanner"></div>
+
+        <div class="rc-wrap">
+            <table class="rc-table">
+                <thead><tr>
+                    <th class="nosort" style="width:30px;"><input type="checkbox" id="rcCheckAll" title="Select all rows on this page"></th>
+                    <th data-sort="id">ID</th>
+                    <th data-sort="filename">File</th>
+                    <th data-sort="account_number">Account</th>
+                    <th data-sort="mobile_number">Mobile</th>
+                    <th data-sort="telco">Telco</th>
+                    <th data-sort="amount_due">Amount</th>
+                    <th data-sort="billing_period">Billing period</th>
+                    <th data-sort="invoice_date">Invoice</th>
+                    <th data-sort="due_date">Due</th>
+                    <th class="nosort">Server</th>
+                    <th class="nosort">Drive</th>
+                    <th class="nosort">Actions</th>
+                </tr></thead>
+                <tbody id="rcBody"><tr><td colspan="13" style="padding:30px;text-align:center;color:#94a3b8;">Loading…</td></tr></tbody>
+            </table>
+        </div>
+
+        <div class="rc-bar" style="margin-top:10px;justify-content:space-between;">
+            <span id="rcInfo" style="font-size:12px;font-weight:700;color:#64748b;"></span>
+            <span id="rcPager" style="display:flex;gap:4px;align-items:center;"></span>
+        </div>
+
+        <!-- Edit modal -->
+        <div class="rc-modal" id="rcEditModal">
+            <div class="rc-box">
+                <h3>✏ Edit record</h3>
+                <p class="rc-sub" id="rcEditName" style="word-break:break-all;"></p>
+                <label class="rc-field">Account number<input id="rcEf_account_number" maxlength="50"></label>
+                <label class="rc-field">Mobile number<input id="rcEf_mobile_number" maxlength="50"></label>
+                <label class="rc-field">Telco<input id="rcEf_telco" maxlength="50" list="rcTelcoList"></label>
+                <datalist id="rcTelcoList"><option value="Smart"><option value="Globe"><option value="Unknown"></datalist>
+                <label class="rc-field">Amount due<input id="rcEf_amount_due" maxlength="50"></label>
+                <label class="rc-field">Billing period<input id="rcEf_billing_period" maxlength="100"></label>
+                <label class="rc-field">Invoice date (YYYY-MM-DD)<input id="rcEf_invoice_date" maxlength="50"></label>
+                <label class="rc-field">Due date (YYYY-MM-DD)<input id="rcEf_due_date" maxlength="50"></label>
+                <p class="rc-sub" style="margin-top:8px;">Only the database is changed. The PDF stays where it is. Leave a field empty to reset it to N/A.</p>
+                <p id="rcEditErr" style="color:#e11d48;font-size:12px;font-weight:700;margin-top:6px;"></p>
+                <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:14px;">
+                    <button type="button" class="rc-btn" onclick="recCloseEdit()">Cancel</button>
+                    <button type="button" id="rcEditSave" class="rc-btn rc-btn-primary" onclick="recSaveEdit()">Save</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Delete modal -->
+        <div class="rc-modal" id="rcDelModal">
+            <div class="rc-box">
+                <h3 id="rcDelTitle">Delete records</h3>
+                <p id="rcDelMsg" style="font-size:13px;color:#475569;margin-top:6px;"></p>
+                <div id="rcDelConfirmWrap" style="display:none;">
+                    <label class="rc-field">Type DELETE to confirm<input id="rcDelConfirm" autocomplete="off" placeholder="DELETE"></label>
+                </div>
+                <div class="rc-prog" id="rcDelProgWrap" style="display:none;"><div id="rcDelProg"></div></div>
+                <p id="rcDelStatus" style="font-size:12px;font-weight:700;color:#475569;margin-top:6px;"></p>
+                <div class="rc-log" id="rcDelLog"></div>
+                <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:14px;">
+                    <button type="button" id="rcDelCancel" class="rc-btn" onclick="recCloseDelete()">Cancel</button>
+                    <button type="button" id="rcDelGo" class="rc-btn rc-btn-danger" onclick="recRunDelete()">Delete</button>
+                </div>
+            </div>
         </div>
     </div>
 </div>
@@ -1284,11 +1708,11 @@ function updateQueueUI() {
     if (!fileQueue.length) {
         box.innerHTML = '<p class="text-sm text-slate-500 text-center py-3 italic">No files queued yet.</p>';
         btn.setAttribute('disabled', 'true');
-        $('uploadBtnLabel').textContent = 'Start Fast Upload';
+        $('uploadBtnLabel').textContent = 'Upload & Auto-Sync';
         return;
     }
     btn.removeAttribute('disabled');
-    $('uploadBtnLabel').textContent = `Start Fast Upload (${fileQueue.length})`;
+    $('uploadBtnLabel').textContent = `Upload & Auto-Sync (${fileQueue.length})`;
     let html = '';
     fileQueue.slice(0, QUEUE_RENDER_LIMIT).forEach((f, i) => {
         html += `<div class="py-1.5 flex justify-between items-center gap-3 text-[13px] font-semibold text-slate-800">
@@ -1525,21 +1949,26 @@ async function startUploadProcess() {
     fileQueue = files.filter(f => !saved.has(f.name));
     queueKeys = new Set(fileQueue.map(f => f.name + '|' + f.size));
     updateQueueUI();
-    setScan(fileQueue.length ? `${fileQueue.length} file(s) not uploaded. Press Start Fast Upload to try again.` : '✓ Upload finished. Click "Sync & Read Uploaded PDFs" to organize the files.');
+    setScan(fileQueue.length ? `${fileQueue.length} file(s) not uploaded. Press the Upload button to try again.` : '✓ Upload finished. Files are now synced and read automatically.');
 
     const took = fmtClock(Date.now() - run.start);
+    const uploaded = run.ok, failed = run.fail;
     if (run.cancel) {
-        finishRun('warning', `Stopped. ${run.ok} uploaded, ${fileQueue.length} still in the queue.`);
-    } else if (run.fail > 0) {
-        finishRun('warning', `Finished in ${took}: ${run.ok} uploaded, ${run.fail} failed (kept in the queue).`);
+        finishRun('warning', `Stopped. ${uploaded} uploaded, ${fileQueue.length} still in the queue.`);
+        if (uploaded > 0) $('nextActionBtn').style.display = '';      // manual Sync still available after a stop
+    } else if (uploaded > 0) {
+        // AUTOMATIC: go straight to Sync & Read, the user does not need to click anything
+        const notes = [['ok', `[UPLOAD] ${uploaded} file(s) uploaded in ${took}. Starting Sync & Read automatically…`]];
+        if (failed > 0) notes.push(['warn', `[UPLOAD] ${failed} file(s) failed and stay in the queue so you can upload them again.`]);
+        busy = false;
+        return startSyncProcess(notes);
     } else {
-        finishRun('success', `All ${run.ok} file(s) uploaded in ${took}.`, 100);
+        finishRun('warning', `Nothing was uploaded: ${failed} file(s) failed (kept in the queue).`);
     }
-    if (run.ok > 0) $('nextActionBtn').style.display = '';
 }
 
 /* =====================  SYNC  ===================== */
-async function startSyncProcess() {
+async function startSyncProcess(notes) {
     if (busy) return;
     busy = true;
 
@@ -1547,6 +1976,7 @@ async function startSyncProcess() {
               stages:['Scan folders', 'Read & organize', 'Finished'], indeterminate:true });
     setStage(0, 'Scanning Google Drive and the local sync folder…');
     $('keepOpenHint').textContent = 'Scanning can take a little while on big folders. Please keep this page open.';
+    if (Array.isArray(notes)) notes.forEach(n => log(n[0], n[1]));
     log('info', '[1/2] Checking Google Drive and uploads/sync …');
 
     let init;
@@ -1778,6 +2208,299 @@ async function startMirrorProcess() {
     if (run.cancel) finishRun('warning', `Stopped. ${run.doneFiles} of ${files.length} checked (${summary}). Run again to continue.`);
     else if (run.fail || run.warn || scanFail) finishRun('warning', `Finished in ${took}: ${summary}` + (run.warn ? `, ${run.warn} warning(s)` : '') + '.');
     else finishRun('success', `Finished in ${took}: ${summary}.`, 100);
+}
+
+/* =====================  TABS  ===================== */
+function showTab(name) {
+    const isRec = name === 'records';
+    $('tabUpload').style.display  = isRec ? 'none' : '';
+    $('tabRecords').style.display = isRec ? '' : 'none';
+    $('tabBtnUpload').classList.toggle('active', !isRec);
+    $('tabBtnRecords').classList.toggle('active', isRec);
+    const wrap = $('dmWrap');
+    if (wrap) wrap.style.maxWidth = isRec ? '1500px' : '';
+    try { history.replaceState(null, '', isRec ? '#records' : '#upload'); } catch (_) {}
+    if (isRec) recLoad();
+}
+
+/* =====================  RECORDS TAB  ===================== */
+const REC_CARDS = [
+    ['',              'total',         'All records',      '#64748b', '#f1f5f9'],
+    ['complete',      'complete',      'Complete',         '#10b981', '#ecfdf5'],
+    ['any_na',        'any_na',        'Has N/A / missing','#f59e0b', '#fffbeb'],
+    ['na_account',    'na_account',    'N/A account',      '#f59e0b', '#fffbeb'],
+    ['na_mobile',     'na_mobile',     'N/A mobile',       '#f59e0b', '#fffbeb'],
+    ['unknown_telco', 'unknown_telco', 'Unknown telco',    '#f59e0b', '#fffbeb'],
+    ['zero_amount',   'zero_amount',   'Amount 0.00',      '#f59e0b', '#fffbeb'],
+    ['na_billing',    'na_billing',    'N/A billing period','#f59e0b','#fffbeb'],
+    ['na_invoice',    'na_invoice',    'N/A invoice date', '#f59e0b', '#fffbeb'],
+    ['na_due',        'na_due',        'N/A due date',     '#f59e0b', '#fffbeb'],
+    ['pending',       'pending',       'Pending sync',     '#0ea5e9', '#f0f9ff'],
+    ['no_link',       'no_link',       'No Drive link',    '#e11d48', '#fff1f2'],
+];
+const rec = { page:1, per:25, q:'', telco:'', flag:'', sort:'updated_at', dir:'desc',
+              selected:new Set(), allMatching:false, total:0, pages:1, rows:[], counts:{}, loading:false, editId:null, delIds:null, delMode:'', deleting:false, cancel:false };
+const fmtN = n => Number(n || 0).toLocaleString();
+const recIsNa = v => v === null || v === undefined || String(v).trim() === '' || String(v).trim().toUpperCase() === 'N/A';
+
+function recForm(action) {
+    const fd = actionForm(action);
+    fd.append('q', rec.q); fd.append('telco', rec.telco); fd.append('flag', rec.flag);
+    return fd;
+}
+
+let recSearchTimer = null;
+document.addEventListener('DOMContentLoaded', () => {
+    $('rcSearch').addEventListener('input', e => { clearTimeout(recSearchTimer); recSearchTimer = setTimeout(() => { rec.q = e.target.value.trim(); rec.page = 1; recClearSel(); recLoad(); }, 350); });
+    $('rcFlag').addEventListener('change', e => { rec.flag = e.target.value; rec.page = 1; recClearSel(); recLoad(); });
+    $('rcTelco').addEventListener('change', e => { rec.telco = e.target.value; rec.page = 1; recClearSel(); recLoad(); });
+    $('rcPer').addEventListener('change', e => { rec.per = parseInt(e.target.value, 10) || 25; rec.page = 1; recLoad(); });
+    $('rcCheckAll').addEventListener('change', e => {
+        rec.rows.forEach(r => e.target.checked ? rec.selected.add(r.id) : rec.selected.delete(r.id));
+        if (!e.target.checked) rec.allMatching = false;
+        recRenderSel();
+    });
+    $('rcBody').addEventListener('change', e => {
+        const cb = e.target.closest('input[data-id]'); if (!cb) return;
+        const id = parseInt(cb.dataset.id, 10);
+        if (cb.checked) rec.selected.add(id); else { rec.selected.delete(id); rec.allMatching = false; }
+        recRenderSel();
+    });
+    $('rcBody').addEventListener('click', e => {
+        const b = e.target.closest('button[data-act]'); if (!b) return;
+        const id = parseInt(b.dataset.id, 10);
+        if (b.dataset.act === 'edit') recOpenEdit(id); else if (b.dataset.act === 'del') recAskDelete('one', id);
+    });
+    document.querySelectorAll('.rc-table th[data-sort]').forEach(th => th.addEventListener('click', () => {
+        const s = th.dataset.sort;
+        if (rec.sort === s) rec.dir = rec.dir === 'asc' ? 'desc' : 'asc'; else { rec.sort = s; rec.dir = 'asc'; }
+        rec.page = 1; recLoad();
+    }));
+    $('rcDelConfirm').addEventListener('input', recUpdateDelBtn);
+    if (location.hash === '#records') showTab('records');
+});
+
+function recClearSel() { rec.selected.clear(); rec.allMatching = false; recRenderSel(); }
+
+async function recLoad() {
+    if (rec.loading) return;
+    rec.loading = true;
+    try {
+        const fd = recForm('records_list');
+        fd.append('page', rec.page); fd.append('per_page', rec.per); fd.append('sort', rec.sort); fd.append('dir', rec.dir);
+        const d = await postWithRetry(ENDPOINT, fd);
+        rec.rows = d.rows || []; rec.total = d.total; rec.page = d.page; rec.pages = d.pages; rec.counts = d.counts || {};
+        recRenderCards(); recRenderTelcos(d.telcos || []); recRenderRows(); recRenderPager(); recRenderSel();
+    } catch (e) {
+        $('rcBody').innerHTML = `<tr><td colspan="13" style="padding:30px;text-align:center;color:#e11d48;font-weight:700;">${esc(e.message)}</td></tr>`;
+    } finally { rec.loading = false; }
+}
+
+function recRenderCards() {
+    const c = rec.counts, total = c.total || 0;
+    $('tabRecCount').textContent = fmtN(total);
+
+    // dropdown filter (with counts)
+    const fsel = $('rcFlag');
+    fsel.innerHTML = REC_CARDS.map(([flag, key, label]) => `<option value="${flag}">${label} (${fmtN(c[key])})</option>`).join('');
+    fsel.value = rec.flag;
+
+    // chart: stacked summary + bar per N/A type
+    const pct = n => total ? (n / total * 100) : 0;
+    const complete = c.complete || 0, hasNa = c.any_na || 0, other = Math.max(0, total - complete - hasNa);
+    let h = `<h4>Data quality · ${fmtN(total)} records</h4>
+        <div class="rc-stack">
+            <div style="width:${pct(complete)}%;background:#10b981" title="Complete: ${fmtN(complete)}"></div>
+            <div style="width:${pct(hasNa)}%;background:#f59e0b" title="Has N/A: ${fmtN(hasNa)}"></div>
+            <div style="width:${pct(other)}%;background:#94a3b8" title="Other / pending: ${fmtN(other)}"></div>
+        </div>
+        <div class="rc-legend">
+            <span><i style="background:#10b981"></i>Complete ${fmtN(complete)} (${pct(complete).toFixed(1)}%)</span>
+            <span><i style="background:#f59e0b"></i>Has N/A ${fmtN(hasNa)} (${pct(hasNa).toFixed(1)}%)</span>
+            <span><i style="background:#94a3b8"></i>Pending / other ${fmtN(other)}</span>
+        </div>`;
+    h += REC_CARDS.filter(r => r[0] !== '' && r[0] !== 'complete' && r[0] !== 'any_na').map(([flag, key, label, col]) =>
+        `<div class="rc-crow${rec.flag === flag ? ' active' : ''}" data-flag="${flag}" title="Click to filter the list">
+            <span class="lb">${label}</span>
+            <span class="tr"><span class="fl" style="display:block;width:${pct(c[key])}%;background:${col}"></span></span>
+            <span class="ct">${fmtN(c[key])}<small>${pct(c[key]).toFixed(1)}%</small></span></div>`).join('');
+    $('rcChart').innerHTML = h;
+    $('rcChart').querySelectorAll('.rc-crow').forEach(r => r.addEventListener('click', () => {
+        rec.flag = (rec.flag === r.dataset.flag) ? '' : r.dataset.flag; rec.page = 1; recClearSel(); recLoad();
+    }));
+}
+
+function recRenderTelcos(list) {
+    const sel = $('rcTelco');
+    sel.innerHTML = '<option value="">All telcos</option>' + list.map(t => `<option value="${esc(t.name)}">${esc(t.name)} (${fmtN(t.count)})</option>`).join('');
+    sel.value = rec.telco;
+}
+
+function recRenderRows() {
+    const body = $('rcBody');
+    if (!rec.rows.length) { body.innerHTML = '<tr><td colspan="13" style="padding:30px;text-align:center;color:#94a3b8;font-weight:700;">No records found.</td></tr>'; return; }
+    const cell = v => recIsNa(v) ? '<span class="rc-na">N/A</span>' : esc(v);
+    body.innerHTML = rec.rows.map(r => {
+        const amtNa = recIsNa(r.amount_due) || ['0', '0.0', '0.00'].includes(String(r.amount_due).trim());
+        const telNa = recIsNa(r.telco) || r.telco === 'Unknown';
+        const pend  = r.account_number === 'PENDING_SYNC';
+        return `<tr data-row="${r.id}" class="${rec.selected.has(r.id) ? 'sel' : ''}">
+            <td><input type="checkbox" data-id="${r.id}" ${rec.selected.has(r.id) ? 'checked' : ''}></td>
+            <td class="rc-sub">${r.id}</td>
+            <td><div class="rc-fn" title="${esc(r.filename)}">${r.file_link ? `<a href="${esc(r.file_link)}" target="_blank" rel="noopener" style="color:inherit">${esc(r.filename)}</a>` : esc(r.filename)}</div><div class="rc-sub">${esc(r.file_path || '')}</div></td>
+            <td>${pend ? '<span class="rc-na" style="background:#e0f2fe;color:#0369a1">PENDING</span>' : cell(r.account_number)}</td>
+            <td>${cell(r.mobile_number)}</td>
+            <td>${telNa ? '<span class="rc-na">Unknown</span>' : esc(r.telco)}</td>
+            <td>${amtNa ? '<span class="rc-na">0.00</span>' : esc(r.amount_due)}</td>
+            <td>${cell(r.billing_period)}</td>
+            <td>${cell(r.invoice_date)}</td>
+            <td>${cell(r.due_date)}</td>
+            <td>${r.local ? '<span class="rc-ok" title="File exists on server">✓</span>' : '<span class="rc-no" title="File missing on server">✕</span>'}</td>
+            <td>${r.drive ? '<span class="rc-ok" title="Has Drive file">✓</span>' : '<span class="rc-no" title="No Drive file id">✕</span>'}</td>
+            <td style="white-space:nowrap"><button type="button" class="rc-act e" data-act="edit" data-id="${r.id}">Edit</button><button type="button" class="rc-act d" data-act="del" data-id="${r.id}">Delete</button></td>
+        </tr>`;
+    }).join('');
+}
+
+function recRenderPager() {
+    const from = rec.total ? (rec.page - 1) * rec.per + 1 : 0, to = Math.min(rec.total, rec.page * rec.per);
+    $('rcInfo').textContent = `Showing ${fmtN(from)}–${fmtN(to)} of ${fmtN(rec.total)}` + (rec.flag || rec.q || rec.telco ? ' (filtered)' : '');
+    const btn = (label, p, dis, act) => `<button type="button" class="rc-btn${act ? ' rc-btn-primary' : ''}" ${dis ? 'disabled' : ''} data-p="${p}" style="padding:5px 10px">${label}</button>`;
+    let h = btn('«', 1, rec.page <= 1) + btn('‹', rec.page - 1, rec.page <= 1);
+    const start = Math.max(1, rec.page - 2), end = Math.min(rec.pages, start + 4);
+    for (let p = start; p <= end; p++) h += btn(p, p, false, p === rec.page);
+    h += btn('›', rec.page + 1, rec.page >= rec.pages) + btn('»', rec.pages, rec.page >= rec.pages);
+    const pg = $('rcPager'); pg.innerHTML = h;
+    pg.querySelectorAll('button[data-p]').forEach(b => b.addEventListener('click', () => { rec.page = parseInt(b.dataset.p, 10); recLoad(); }));
+    document.querySelectorAll('.rc-table th[data-sort]').forEach(th => {
+        th.textContent = th.textContent.replace(/ [▲▼]$/, '') + (th.dataset.sort === rec.sort ? (rec.dir === 'asc' ? ' ▲' : ' ▼') : '');
+    });
+}
+
+function recRenderSel() {
+    const n = rec.allMatching ? rec.total : rec.selected.size;
+    const del = $('rcDelSel');
+    del.disabled = n === 0; del.textContent = `🗑 Delete selected (${fmtN(n)})`;
+    $('rcBody').querySelectorAll('tr[data-row]').forEach(tr => tr.classList.toggle('sel', rec.selected.has(parseInt(tr.dataset.row, 10))));
+    const pageIds = rec.rows.map(r => r.id);
+    const allOnPage = pageIds.length > 0 && pageIds.every(id => rec.selected.has(id));
+    $('rcCheckAll').checked = allOnPage;
+    const b = $('rcBanner');
+    if (rec.allMatching) {
+        b.style.display = 'block';
+        b.innerHTML = `All ${fmtN(rec.total)} records in this list are selected. <a id="rcClearSel">Clear selection</a>`;
+        $('rcClearSel').onclick = recClearSel;
+    } else if (allOnPage && rec.total > pageIds.length) {
+        b.style.display = 'block';
+        b.innerHTML = `${pageIds.length} records on this page are selected. <a id="rcSelAll">Select all ${fmtN(rec.total)} records in this list</a> (across all pages)`;
+        $('rcSelAll').onclick = () => { rec.allMatching = true; recRenderSel(); };
+    } else if (rec.selected.size) {
+        b.style.display = 'block';
+        b.innerHTML = `${fmtN(rec.selected.size)} selected. <a id="rcClearSel">Clear selection</a>`;
+        $('rcClearSel').onclick = recClearSel;
+    } else b.style.display = 'none';
+}
+
+/* ---- Edit ---- */
+const REC_EDIT_FIELDS = ['account_number', 'mobile_number', 'telco', 'amount_due', 'billing_period', 'invoice_date', 'due_date'];
+function recOpenEdit(id) {
+    const r = rec.rows.find(x => x.id === id); if (!r) return;
+    rec.editId = id;
+    $('rcEditName').textContent = r.filename;
+    REC_EDIT_FIELDS.forEach(f => { $('rcEf_' + f).value = (recIsNa(r[f]) && f !== 'telco' && f !== 'amount_due') ? '' : (r[f] ?? ''); });
+    $('rcEditErr').textContent = '';
+    $('rcEditModal').classList.add('open');
+    $('rcEf_account_number').focus();
+}
+function recCloseEdit() { $('rcEditModal').classList.remove('open'); rec.editId = null; }
+async function recSaveEdit() {
+    const data = {}; REC_EDIT_FIELDS.forEach(f => data[f] = $('rcEf_' + f).value);
+    const btn = $('rcEditSave'); btn.disabled = true; btn.textContent = 'Saving…';
+    try {
+        const fd = actionForm('records_update'); fd.append('id', rec.editId); fd.append('data', JSON.stringify(data));
+        const d = await postWithRetry(ENDPOINT, fd);
+        recCloseEdit();
+        rec.counts = d.counts || rec.counts;
+        recLoad();
+    } catch (e) { $('rcEditErr').textContent = e.message; }
+    finally { btn.disabled = false; btn.textContent = 'Save'; }
+}
+
+/* ---- Delete (one / selected / all in list) ---- */
+function recAskDelete(mode, id) {
+    rec.delMode = mode;
+    let count;
+    if (mode === 'one') { rec.delIds = [id]; count = 1; }
+    else if (mode === 'selected') {
+        if (rec.allMatching) { rec.delIds = null; rec.delMode = 'all'; count = rec.total; }
+        else { rec.delIds = [...rec.selected]; count = rec.delIds.length; }
+    } else { rec.delIds = null; count = rec.total; }
+    if (!count) return;
+    const filtered = !!(rec.flag || rec.q || rec.telco);
+    $('rcDelTitle').textContent = rec.delMode === 'all' ? `Delete ALL ${fmtN(count)} records${filtered ? ' in this list' : ''}?` : `Delete ${fmtN(count)} record${count > 1 ? 's' : ''}?`;
+    let msg = `This permanently removes the database record, the PDF on this server, and the file on Google Drive (moved to the Drive trash).`;
+    if (rec.delMode === 'all') msg += filtered ? ' Only records matching the current filter/search are affected.' : ' NO filter is active, so this means EVERY record.';
+    $('rcDelMsg').textContent = msg;
+    $('rcDelConfirmWrap').style.display = (count > 20 || rec.delMode === 'all') ? '' : 'none';
+    $('rcDelConfirm').value = '';
+    $('rcDelProgWrap').style.display = 'none'; $('rcDelProg').style.width = '0%';
+    $('rcDelStatus').textContent = ''; $('rcDelLog').style.display = 'none'; $('rcDelLog').innerHTML = '';
+    $('rcDelGo').style.display = ''; $('rcDelCancel').textContent = 'Cancel';
+    rec.deleting = false; rec.cancel = false;
+    $('rcDelModal').classList.add('open');
+    recUpdateDelBtn();
+}
+function recUpdateDelBtn() {
+    const need = $('rcDelConfirmWrap').style.display !== 'none';
+    $('rcDelGo').disabled = rec.deleting || (need && $('rcDelConfirm').value.trim() !== 'DELETE');
+}
+function recCloseDelete() {
+    if (rec.deleting) { rec.cancel = true; $('rcDelStatus').textContent = 'Stopping after the current batch…'; return; }
+    $('rcDelModal').classList.remove('open');
+}
+async function recRunDelete() {
+    if (rec.deleting) return;
+    rec.deleting = true; rec.cancel = false; recUpdateDelBtn();
+    $('rcDelConfirmWrap').style.display = 'none';
+    $('rcDelProgWrap').style.display = ''; $('rcDelCancel').textContent = 'Stop';
+    const logEl = $('rcDelLog');
+    let ids = rec.delIds;
+    try {
+        if (!ids) {
+            $('rcDelStatus').textContent = 'Collecting records…';
+            ids = (await postWithRetry(ENDPOINT, recForm('records_ids'))).ids || [];
+        }
+        const BATCH = 8, CONC = 2;
+        const batches = []; for (let i = 0; i < ids.length; i += BATCH) batches.push(ids.slice(i, i + BATCH));
+        let next = 0, done = 0, ok = 0, fail = 0;
+        const update = () => { $('rcDelProg').style.width = (ids.length ? done / ids.length * 100 : 100) + '%'; $('rcDelStatus').textContent = `${fmtN(done)} / ${fmtN(ids.length)} processed · ${fmtN(ok)} deleted` + (fail ? ` · ${fmtN(fail)} failed` : ''); };
+        update();
+        const worker = async () => {
+            while (next < batches.length && !rec.cancel) {
+                const b = batches[next++];
+                try {
+                    const fd = actionForm('records_delete_batch'); fd.append('ids', JSON.stringify(b));
+                    const d = await postWithRetry(ENDPOINT, fd, { retries: 2 });
+                    (d.results || []).forEach(r => {
+                        done++;
+                        if (r.status === 'success') { ok++; rec.selected.delete(r.id); }
+                        else { fail++; logEl.style.display = 'block'; logEl.insertAdjacentHTML('beforeend', `<div>✕ ${esc(r.filename)}: ${esc(r.message)}</div>`); }
+                    });
+                } catch (e) {
+                    done += b.length; fail += b.length;
+                    logEl.style.display = 'block'; logEl.insertAdjacentHTML('beforeend', `<div>✕ batch failed: ${esc(e.message)}</div>`);
+                }
+                update();
+            }
+        };
+        await Promise.all(Array.from({ length: Math.min(CONC, batches.length) }, worker));
+        $('rcDelStatus').textContent += rec.cancel ? ' · stopped' : ' · finished';
+    } catch (e) {
+        $('rcDelStatus').textContent = 'Error: ' + e.message;
+    }
+    rec.deleting = false; rec.allMatching = false;
+    $('rcDelGo').style.display = 'none'; $('rcDelCancel').textContent = 'Close';
+    recLoad();
 }
 </script>
 
