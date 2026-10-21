@@ -29,6 +29,57 @@ if (isset($_GET['action'])) {
     header('Content-Type: application/json; charset=utf-8');
     $action = $_GET['action'];
 
+    // Always answer with JSON: no stray warnings, no timeout for big selections, fatal errors reported as JSON
+    ini_set('display_errors', '0');
+    @set_time_limit(0);
+    @ini_set('memory_limit', '512M');
+    ob_start();
+
+    function dm_json_out($payload) {
+        while (ob_get_level()) { ob_end_clean(); }
+        $flags = (defined('JSON_INVALID_UTF8_SUBSTITUTE') ? JSON_INVALID_UTF8_SUBSTITUTE : 0) | JSON_PARTIAL_OUTPUT_ON_ERROR;
+        echo json_encode($payload, $flags);
+    }
+
+    register_shutdown_function(function () {
+        $err = error_get_last();
+        if ($err && in_array($err['type'], [E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR], true)) {
+            while (ob_get_level()) { ob_end_clean(); }
+            if (!headers_sent()) { header('Content-Type: application/json; charset=utf-8'); }
+            echo json_encode(['status' => 'error', 'message' => 'Server error: ' . $err['message']]);
+        }
+    });
+
+    // TO / CC from the Account Mapping: active -> employee email; resigned -> BU Admin Coordinator (President in CC)
+    function dm_recipients($row) {
+        $out = ['to' => '', 'cc' => ''];
+        if (!$row) return $out;
+        $employee  = trim((string)($row['email_address'] ?? ''));
+        $bu_admin  = trim((string)($row['bu_admin_coordinator_email'] ?? ($row['bu_admin_email'] ?? '')));
+        $president = trim((string)($row['president_email'] ?? ''));
+        $others    = preg_split('/[;,\s]+/', (string)($row['other_cc'] ?? ''), -1, PREG_SPLIT_NO_EMPTY);
+        $resigned  = strtolower(trim((string)($row['employee_status'] ?? 'active'))) === 'resigned';
+
+        if ($resigned) {
+            $to = $bu_admin !== '' ? $bu_admin : $president;
+            $cc = array_merge([$president], $others);
+        } else {
+            $to = $employee !== '' ? $employee : ($bu_admin !== '' ? $bu_admin : $president);
+            $cc = $others;
+        }
+        $seen = [strtolower($to) => true];
+        $cc_clean = [];
+        foreach ($cc as $e) {
+            $e = trim($e);
+            if ($e === '' || isset($seen[strtolower($e)]) || !filter_var($e, FILTER_VALIDATE_EMAIL)) continue;
+            $seen[strtolower($e)] = true;
+            $cc_clean[] = $e;
+        }
+        $out['to'] = $to;
+        $out['cc'] = implode(', ', $cc_clean);
+        return $out;
+    }
+
     function getDefaultEmailContent($account_number, $company, $recipient_name = '', $employee_id = '', $mobile_number = '', $data_coverage = 'As of current billing', $approved_plan_display = '0.00', $current_charges_display = '0.00', $final_dm_val = '0.00') {
         if (function_exists('getEmailTemplate')) {
             $template = getEmailTemplate($account_number, $company, $recipient_name, $employee_id, $mobile_number, $data_coverage, $approved_plan_display, $current_charges_display, $final_dm_val);
@@ -192,7 +243,8 @@ if (isset($_GET['action'])) {
                             $email_stmt->execute([$memo['account_number']]);
                             $account_email_row = $email_stmt->fetch(PDO::FETCH_ASSOC);
 
-                            $recipient_email = ($account_email_row && !empty($account_email_row['email_address'])) ? $account_email_row['email_address'] : '';
+                            $rcp             = dm_recipients($account_email_row);
+                            $recipient_email = $rcp['to'];
                             $recipient_name  = ($account_email_row && !empty($account_email_row['full_name'])) ? $account_email_row['full_name'] : '';
                             $employee_id     = ($account_email_row && !empty($account_email_row['employee_id'])) ? $account_email_row['employee_id'] : '';
                             $mobile_number   = ($account_email_row && !empty($account_email_row['mobile_number'])) ? $account_email_row['mobile_number'] : '';
@@ -211,7 +263,7 @@ if (isset($_GET['action'])) {
                                 'account_number' => $memo['account_number'] ?? $account_number,
                                 'company' => $memo['company'] ?? 'Walang Rekord',
                                 'recipient_email' => $recipient_email,
-                                'cc_emails' => '',
+                                'cc_emails' => $rcp['cc'],
                                 'subject' => $defaults['subject'],
                                 'html_content' => $defaults['body'],
                                 'start_date' => $final_start,
@@ -242,7 +294,7 @@ if (isset($_GET['action'])) {
             }
         }
         
-        echo json_encode(['status' => 'success', 'accounts' => $resolved_accounts]);
+        dm_json_out(['status' => 'success', 'accounts' => $resolved_accounts]);
         exit;
     }
 
@@ -295,13 +347,14 @@ if (isset($_GET['action'])) {
                             $email_stmt->execute([$memo['account_number']]);
                             $account_email_row = $email_stmt->fetch(PDO::FETCH_ASSOC);
 
-                            $db_email      = ($account_email_row && !empty($account_email_row['email_address'])) ? $account_email_row['email_address'] : '';
+                            $rcp           = dm_recipients($account_email_row);
+                            $db_email      = $rcp['to'];
                             $recipient_name = ($account_email_row && !empty($account_email_row['full_name'])) ? $account_email_row['full_name'] : '';
                             $employee_id    = ($account_email_row && !empty($account_email_row['employee_id'])) ? $account_email_row['employee_id'] : '';
                             $mobile_number  = ($account_email_row && !empty($account_email_row['mobile_number'])) ? $account_email_row['mobile_number'] : '';
                             
                             $recipient_email = !empty($custom_to) ? $custom_to : $db_email;
-                            $cc_emails       = $custom_cc;
+                            $cc_emails       = !empty($custom_cc) ? $custom_cc : $rcp['cc'];
                             
                             $resolved_start  = !empty($final_start) ? $final_start : ($memo['min_start'] ?? '');
                             $resolved_end    = !empty($final_end) ? $final_end : ($memo['max_end'] ?? '');
@@ -349,7 +402,132 @@ if (isset($_GET['action'])) {
             }
         }
         
-        echo json_encode(['status' => 'success', 'accounts' => $resolved_accounts]);
+        dm_json_out(['status' => 'success', 'accounts' => $resolved_accounts]);
+        exit;
+    }
+
+    // 2b. LIGHT REVIEW LIST (checked dm_ids + coverage dates only - no email text built here)
+    if ($action === 'get_bulk_review_light') {
+        $input = json_decode(file_get_contents('php://input'), true);
+        $ids = [];
+        foreach ((isset($input['dm_ids']) && is_array($input['dm_ids'])) ? $input['dm_ids'] : [] as $v) {
+            $v = (int)$v;
+            if ($v > 0) $ids[$v] = $v;
+        }
+        $ids = array_values($ids);
+        $gs = trim((string)($input['start_date'] ?? ''));
+        $ge = trim((string)($input['end_date'] ?? ''));
+
+        if (empty($ids)) {
+            dm_json_out(['status' => 'success', 'accounts' => []]);
+            exit;
+        }
+
+        $in = implode(',', array_fill(0, count($ids), '?'));
+        $range = '';
+        $range_params = [];
+        if ($gs !== '' && $ge !== '') {
+            $range = " AND dmi.coverage_start >= ? AND dmi.coverage_end <= ?";
+            $range_params = [$gs, $ge];
+        }
+
+        // memos + coverage + number of items in range (one query for all accounts)
+        $stmt = $conn->prepare("SELECT dm.dm_id, dm.account_number, dm.company,
+                                       MIN(dmi.coverage_start) AS min_start, MAX(dmi.coverage_end) AS max_end, COUNT(dmi.id) AS item_cnt
+                                FROM debit_memos dm
+                                LEFT JOIN debit_memo_items dmi ON dmi.dm_id = dm.dm_id" . $range . "
+                                WHERE dm.dm_id IN ($in)
+                                GROUP BY dm.dm_id, dm.account_number, dm.company");
+        $stmt->execute(array_merge($range_params, $ids));
+        $memos = [];
+        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $m) { $memos[(int)$m['dm_id']] = $m; }
+
+        // which of them have an SOA (one query for all accounts)
+        $soa_ids = [];
+        try {
+            $stmt = $conn->prepare("SELECT DISTINCT dm.dm_id
+                                    FROM debit_memos dm
+                                    JOIN debit_memo_items dmi ON dmi.dm_id = dm.dm_id
+                                    JOIN pdf_extracted_details pdf ON pdf.account_number = dm.account_number
+                                    WHERE dm.dm_id IN ($in)" . $range . "
+                                      AND ABS(DATEDIFF(dmi.coverage_end, STR_TO_DATE(SUBSTRING_INDEX(pdf.billing_period, ' - ', -1), '%Y-%m-%d'))) <= 5
+                                      AND (
+                                          pdf.mobile_number IS NULL OR pdf.mobile_number = '' OR pdf.mobile_number = 'N/A'
+                                          OR RIGHT(REGEXP_REPLACE(pdf.mobile_number, '[^0-9]', ''), 10) = RIGHT(REGEXP_REPLACE(dmi.mobile_number, '[^0-9]', ''), 10)
+                                      )");
+            $stmt->execute(array_merge($ids, $range_params));
+            foreach ($stmt->fetchAll(PDO::FETCH_COLUMN) as $d) { $soa_ids[(int)$d] = true; }
+        } catch (Throwable $e) {
+            error_log('get_bulk_review_light SOA check: ' . $e->getMessage());
+        }
+
+        // recipients from the account mapping (one query for all accounts)
+        $acc_nums = [];
+        foreach ($memos as $m) { $acc_nums[trim((string)$m['account_number'])] = true; }
+        $mapping = [];
+        if (!empty($acc_nums)) {
+            $nums = array_keys($acc_nums);
+            $in2 = implode(',', array_fill(0, count($nums), '?'));
+            $stmt = $conn->prepare("SELECT * FROM account_emails WHERE account_number IN ($in2)");
+            $stmt->execute($nums);
+            foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $r) { $mapping[trim((string)$r['account_number'])] = $r; }
+        }
+
+        $accounts = [];
+        foreach ($ids as $id) {
+            if (!isset($memos[$id])) continue;
+            $m = $memos[$id];
+            $rcp = dm_recipients(isset($mapping[trim((string)$m['account_number'])]) ? $mapping[trim((string)$m['account_number'])] : null);
+            $accounts[] = [
+                'dm_id'           => $id,
+                'account_number'  => $m['account_number'],
+                'company'         => $m['company'],
+                'recipient_email' => $rcp['to'],
+                'cc_emails'       => $rcp['cc'],
+                'subject'         => '',
+                'html_content'    => '',
+                'start_date'      => $gs !== '' ? $gs : ($m['min_start'] ?? ''),
+                'end_date'        => $ge !== '' ? $ge : ($m['max_end'] ?? ''),
+                'has_soa'         => isset($soa_ids[$id]),
+                'has_data'        => ((int)$m['item_cnt'] > 0),
+                'has_dm'          => true,
+            ];
+        }
+        dm_json_out(['status' => 'success', 'accounts' => $accounts]);
+        exit;
+    }
+
+    // 2c. EMAIL TEXT for a few accounts at a time (called while sending, batch by batch)
+    if ($action === 'get_bulk_email_content') {
+        $input = json_decode(file_get_contents('php://input'), true);
+        $items = (isset($input['items']) && is_array($input['items'])) ? $input['items'] : [];
+        $out = [];
+        foreach ($items as $it) {
+            $dm_id = (int)($it['dm_id'] ?? 0);
+            $st = trim((string)($it['start_date'] ?? ''));
+            $en = trim((string)($it['end_date'] ?? ''));
+            $row = ['dm_id' => $dm_id, 'subject' => '', 'html_content' => ''];
+            if ($dm_id > 0) {
+                $stmt = $conn->prepare("SELECT account_number, company FROM debit_memos WHERE dm_id = ?");
+                $stmt->execute([$dm_id]);
+                $memo = $stmt->fetch(PDO::FETCH_ASSOC);
+                if ($memo) {
+                    $stmt = $conn->prepare("SELECT * FROM account_emails WHERE account_number = ?");
+                    $stmt->execute([$memo['account_number']]);
+                    $ae = $stmt->fetch(PDO::FETCH_ASSOC);
+                    $recipient_name = ($ae && !empty($ae['full_name'])) ? $ae['full_name'] : '';
+                    $employee_id    = ($ae && !empty($ae['employee_id'])) ? $ae['employee_id'] : '';
+                    $mobile_number  = ($ae && !empty($ae['mobile_number'])) ? $ae['mobile_number'] : '';
+
+                    $metrics  = calculateAccountSummaryMetrics($conn, $dm_id, $st, $en);
+                    $defaults = getDefaultEmailContent($memo['account_number'], $memo['company'], $recipient_name, $employee_id, $mobile_number, $metrics['data_coverage'], $metrics['approved_plan_display'], $metrics['current_charges_display'], $metrics['total_final_dm']);
+                    $row['subject']      = $defaults['subject'];
+                    $row['html_content'] = $defaults['body'];
+                }
+            }
+            $out[] = $row;
+        }
+        dm_json_out(['status' => 'success', 'items' => $out]);
         exit;
     }
 
@@ -357,7 +535,7 @@ if (isset($_GET['action'])) {
     if ($action === 'get_bulk_email_preview') {
         $input = json_decode(file_get_contents('php://input'), true);
         $accounts_input = isset($input['accounts']) ? $input['accounts'] : [];
-        echo json_encode(['status' => 'success', 'accounts' => $accounts_input]);
+        dm_json_out(['status' => 'success', 'accounts' => $accounts_input]);
         exit;
     }
 
@@ -375,7 +553,7 @@ if (isset($_GET['action'])) {
         $dm = $stmt->fetch(PDO::FETCH_ASSOC);
 
         if (!$dm) {
-            echo json_encode(['status' => 'error', 'message' => 'Debit memo not found.']);
+            dm_json_out(['status' => 'error', 'message' => 'Debit memo not found.']);
             exit;
         }
 
@@ -384,7 +562,8 @@ if (isset($_GET['action'])) {
         $email_stmt->execute([$account_number]);
         $account_email_row = $email_stmt->fetch(PDO::FETCH_ASSOC);
 
-        $recipient_email = ($account_email_row && !empty($account_email_row['email_address'])) ? $account_email_row['email_address'] : '';
+        $rcp             = dm_recipients($account_email_row);
+        $recipient_email = $rcp['to'];
         $recipient_name  = ($account_email_row && !empty($account_email_row['full_name'])) ? $account_email_row['full_name'] : '';
         $employee_id     = ($account_email_row && !empty($account_email_row['employee_id'])) ? $account_email_row['employee_id'] : '';
         $mobile_number   = ($account_email_row && !empty($account_email_row['mobile_number'])) ? $account_email_row['mobile_number'] : '';
@@ -508,8 +687,10 @@ if (isset($_GET['action'])) {
         $soa_stmt->execute($soa_params);
         $soa_files = $soa_stmt->fetchAll(PDO::FETCH_ASSOC);
 
+        $seen_soa = [];
         foreach ($soa_files as $soa) {
-            if (!empty($soa['filename'])) {
+            if (!empty($soa['filename']) && !isset($seen_soa[$soa['filename']])) {
+                $seen_soa[$soa['filename']] = true;
                 $attachments[] = [
                     'path' => $soa['filename'], // gagamitin bilang identifier sa modal
                     'name' => $soa['filename']
@@ -517,10 +698,10 @@ if (isset($_GET['action'])) {
             }
         }
 
-        echo json_encode([
+        dm_json_out([
             'status' => 'success',
             'recipient_email' => $recipient_email,
-            'cc_emails' => '',
+            'cc_emails' => $rcp['cc'],
             'subject' => $defaults['subject'],
             'html_content' => $defaults['body'],
             'attachments' => $attachments
@@ -1978,78 +2159,60 @@ function sendEmailSelected() {
     let checkboxes = document.querySelectorAll('.dm-checkbox:checked');
     if (checkboxes.length === 0) return alert("Please select at least one account.");
 
-    let accountsToProcess = [];
+    // only what is needed to open the email module: the checked debit memo ids + the coverage dates
+    let dmIds = Array.from(new Set(Array.from(checkboxes).map(cb => parseInt(cb.value, 10)).filter(n => n > 0)));
     let globalStart = document.querySelector('input[name="start_date"]')?.value || '';
     let globalEnd = document.querySelector('input[name="end_date"]')?.value || '';
 
-    checkboxes.forEach(cb => {
-        let row = cb.closest('tr');
-        let accNum = row.querySelector('td:nth-child(2)').innerText.trim();
-        
-        accountsToProcess.push({
-            account_number: accNum,
-            start_date: globalStart,
-            end_date: globalEnd
-        });
-    });
-
     document.getElementById('pageLoaderOverlay').style.display = 'flex';
 
-    // BAGONG URL: list_dm.php
-    fetch('list_dm.php?action=get_dm_ids_by_paste', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ 
-            pasted_text: accountsToProcess.map(a => a.account_number).join('\n'),
-            start_date: globalStart,
-            end_date: globalEnd
-        })
-    })
-    .then(async res => {
-        const text = await res.text();
-        try { return JSON.parse(text); } catch (e) { throw new Error("Server returned non-JSON response."); }
-    })
-    .then(data => {
-        if (data.status === 'success' && data.accounts && data.accounts.length > 0) {
-            openBulkEmailReviewModal(data.accounts);
-        } else {
+    (async () => {
+        try {
+            const CHUNK = 200;
+            let allAccounts = [];
+            for (let i = 0; i < dmIds.length; i += CHUNK) {
+                const data = await dmFetchJson('list_dm.php?action=get_bulk_review_light', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ dm_ids: dmIds.slice(i, i + CHUNK), start_date: globalStart, end_date: globalEnd })
+                });
+                if (data.status !== 'success') throw new Error(data.message || 'Server error');
+                allAccounts = allAccounts.concat(data.accounts || []);
+            }
+
+            if (allAccounts.length > 0) {
+                openBulkEmailReviewModal(allAccounts);
+            } else {
+                document.getElementById('pageLoaderOverlay').style.display = 'none';
+                alert("No matching email records found.");
+            }
+        } catch (err) {
             document.getElementById('pageLoaderOverlay').style.display = 'none';
-            alert("No matching email records found.");
+            alert("Error: " + err.message);
         }
-    })
-    .catch(err => {
-        document.getElementById('pageLoaderOverlay').style.display = 'none';
-        alert("Error: " + err.message);
-    });
+    })();
+}
+
+// fetch -> JSON, with a readable error (and the server text in the console) when the reply is not JSON
+async function dmFetchJson(url, options) {
+    const res = await fetch(url, options);
+    const text = await res.text();
+    try {
+        return JSON.parse(text);
+    } catch (e) {
+        console.error('Non-JSON response from ' + url + ' (HTTP ' + res.status + '):', text);
+        const snippet = text.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().substring(0, 300);
+        throw new Error('Server returned a non-JSON response (HTTP ' + res.status + ')' +
+            (snippet ? ': ' + snippet : '. The request may have timed out - try fewer accounts.'));
+    }
 }
 
 function openBulkEmailReviewModal(accountsList) {
-    // BAGONG URL: list_dm.php
-    fetch('list_dm.php?action=get_bulk_email_preview', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ accounts: accountsList })
-    })
-    .then(async res => {
-        const text = await res.text();
-        try { return JSON.parse(text); } catch (e) { throw new Error("Server returned non-JSON response."); }
-    })
-    .then(data => {
-        document.getElementById('pageLoaderOverlay').style.display = 'none';
-
-        if (data.status === 'success') {
-            bulkAccountsCache = data.accounts;
-            renderBulkReviewTable();
-            document.getElementById('bulkSummaryCount').innerText = `${accountsList.length} accounts loaded for review`;
-            document.getElementById('bulkEmailReviewModal').style.display = 'flex';
-        } else {
-            alert("Error: " + data.message);
-        }
-    })
-    .catch(err => {
-        document.getElementById('pageLoaderOverlay').style.display = 'none';
-        alert("Error: " + err.message);
-    });
+    document.getElementById('pageLoaderOverlay').style.display = 'none';
+    bulkAccountsCache = accountsList;
+    renderBulkReviewTable();
+    document.getElementById('bulkSummaryCount').innerText = `${accountsList.length} accounts loaded for review`;
+    document.getElementById('bulkEmailReviewModal').style.display = 'flex';
 }
 
 function closeBulkEmailReviewModal() {
@@ -2340,6 +2503,31 @@ async function executeDispatchFetch(formData, countNum) {
         currentBatchIndex++;
         if (batchProgressCounter) {
             batchProgressCounter.innerText = `Batch ${currentBatchIndex}/${totalBatches}`;
+        }
+
+        // Build the email text for THIS batch only (the review window opens without it)
+        if (rawSingleItemIds === '') {
+            let need = [];
+            for (let k = i; k < Math.min(i + chunkSize, dmIds.length); k++) {
+                if (!bodies[k]) need.push(k);
+            }
+            if (need.length > 0) {
+                try {
+                    const cdata = await dmFetchJson('list_dm.php?action=get_bulk_email_content', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({ items: need.map(k => ({ dm_id: dmIds[k], start_date: startDates[k] || '', end_date: endDates[k] || '' })) })
+                    });
+                    if (cdata.status === 'success' && Array.isArray(cdata.items)) {
+                        cdata.items.forEach((it, n) => {
+                            subjects[need[n]] = it.subject || '';
+                            bodies[need[n]] = it.html_content || '';
+                        });
+                    }
+                } catch (cErr) {
+                    progressLog.innerHTML += `<div class="text-rose-400">Could not prepare the email text for batch ${currentBatchIndex}: ${cErr.message}</div>`;
+                }
+            }
         }
 
         let chunkDmIds = dmIds.slice(i, i + chunkSize);

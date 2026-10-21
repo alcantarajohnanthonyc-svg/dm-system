@@ -6,15 +6,17 @@
  *   1. Debit Masterfile  - charges and DM per mobile number   (debit_memos / debit_memo_items)
  *   2. Import SOA        - uploaded statement files           (pdf_extracted_details)
  *   3. Email SOA         - statements emailed to accounts     (dispatch_logs)
+ *   4. BU Admin & President - excess charges per BU Admin / Group President, with email sending (account_emails)
  */
 
 // Enable error reporting for debugging
-ini_set('display_errors', 0);
+ini_set('display_errors', 1);
 ini_set('display_startup_errors', 1);
 error_reporting(E_ALL);
 
 require_once 'config.php';
 require_once 'main.php';
+require_once __DIR__ . '/reports_recipients.php';
 
 // Check if user is logged in
 if (!isset($_SESSION['user_id'])) {
@@ -40,12 +42,11 @@ function rp_all($conn, $sql, $params = array()) {
 function rp_row($conn, $sql, $params = array()) {
     $stmt = $conn->prepare($sql);
     $stmt->execute($params);
-    $row = $stmt->fetch(PDO::FETCH_ASSOC);
+    $row =$stmt->fetch(PDO::FETCH_ASSOC);
     return $row ? $row : array();
 }
 
-function rp_col($conn, $sql, $params = array()) {
-    $stmt = $conn->prepare($sql);
+function rp_col($conn,$sql, $params = array()) {$stmt = $conn->prepare($sql);
     $stmt->execute($params);
     return $stmt->fetchAll(PDO::FETCH_COLUMN);
 }
@@ -55,7 +56,7 @@ function rp_get($key) {
 }
 
 // A date field: untouched form -> default, submitted blank -> no filter
-function rp_date_param($key, $default) {
+function rp_date_param($key,$default) {
     if (!array_key_exists($key, $_GET)) return $default;
     $v = trim((string)$_GET[$key]);
     return preg_match('/^\d{4}-\d{2}-\d{2}$/', $v) ? $v : '';
@@ -69,7 +70,7 @@ function rp_money($v) {
     return '₱ ' . number_format((float)$v, 2);
 }
 
-function rp_date($v, $fmt = 'M d, Y') {
+function rp_date($v,$fmt = 'M d, Y') {
     $v = trim((string)$v);
     if ($v === '' || strpos($v, '0000-00-00') === 0) return '';
     $t = strtotime($v);
@@ -108,7 +109,7 @@ function rp_is_blank($v) {
 }
 
 // A table cell that shows "Missing" when the imported value is empty
-function rp_val($v, $formatter = null) {
+function rp_val($v,$formatter = null) {
     if (rp_is_blank($v)) return '<span class="rp-miss">Missing</span>';
     return rp_e($formatter ? call_user_func($formatter, $v) : $v);
 }
@@ -121,7 +122,7 @@ function rp_compact_money($v) {
 }
 
 // Horizontal bars: items = array(array('label'=>, 'value'=>, 'note'=>))
-function rp_hbars(array $items, $money = false) {
+function rp_hbars(array $items,$money = false) {
     if (empty($items)) return '<p class="rp-empty-sm">Nothing to chart for these filters.</p>';
     $max = 0;
     foreach ($items as $it) { $max = max($max, (float)$it['value']); }
@@ -138,7 +139,7 @@ function rp_hbars(array $items, $money = false) {
 }
 
 // Vertical columns: items = array(array('label'=>, 'title'=>, 'a'=>, 'b'=>optional second series))
-function rp_columns(array $items, $money = false) {
+function rp_columns(array $items,$money = false) {
     if (empty($items)) return '<p class="rp-empty-sm">Nothing to chart for these filters.</p>';
     $max = 0;
     foreach ($items as $it) { $max = max($max, (float)$it['a'] + (isset($it['b']) ? (float)$it['b'] : 0)); }
@@ -166,7 +167,7 @@ function rp_opts($list) {
     return $o;
 }
 
-function rp_select($name, $label, $options, $selected, $all_label) {
+function rp_select($name,$label, $options,$selected, $all_label) {
     $h  = '<label class="rp-field"><span>' . rp_e($label) . '</span><select name="' . rp_e($name) . '">';
     $h .= '<option value="">' . rp_e($all_label) . '</option>';
     foreach ($options as $value => $text) {
@@ -175,7 +176,7 @@ function rp_select($name, $label, $options, $selected, $all_label) {
     return $h . '</select></label>';
 }
 
-function rp_pager($page, $total_pages) {
+function rp_pager($page,$total_pages) {
     if ($total_pages <= 1) return '';
     $q = $_GET;
     $q['action'] = 'view';
@@ -183,8 +184,8 @@ function rp_pager($page, $total_pages) {
         $q['page'] = $p;
         return 'reports.php?' . http_build_query($q);
     };
-    $end   = min($total_pages, max(1, $page - 4) + 8);
-    $start = max(1, $end - 8);
+    $end   = min($total_pages, max(1,$page - 4) + 8);
+    $start = max(1,$end - 8);
 
     $h  = '<div class="rp-pager-wrap"><span class="rp-muted">Page <b>' . (int)$page . '</b> of <b>' . (int)$total_pages . '</b></span>';
     $h .= '<nav class="rp-pager" aria-label="Pagination">';
@@ -197,10 +198,6 @@ function rp_pager($page, $total_pages) {
     return $h . '</nav></div>';
 }
 
-/**
- * Generic Excel XML (SpreadsheetML) download used by the SOA and Email reports.
- * $numeric_cols = zero-based column indexes that should be written as numbers.
- */
 function rp_xml_excel($filename, $sheet_name, array $meta, array $headers, array $rows, array $numeric_cols = array()) {
     $esc = function ($v) {
         $v = preg_replace('/[\x00-\x08\x0B\x0C\x0E-\x1F]/', '', (string)$v);
@@ -281,9 +278,6 @@ function rp_soa_where(array $f) {
     return array($w, $p);
 }
 
-// ---- "Need to upload": memo items (account + coverage period) with no matching SOA ----
-// Same matching rule as the dashboard: same account, SOA billing period ends within 5 days
-// of the memo item's coverage end, and the mobile number matches (or the SOA has none).
 function rp_need_from() {
     return " FROM debit_memo_items i JOIN debit_memos m ON m.dm_id = i.dm_id WHERE m.account_number IS NOT NULL AND TRIM(m.account_number) <> ''";
 }
@@ -299,10 +293,8 @@ function rp_need_order() {
 function rp_need_where(array $f) {
     $w = '';
     $p = array();
-    // Coverage range of the memo item (same clause the dashboard uses)
     if ($f['start_date'] !== '') { $w .= " AND i.coverage_start >= ?"; $p[] = $f['start_date']; }
     if ($f['end_date'] !== '')   { $w .= " AND i.coverage_end <= ?";   $p[] = $f['end_date']; }
-    // A chosen coverage date (SOA billing period) -> memo items ending within 5 days of its end date
     if ($f['billing_period'] !== '') {
         $parts = preg_split('/\s+(?:-|to)\s+/i', trim($f['billing_period']));
         if (count($parts) >= 2) {
@@ -322,7 +314,6 @@ function rp_need_where(array $f) {
     return array($w, $p);
 }
 
-// ---- Fast lookups: a few simple queries, then everything else is matched in PHP ----
 function rp_soa_context($conn) {
     $ctx = array('company' => array(), 'email' => array(), 'sent' => array());
 
@@ -347,7 +338,6 @@ function rp_soa_enrich(array $r, array $ctx) {
     return $r;
 }
 
-// The "Show only" filter for statement files, evaluated in PHP
 function rp_soa_check_ok(array $r, $check, array $ctx) {
     $acct = trim((string)$r['account_number']);
     switch ($check) {
@@ -362,9 +352,6 @@ function rp_soa_check_ok(array $r, $check, array $ctx) {
     return true;
 }
 
-// Memo items (account + coverage period) that have no matching SOA. Same rule as the dashboard:
-// same account, SOA billing period ends within 5 days of the item's coverage end,
-// and the mobile number matches (or the SOA has none). Matched in PHP, not in SQL.
 function rp_day_index($ymd) {
     if (!preg_match('/^(\d{4})-(\d{2})-(\d{2})/', (string)$ymd, $m)) return null;
     return (int)floor(gmmktime(0, 0, 0, (int)$m[2], (int)$m[3], (int)$m[1]) / 86400);
@@ -428,13 +415,14 @@ $report_defs = array(
     'masterfile' => array('label' => 'Debit Masterfile', 'icon' => 'la-file-invoice-dollar', 'desc' => 'Charges, processed DM and system-generated DM per mobile number'),
     'soa'        => array('label' => 'Import SOA',       'icon' => 'la-file-upload',          'desc' => 'Statements uploaded, and whether each one matches a memo and an email'),
     'email'      => array('label' => 'Email SOA',        'icon' => 'la-mail-bulk',            'desc' => 'Statements emailed to accounts, with sent and failed status'),
+    'recipients' => array('label' => 'BU Admin & President', 'icon' => 'la-user-tie',         'desc' => 'Excess charges summarised per BU Admin and Group President, with email sending'),
 );
 
 $report   = (isset($_GET['report']) && isset($report_defs[$_GET['report']])) ? $_GET['report'] : 'masterfile';
-// overview (default) = counts and charts only; view = load the record list; export = Excel download
 $action   = 'overview';
 if (isset($_GET['action']) && $_GET['action'] === 'export') { $action = 'export'; }
 elseif (isset($_GET['action']) && $_GET['action'] === 'view') { $action = 'view'; }
+elseif (isset($_GET['action']) && $_GET['action'] === 'preview') { $action = 'preview'; }
 $page     = max(1, (int)(isset($_GET['page']) ? $_GET['page'] : 1));
 $per_page = 25;
 $offset   = ($page - 1) * $per_page;
@@ -453,9 +441,13 @@ $f = array(
     'q'              => rp_get('q'),
     'start_date'     => rp_date_param('start_date', $default_start),
     'end_date'       => rp_date_param('end_date', $default_end),
+    'role'           => rp_rcp_role(rp_get('role')),
+    'grp'            => rp_get('grp'),
+    'department'     => rp_get('department'),
 );
 
-// Columns used by the Debit Masterfile report
+rp_rcp_handle_post($conn);
+
 $mf_cols = "dm.account_number, dm.company AS dm_company, dm.assignee_name, dmi.carrier_name, dmi.mobile_number,
             dmi.coverage_start, dmi.coverage_end, dmi.approved_plan, dmi.phone_amortization, dmi.debit_adj,
             dmi.credit_adj, dmi.other_charges, dmi.local_call_text, dmi.ndd_charges, dmi.idd_charges,
@@ -463,9 +455,6 @@ $mf_cols = "dm.account_number, dm.company AS dm_company, dm.assignee_name, dmi.c
             dmi.vat, dmi.oct, dmi.current_charges, dmi.total_amount_due, dmi.debit_memo_details";
 $mf_from = "FROM `debit_memo_items` AS dmi INNER JOIN debit_memos AS dm ON dm.dm_id = dmi.dm_id WHERE 1=1";
 
-/**
- * EXPORT (Debit Masterfile): Excel XML workbook, one sheet per coverage year
- */
 if ($report === 'masterfile' && $action === 'export') {
     try {
         list($mf_where, $mf_params) = rp_masterfile_where($f);
@@ -476,7 +465,6 @@ if ($report === 'masterfile' && $action === 'export') {
         $stmt->execute($mf_params);
         $results = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-        // Group items by year
         $grouped_by_year = array();
         foreach ($results as $row) {
             $year = 'Unknown';
@@ -496,7 +484,6 @@ if ($report === 'masterfile' && $action === 'export') {
             $grouped_by_year[date('Y')] = array();
         }
 
-        // Set Headers for Excel XML Download
         $filename = 'Debit_Memo_Report_' . date('Y-m-d_His') . '.xls';
         header('Content-Type: application/vnd.ms-excel; charset=UTF-8');
         header('Content-Disposition: attachment; filename="' . $filename . '"');
@@ -511,7 +498,6 @@ if ($report === 'masterfile' && $action === 'export') {
         echo ' xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"' . "\n";
         echo ' xmlns:html="http://www.w3.org/TR/REC-html40">' . "\n";
 
-        // Global Styles Definition
         echo '<Styles>' . "\n";
         echo '<Style ss:ID="DataCell"><Alignment ss:Horizontal="Center" ss:Vertical="Center"/><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1"/></Borders></Style>' . "\n";
         echo '<Style ss:ID="RedCell"><Alignment ss:Horizontal="Center" ss:Vertical="Center"/><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1"/></Borders><Font ss:Bold="1" ss:Color="#dc2626"/></Style>' . "\n";
@@ -528,7 +514,6 @@ if ($report === 'masterfile' && $action === 'export') {
         }
         echo '</Styles>' . "\n";
 
-        // Headers Configuration (22 columns total)
         $headers = [
             "COVERAGE DATE" => "#FFE599",
             "MOBILE NUMBER" => "#93C47D",
@@ -554,18 +539,15 @@ if ($report === 'masterfile' && $action === 'export') {
             "DIFFERENCE" => "#F7F700"
         ];
 
-        // Loop through each year to create separate sheet tabs
         foreach ($grouped_by_year as $year => $year_items) {
             echo '<Worksheet ss:Name="Year ' . htmlspecialchars($year, ENT_QUOTES, 'UTF-8') . '">' . "\n";
             echo '<Table>' . "\n";
 
-            // 22 Column Widths
             $colWidths = [150, 130, 110, 130, 100, 100, 180, 130, 130, 140, 90, 80, 80, 90, 120, 80, 80, 130, 130, 100, 140, 140];
             foreach ($colWidths as $w) {
                 echo '<Column ss:Width="' . $w . '"/>' . "\n";
             }
 
-            // Filter Info Rows
             echo '<Row>' . "\n";
             echo '<Cell ss:Index="1" ss:MergeAcross="3"><Data ss:Type="String">COMPANY FILTER: ' . (!empty($company) ? htmlspecialchars($company, ENT_QUOTES, 'UTF-8') : 'ALL COMPANIES') . '</Data></Cell>' . "\n";
             echo '</Row>' . "\n";
@@ -574,7 +556,6 @@ if ($report === 'masterfile' && $action === 'export') {
             echo '</Row>' . "\n";
             echo '<Row></Row>' . "\n";
 
-            // Header Row
             echo '<Row>' . "\n";
             foreach ($headers as $colTitle => $colorCode) {
                 $styleID = 'Header_' . md5($colorCode);
@@ -582,7 +563,6 @@ if ($report === 'masterfile' && $action === 'export') {
             }
             echo '</Row>' . "\n";
 
-            // Data Rows
             foreach ($year_items as $row) {
                 $start = isset($row['coverage_start']) && $row['coverage_start'] ? date('M d, Y', strtotime($row['coverage_start'])) : '';
                 $end   = isset($row['coverage_end']) && $row['coverage_end'] ? date('M d, Y', strtotime($row['coverage_end'])) : '';
@@ -590,12 +570,9 @@ if ($report === 'masterfile' && $action === 'export') {
                 $mob = isset($row['mobile_number']) ? $row['mobile_number'] : '';
 
                 echo '<Row>' . "\n";
-                // Column 1: Coverage Date
                 echo '<Cell ss:StyleID="DataCell"><Data ss:Type="String">' . htmlspecialchars($dateText, ENT_QUOTES, 'UTF-8') . '</Data></Cell>' . "\n";
-                // Column 2: Mobile Number
                 echo '<Cell ss:StyleID="DataCell"><Data ss:Type="String">' . htmlspecialchars($mob, ENT_QUOTES, 'UTF-8') . '</Data></Cell>' . "\n";
 
-                // Columns 3 - 20: 18 Numeric Fields
                 $numericFields = array(
                     'approved_plan', 'phone_amortization', 'debit_adj', 'credit_adj', 
                     'other_charges', 'local_call_text', 'ndd_charges', 'idd_charges', 
@@ -610,12 +587,8 @@ if ($report === 'masterfile' && $action === 'export') {
                     echo '<Cell ss:StyleID="' . $cellStyle . '"><Data ss:Type="Number">' . number_format($val, 2, '.', '') . '</Data></Cell>' . "\n";
                 }
 
-                // Column 21: SYSTEM GENERATED DM = CURRENT CHARGES - APPROVED PLAN
                 echo '<Cell ss:StyleID="DataCell" ss:Formula="=RC[-3]-RC[-18]"><Data ss:Type="Number">0</Data></Cell>' . "\n";
-
-                // Column 22: DIFFERENCE = PROCESSED DM - SYSTEM GENERATED DM
                 echo '<Cell ss:StyleID="RedCell" ss:Formula="=RC[-2]-RC[-1]"><Data ss:Type="Number">0</Data></Cell>' . "\n";
-
                 echo '</Row>' . "\n";
             }
 
@@ -625,7 +598,7 @@ if ($report === 'masterfile' && $action === 'export') {
 
         echo '</Workbook>';
         exit;
-    } catch (Exception $e) {
+    } catch (Throwable $e) {
         echo "Export Error: " . $e->getMessage();
         exit;
     }
@@ -634,8 +607,8 @@ if ($report === 'masterfile' && $action === 'export') {
 // -------------------------------------------------------------------------
 // DROPDOWN OPTIONS + CARD COUNTS
 // -------------------------------------------------------------------------
-$opt = array('companies' => array(), 'carriers' => array(), 'telcos' => array(), 'periods' => array(), 'senders' => array());
-$counts = array('masterfile' => null, 'soa' => null, 'email' => null);
+$opt = array('companies' => array(), 'carriers' => array(), 'telcos' => array(), 'periods' => array(), 'senders' => array(), 'groups' => array());
+$counts = array('masterfile' => null, 'soa' => null, 'email' => null, 'recipients' => null);
 
 try {
     if ($report === 'masterfile') {
@@ -644,43 +617,49 @@ try {
     } elseif ($report === 'soa') {
         $opt['telcos']  = rp_col($conn, "SELECT DISTINCT telco FROM pdf_extracted_details WHERE telco IS NOT NULL AND telco != '' ORDER BY telco ASC");
         $opt['periods'] = rp_col($conn, "SELECT DISTINCT billing_period FROM pdf_extracted_details WHERE billing_period IS NOT NULL AND billing_period != '' ORDER BY billing_period DESC");
+    } elseif ($report === 'recipients') {
+        $opt['groups'] = rp_col($conn, "SELECT DISTINCT group_name FROM account_emails WHERE group_name IS NOT NULL AND group_name != '' ORDER BY group_name ASC");
+        $opt['departments'] = rp_col($conn, "SELECT DISTINCT department FROM account_emails WHERE department IS NOT NULL AND department != '' ORDER BY department ASC");
     } else {
         $opt['telcos']   = rp_col($conn, "SELECT DISTINCT telco FROM dispatch_logs WHERE telco IS NOT NULL AND telco != '' AND telco != 'N/A' ORDER BY telco ASC");
         $opt['senders']  = rp_col($conn, "SELECT DISTINCT sent_by FROM dispatch_logs WHERE sent_by IS NOT NULL AND sent_by != '' ORDER BY sent_by ASC");
     }
-} catch (Exception $e) {
+} catch (Throwable $e) {
     error_log('reports.php options: ' . $e->getMessage());
 }
 
-foreach (array('masterfile' => 'debit_memo_items', 'soa' => 'pdf_extracted_details', 'email' => 'dispatch_logs') as $key => $table) {
-    try {
-        $counts[$key] = (int)$conn->query("SELECT COUNT(*) FROM `$table`")->fetchColumn();
-    } catch (Exception $e) {
-        $counts[$key] = null;
+if (isset($_SESSION['rp_counts']['t']) && (time() - (int)$_SESSION['rp_counts']['t']) < 300 && empty($_GET['refresh'])) {
+    $counts = $_SESSION['rp_counts']['v'];
+} else {
+    foreach (array('masterfile' => 'debit_memo_items', 'soa' => 'pdf_extracted_details', 'email' => 'dispatch_logs', 'recipients' => 'account_emails') as $key => $table) {
+        try {
+            $counts[$key] = (int)$conn->query("SELECT COUNT(*) FROM `$table`")->fetchColumn();
+        } catch (Throwable $e) {
+            $counts[$key] = null;
+        }
     }
+    $_SESSION['rp_counts'] = array('t' => time(), 'v' => $counts);
 }
-$count_units = array('masterfile' => 'memo items', 'soa' => 'statement files', 'email' => 'emails logged');
+$count_units = array('masterfile' => 'memo items', 'soa' => 'statement files', 'email' => 'emails logged', 'recipients' => 'accounts mapped');
 
 // -------------------------------------------------------------------------
 // LOAD THE SELECTED REPORT
-//   Overview (default): counts and charts only, no record list.
-//   View report:        the record list, 25 per page.
 // -------------------------------------------------------------------------
-$is_view       = ($action === 'view');
+$is_view       = ($action === 'view' || $action === 'preview');
 $rows          = array();
 $stats         = array();
 $progress      = array();
-$charts        = array('carriers' => array(), 'months' => array(), 'fields' => array(), 'days' => array(), 'reasons' => array());
+$charts        = array('carriers' => array(), 'months' => array(), 'fields' => array(), 'days' => array(), 'reasons' => array(), 'recip' => array());
 $total_records = 0;
 $total_pages   = 1;
 $need_scope_total = 0;
 $list_mode     = ($report === 'soa' && $f['check'] === 'need_upload') ? 'need_upload' : 'files';
 $load_error    = '';
+$rcp_preview   = null;
 
 $soa_cols = "p.id, p.filename, p.file_link, p.account_number, p.mobile_number, p.telco, p.amount_due, p.billing_period, p.invoice_date, p.due_date, p.updated_at";
 
 try {
-    // ================= 1. DEBIT MASTERFILE =================
     if ($report === 'masterfile') {
         list($where, $params) = rp_masterfile_where($f);
 
@@ -707,7 +686,7 @@ try {
                     );
                 }
             }
-        } catch (Exception $e) {
+        } catch (Throwable $e) {
             error_log('reports.php masterfile overview: ' . $e->getMessage());
         }
 
@@ -715,13 +694,11 @@ try {
             $rows = rp_all($conn, "SELECT $mf_cols $mf_from $where ORDER BY dmi.coverage_start DESC LIMIT " . (int)$per_page . " OFFSET " . (int)$offset, $params);
         }
 
-    // ================= 2. IMPORT SOA =================
     } elseif ($report === 'soa') {
         $from   = "FROM pdf_extracted_details p WHERE 1=1";
         $fields = rp_soa_fields();
         $ctx    = rp_soa_context($conn);
 
-        // ---- Excel download ----
         if ($action === 'export') {
             if ($list_mode === 'need_upload') {
                 $nc  = rp_need_compute($conn, $f);
@@ -766,7 +743,6 @@ try {
                 $out, array(7));
         }
 
-        // ---- Overview numbers (ignore the "Show only" filter so the totals stay whole) ----
         $f_over = $f;
         $f_over['check'] = '';
         list($ow, $op) = rp_soa_where($f_over);
@@ -792,20 +768,17 @@ try {
             $charts['fields'][] = array('label' => $label, 'value' => (int)(isset($stats['miss_' . $col]) ? $stats['miss_' . $col] : 0));
         }
 
-        // Upload progress: memo items (account + coverage period) that have an SOA vs those that still need one.
-        // Same rule as the dashboard. Only needed for the overview, not for the record list.
         if (!$is_view) {
             try {
                 $all_scope = array('start_date' => '', 'end_date' => '', 'billing_period' => '', 'telco' => '', 'q' => '');
                 $nc_all = rp_need_compute($conn, $all_scope);
                 $need_n = count($nc_all['rows']);
                 $progress = array('expected' => $nc_all['scope'], 'need' => $need_n, 'uploaded' => max(0, $nc_all['scope'] - $need_n), 'accounts' => $nc_all['accounts']);
-            } catch (Exception $e) {
+            } catch (Throwable $e) {
                 error_log('reports.php soa progress: ' . $e->getMessage());
             }
         }
 
-        // ---- The record list (only when View report is pressed) ----
         if ($is_view) {
             if ($list_mode === 'need_upload') {
                 $nc = rp_need_compute($conn, $f);
@@ -815,7 +788,6 @@ try {
             } else {
                 list($where, $params) = rp_soa_where($f);
                 if ($f['check'] === '') {
-                    // No "Show only" filter: let the database page it
                     $total_records = (int)rp_row($conn, "SELECT COUNT(*) AS c $from $where", $params)['c'];
                     $rows = rp_all($conn, "SELECT $soa_cols $from $where ORDER BY p.updated_at DESC, p.id DESC LIMIT " . (int)$per_page . " OFFSET " . (int)$offset, $params);
                 } else {
@@ -831,8 +803,7 @@ try {
             $total_pages = max(1, (int)ceil($total_records / $per_page));
         }
 
-    // ================= 3. EMAIL SOA =================
-    } else {
+    } elseif ($report === 'email') {
         list($where, $params) = rp_email_where($f);
         $from = "FROM dispatch_logs l WHERE 1=1";
 
@@ -885,12 +856,12 @@ try {
                 }
 
                 $reasons = rp_all($conn, "SELECT l.details AS reason, COUNT(*) AS n $from $where AND UPPER(l.status) = 'FAILED' GROUP BY l.details ORDER BY n DESC LIMIT 5", $params);
-               foreach ($reasons as $r) {
-    $txt = trim((string)$r['reason']);
-    $label = ($txt !== '') ? (strlen($txt) > 60 ? substr($txt, 0, 57) . '...' : $txt) : 'No reason recorded';
-    $charts['reasons'][] = array('label' => $label, 'value' => (int)$r['n']);
-}
-            } catch (Exception $e) {
+                foreach ($reasons as $r) {
+                    $txt = trim((string)$r['reason']);
+                    $label = ($txt !== '') ? (strlen($txt) > 60 ? substr($txt, 0, 57) . '...' : $txt) : 'No reason recorded';
+                    $charts['reasons'][] = array('label' => $label, 'value' => (int)$r['n']);
+                }
+            } catch (Throwable $e) {
                 error_log('reports.php email overview: ' . $e->getMessage());
             }
         }
@@ -898,14 +869,39 @@ try {
         if ($is_view) {
             $rows = rp_all($conn, "SELECT l.* $from $where ORDER BY l.dispatch_date DESC LIMIT " . (int)$per_page . " OFFSET " . (int)$offset, $params);
         }
+
+    } elseif ($report === 'recipients') {
+        $acc = rp_rcp_fetch($conn, $f, $f['role']);
+
+        if ($action === 'export') {
+            rp_rcp_export($acc, $f, $f['role']);
+        }
+
+        $cur_total = 0; $plan_total = 0; $excess_total = 0;
+        foreach ($acc as $a) {
+            $cur_total    += (float)$a['cur'];
+            $plan_total   += (float)$a['plan'];
+            $excess_total += (float)$a['excess'];
+        }
+        $stats = array(
+            'recipients'   => 0,
+            'accounts'     => count($acc),
+            'missing'      => 0,
+            'current_total' => $cur_total,
+            'plan_total'   => $plan_total,
+            'excess_total' => $excess_total,
+        );
+
+        $total_records = count($acc);
+        $total_pages   = 1;
+        $rows          = $acc;
     }
-} catch (Exception $e) {
+} catch (Throwable $e) {
     error_log('reports.php ' . $report . ': ' . $e->getMessage());
     $rows = array();
     $load_error = "This report couldn't be loaded. Check that its database tables exist, then try again.";
 }
 
-// Table definition for the Debit Masterfile preview (colours match the Excel header colours)
 $mf_num_cols = array(
     array('Approved Plan',                     '#93C47D', 'approved_plan'),
     array('MSF (GLOBE / MRC (SMART)',          '#4A86E8', 'phone_amortization'),
@@ -928,18 +924,16 @@ $mf_num_cols = array(
 );
 
 $has_filters = false;
-foreach (array('carrier_name', 'company', 'telco', 'billing_period', 'check', 'status', 'sent_by', 'q') as $k) {
+foreach (array('carrier_name', 'company', 'telco', 'billing_period', 'check', 'status', 'sent_by', 'q', 'grp', 'department') as $k) {
     if ($f[$k] !== '') $has_filters = true;
 }
 
-// Links that keep the current filters
 $link_base    = array_merge(array('report' => $report), $_GET);
 $back_url     = 'reports.php?' . http_build_query(array_diff_key($link_base, array('action' => 1, 'page' => 1)));
 $need_url     = 'reports.php?' . http_build_query(array_merge(array_diff_key($link_base, array('start_date' => 1, 'end_date' => 1, 'billing_period' => 1, 'telco' => 1, 'status' => 1)), array('check' => 'need_upload', 'action' => 'view', 'page' => 1)));
 $incomplete_url = 'reports.php?' . http_build_query(array_merge($link_base, array('check' => 'incomplete', 'action' => 'view', 'page' => 1)));
 $failed_url   = 'reports.php?' . http_build_query(array_merge($link_base, array('status' => 'FAILED', 'action' => 'view', 'page' => 1)));
 
-// Capture layout content
 ob_start();
 ?>
 
@@ -949,6 +943,34 @@ ob_start();
 <noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Familjen+Grotesk:wght@500;600;700&family=Figtree:wght@400;500;600;700&display=swap"></noscript>
 
 <style>
+html, body {
+    height: 100%;
+    margin: 0;
+    overflow: hidden;
+}
+body {
+    display: flex !important;
+    flex-direction: row !important;
+    width: 100vw;
+    min-width: 0;
+}
+body > .w-64.bg-slate-900 {
+    display: flex !important;
+    flex: 0 0 16rem !important;
+    width: 16rem !important;
+    min-width: 16rem !important;
+    height: 100vh;
+}
+body > .flex-1.flex.flex-col.overflow-y-auto {
+    flex: 1 1 auto !important;
+    min-width: 0 !important;
+    height: 100vh;
+    overflow-y: auto;
+}
+body > .flex-1.flex.flex-col.overflow-y-auto > main {
+    min-width: 0 !important;
+    max-width: 100%;
+}
 .rp {
     --ink: #12302e; --muted: #5d7673; --line: #dbe6e4; --wash: #e6f1ef;
     --teal: #0f766e; --teal-deep: #0b5a54; --warn: #a86b00; --bad: #c62f45;
@@ -962,9 +984,77 @@ ob_start();
 .rp :is(a, button, input, select):focus-visible { outline: 2px solid var(--teal); outline-offset: 2px; }
 .rp-muted { color: var(--muted); font-size: .8125rem; }
 
-/* Report picker */
-.rp-tabs { display: grid; grid-template-columns: 1fr; gap: .9rem; }
-@media (min-width: 900px) { .rp-tabs { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+/* Naka-4 columns na agad sa 1 row, mas compact ang padding at icon */
+.rp-tabs { 
+    display: grid; 
+    grid-template-columns: repeat(4, minmax(0, 1fr)); 
+    gap: 0.75rem; 
+}
+
+.rp-tab { 
+    display: flex; 
+    gap: 0.6rem; 
+    align-items: center; 
+    padding: 0.65rem 0.85rem; 
+    background: #fff; 
+    border: 1px solid var(--line); 
+    border-radius: 14px; 
+    text-decoration: none; 
+    color: inherit; 
+    transition: border-color .15s, background-color .15s; 
+}
+
+.rp-tab-icon { 
+    flex: none; 
+    width: 2.1rem; 
+    height: 2.1rem; 
+    display: grid; 
+    place-items: center; 
+    border-radius: 10px; 
+    background: var(--wash); 
+    color: var(--teal-deep); 
+    font-size: 1.2rem; 
+}
+
+.rp-tab h3 { 
+    margin: 0; 
+    font-family: 'Familjen Grotesk', sans-serif; 
+    font-size: 0.925rem; 
+    font-weight: 700; 
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.rp-tab p { 
+    margin: 0.1rem 0 0; 
+    font-size: 0.75rem; 
+    line-height: 1.25; 
+    color: var(--muted); 
+    display: -webkit-box;
+    -webkit-line-clamp: 1;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
+
+.rp-tab small { 
+    display: block; 
+    margin-top: 0.2rem; 
+    font-size: 0.7rem; 
+    font-weight: 600; 
+    color: var(--teal-deep); 
+    white-space: nowrap;
+}
+
+/* Fallback sa maliliit na screen para mag-scroll horizontal kapag sobrang sikip */
+@media (max-width: 1100px) {
+    .rp-tabs {
+        grid-template-columns: repeat(4, minmax(220px, 1fr));
+        overflow-x: auto;
+        padding-bottom: 0.25rem;
+    }
+}
+
 .rp-tab { display: flex; gap: .9rem; align-items: flex-start; padding: 1rem 1.1rem; background: #fff; border: 1px solid var(--line); border-radius: 16px; text-decoration: none; color: inherit; transition: border-color .15s, background-color .15s; }
 .rp-tab:hover { border-color: #9ccbc5; }
 .rp-tab[aria-current="page"] { border-color: var(--teal); background: var(--wash); box-shadow: inset 0 0 0 1px var(--teal); }
@@ -974,7 +1064,6 @@ ob_start();
 .rp-tab p { margin: .2rem 0 0; font-size: .8125rem; line-height: 1.45; color: var(--muted); }
 .rp-tab small { display: block; margin-top: .45rem; font-size: .75rem; font-weight: 600; color: var(--teal-deep); }
 
-/* Panels */
 .rp-panel { background: #fff; border: 1px solid var(--line); border-radius: 18px; }
 .rp-filter-panel { padding: 1.25rem 1.4rem; }
 .rp-filters { display: grid; grid-template-columns: repeat(auto-fit, minmax(14.5rem, 1fr)); gap: 1rem; }
@@ -991,7 +1080,6 @@ ob_start();
 .rp-btn-export { border-color: var(--teal); color: var(--teal-deep); }
 .rp-btn-export:hover { background: var(--wash); }
 
-/* Summary strip */
 .rp-stats { display: flex; flex-wrap: wrap; margin: 0; padding: 0; }
 .rp-stat { flex: 1 1 11rem; padding: 1rem 1.25rem; border-left: 1px solid var(--line); }
 .rp-stat:first-child { border-left: 0; }
@@ -1001,7 +1089,6 @@ ob_start();
 .rp-stat dd.is-bad  { color: var(--bad); }
 @media (max-width: 640px) { .rp-stat { flex-basis: 50%; border-left: 0; border-top: 1px solid var(--line); } .rp-stat:nth-child(-n+2) { border-top: 0; } }
 
-/* Results */
 .rp-results-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: .5rem 1rem; padding: 1rem 1.25rem; border-bottom: 1px solid var(--line); }
 .rp-results-head h3 { margin: 0; font-family: 'Familjen Grotesk', sans-serif; font-size: 1.1rem; font-weight: 700; }
 .rp-scroll { overflow: auto; max-height: 36rem; }
@@ -1032,7 +1119,6 @@ ob_start();
 .rp-page:hover { background: var(--wash); }
 .rp-page.is-current { background: var(--teal); border-color: var(--teal); color: #fff; }
 
-/* Overview charts */
 .rp-grid2 { display: grid; grid-template-columns: 1fr; gap: 1.1rem; }
 @media (min-width: 1000px) { .rp-grid2 { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 .rp-card { padding: 1.3rem 1.4rem; }
@@ -1092,7 +1178,6 @@ ob_start();
 
 <div class="rp">
 
-    <!-- 1. PICK A REPORT -->
     <nav class="rp-tabs" aria-label="Choose a report">
         <?php foreach ($report_defs as $key => $def): ?>
             <a class="rp-tab" href="reports.php?report=<?= $key ?>" <?= $report === $key ? 'aria-current="page"' : '' ?>>
@@ -1108,7 +1193,8 @@ ob_start();
         <?php endforeach; ?>
     </nav>
 
-    <!-- 2. FILTERS -->
+    <?= rp_rcp_flash_html() ?>
+
     <section class="rp-panel rp-filter-panel" aria-label="<?= rp_e($report_defs[$report]['label']) ?> filters">
         <form method="GET" action="reports.php">
             <input type="hidden" name="report" value="<?= rp_e($report) ?>">
@@ -1134,6 +1220,9 @@ ob_start();
                         <input type="search" name="q" value="<?= rp_e($f['q']) ?>" placeholder="Account, mobile or file name">
                     </label>
 
+                <?php elseif ($report === 'recipients'): ?>
+                    <?= rp_rcp_filters($f, $opt['groups'], isset($opt['departments']) ? $opt['departments'] : array()) ?>
+
                 <?php else: ?>
                     <?= rp_select('status', 'Status', array('SUCCESS' => 'Sent', 'FAILED' => 'Failed'), $f['status'], 'Sent and failed') ?>
                     <?= rp_select('telco', 'Telco', rp_opts($opt['telcos']), $f['telco'], 'All telcos') ?>
@@ -1144,7 +1233,7 @@ ob_start();
                 <?php endif; ?>
 
                 <div class="rp-field">
-                    <span id="rpDateLabel"><?= $report === 'masterfile' ? 'Coverage date' : ($report === 'soa' ? 'Imported date' : 'Date sent') ?></span>
+                    <span id="rpDateLabel"><?= ($report === 'masterfile' || $report === 'recipients') ? 'Coverage date' : ($report === 'soa' ? 'Imported date' : 'Date sent') ?></span>
                     <div class="rp-range">
                         <input type="date" name="start_date" value="<?= rp_e($f['start_date']) ?>" aria-label="From date">
                         <span>to</span>
@@ -1170,7 +1259,6 @@ ob_start();
         <div class="rp-alert" role="alert"><?= rp_e($load_error) ?></div>
     <?php else: ?>
 
-    <!-- 3. SUMMARY NUMBERS (always shown, cheap totals only) -->
     <?php if ($report === 'masterfile' && !empty($stats)): ?>
         <section class="rp-panel" aria-label="Summary">
             <dl class="rp-stats">
@@ -1191,6 +1279,8 @@ ob_start();
                 <div class="rp-stat"><dt>Not emailed yet</dt><dd><?= number_format((int)$stats['not_emailed']) ?></dd></div>
             </dl>
         </section>
+    <?php elseif ($report === 'recipients' && !empty($stats)): ?>
+        <?= rp_rcp_stats($stats) ?>
     <?php elseif ($report === 'email' && !empty($stats)):
         $sent_total = (int)$stats['total_sent'];
         $ok   = (int)$stats['success_count'];
@@ -1210,8 +1300,6 @@ ob_start();
     <?php endif; ?>
 
     <?php if (!$is_view): ?>
-    <!-- 4A. OVERVIEW: charts only, the record list is not loaded -->
-
         <?php if ($report === 'masterfile'): ?>
             <div class="rp-grid2">
                 <section class="rp-panel rp-card" aria-labelledby="mf-carrier-title">
@@ -1272,6 +1360,9 @@ ob_start();
                 </section>
             </div>
 
+        <?php elseif ($report === 'recipients'): ?>
+            <?= rp_rcp_overview($charts['recip'], $stats, $f['role']) ?>
+
         <?php else: ?>
             <div class="rp-grid2">
                 <section class="rp-panel rp-card" aria-labelledby="em-delivery-title">
@@ -1318,7 +1409,6 @@ ob_start();
         </p>
 
     <?php else: ?>
-    <!-- 4B. RECORD LIST (only after View report), paged -->
     <section class="rp-panel" aria-label="<?= rp_e($report_defs[$report]['label']) ?> records">
         <div class="rp-results-head">
             <h3><?= $list_mode === 'need_upload' ? 'Dates that still need an SOA' : rp_e($report_defs[$report]['label']) . ' records' ?></h3>
@@ -1338,6 +1428,9 @@ ob_start();
                     Every memo item in this range already has an SOA.
                 <?php elseif ($report === 'soa'): ?>
                     No statement files match these filters.
+                    <?= $has_filters ? 'Clear a filter' : 'Try a wider date range' ?> or press Reset.
+                <?php elseif ($report === 'recipients'): ?>
+                    No accounts with charges match these filters, or none has a recipient email.
                     <?= $has_filters ? 'Clear a filter' : 'Try a wider date range' ?> or press Reset.
                 <?php elseif ($report === 'email'): ?>
                     No emails were logged for these filters.
@@ -1376,9 +1469,7 @@ ob_start();
                             $plan_raw       = (float)(isset($row['approved_plan']) ? $row['approved_plan'] : 0);
                             $dm_details_raw = (float)(isset($row['debit_memo_details']) ? $row['debit_memo_details'] : 0);
 
-                            // SYSTEM GENERATED DM = Current Charges - Approved Plan
                             $sys_gen_dm = $current_raw - $plan_raw;
-                            // DIFFERENCE = Processed DM - System Generated DM
                             $difference = $dm_details_raw - $sys_gen_dm;
                         ?>
                             <tr>
@@ -1501,6 +1592,9 @@ ob_start();
                 </table>
             </div>
 
+        <?php elseif ($report === 'recipients'): ?>
+            <?= rp_rcp_breakdown($acc, $f) ?>
+
         <?php else: ?>
             <div class="rp-scroll">
                 <table class="rp-tbl" style="min-width: 1500px;">
@@ -1557,7 +1651,6 @@ ob_start();
 </div>
 
 <script>
-// On the Import SOA report the date range means "memo coverage" when listing items that still need an SOA
 (function () {
     var sel = document.querySelector('select[name="check"]');
     var lab = document.getElementById('rpDateLabel');

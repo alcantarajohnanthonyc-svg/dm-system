@@ -16,13 +16,24 @@ $end_date = isset($_GET['end']) ? $_GET['end'] : '';
 $sql = "SELECT dmi.*, pdf.file_link, pdf.filename 
         FROM `debit_memo_items` dmi 
         JOIN debit_memos dm ON dm.dm_id = dmi.dm_id
-        LEFT JOIN pdf_extracted_details pdf ON pdf.account_number = dm.account_number 
-             AND ABS(DATEDIFF(dmi.coverage_end, STR_TO_DATE(SUBSTRING_INDEX(pdf.billing_period, ' - ', -1), '%Y-%m-%d'))) <= 5
-             AND (
-                 pdf.mobile_number IS NULL 
-                 OR pdf.mobile_number = '' 
-                 OR pdf.mobile_number = 'N/A' 
-                 OR RIGHT(REGEXP_REPLACE(pdf.mobile_number, '[^0-9]', ''), 10) = RIGHT(REGEXP_REPLACE(dmi.mobile_number, '[^0-9]', ''), 10)
+        LEFT JOIN pdf_extracted_details pdf ON pdf.id = (
+                 -- exactly ONE SOA per breakdown row (best match), so a row never shows twice
+                 SELECT p.id
+                 FROM pdf_extracted_details p
+                 WHERE p.account_number = dm.account_number
+                   AND p.file_link IS NOT NULL AND p.file_link <> ''
+                   AND ABS(DATEDIFF(dmi.coverage_end, STR_TO_DATE(SUBSTRING_INDEX(p.billing_period, ' - ', -1), '%Y-%m-%d'))) <= 5
+                   AND (
+                       p.mobile_number IS NULL
+                       OR p.mobile_number = ''
+                       OR p.mobile_number = 'N/A'
+                       OR RIGHT(REGEXP_REPLACE(p.mobile_number, '[^0-9]', ''), 10) = RIGHT(REGEXP_REPLACE(dmi.mobile_number, '[^0-9]', ''), 10)
+                   )
+                 ORDER BY
+                   (RIGHT(REGEXP_REPLACE(p.mobile_number, '[^0-9]', ''), 10) = RIGHT(REGEXP_REPLACE(dmi.mobile_number, '[^0-9]', ''), 10)) DESC,
+                   ABS(DATEDIFF(dmi.coverage_end, STR_TO_DATE(SUBSTRING_INDEX(p.billing_period, ' - ', -1), '%Y-%m-%d'))) ASC,
+                   p.id DESC
+                 LIMIT 1
              )
         WHERE dmi.dm_id = :dm_id";
 

@@ -130,11 +130,19 @@ if (!function_exists('parse_statement_fields')) {
         $clean_text = preg_replace('/\s+/', ' ', $text);
         $clean_page1 = preg_replace('/\s+/', ' ', $page1_text);
 
-        // 1. Extract Account Number
-        if (preg_match('/Account\s*Number\s*[:|]?\s*(\d{8,12})/i', $text, $m)) {
-            $result['account_number'] = trim($m[1]);
-        } elseif (preg_match('/(\d{10})/i', $filename, $m)) {
-            $result['account_number'] = trim($m[1]);
+        // 1. Extract Account Number - from the PDF text only (never from the filename).
+        //    Globe puts "Corporate ID | Account Number" as table headers with the values underneath,
+        //    so the number is not always right after the label. Patterns go from strict to loose.
+        $acct_patterns = [
+            '/Account\s*(?:Number|No\.?|#)\s*[:|]?\s*(\d{8,12})\b/i',                      // label then number
+            '/Corporate\s*ID\s*Account\s*Number\s*[A-Z0-9\-]{3,20}\s+(\d{8,12})\b/i',   // Globe: headers first, values after
+            '/Account\s*(?:Number|No\.?|#).{0,150}?\b(\d{8,12})\b/is',                      // number a little further away
+        ];
+        foreach ($acct_patterns as $acct_pattern) {
+            if (preg_match($acct_pattern, $text, $m) || preg_match($acct_pattern, $clean_text, $m)) {
+                $result['account_number'] = trim($m[1]);
+                break;
+            }
         }
 
         // 2. Extract Mobile Number
