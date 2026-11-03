@@ -255,11 +255,160 @@ function rp_xml_excel($filename, $sheet_name, array $meta, array $headers, array
 function rp_masterfile_where(array $f) {
     $w = '';
     $p = array();
+    if ($f['q'] !== '')              { $w .= " AND dm.account_number LIKE ?"; $p[] = '%' . $f['q'] . '%'; }
     if ($f['carrier_name'] !== '') { $w .= " AND dmi.carrier_name = ?"; $p[] = $f['carrier_name']; }
     if ($f['company'] !== '')      { $w .= " AND dm.company = ?";       $p[] = $f['company']; }
     if ($f['start_date'] !== '')   { $w .= " AND dmi.coverage_start >= ?"; $p[] = $f['start_date']; }
     if ($f['end_date'] !== '')     { $w .= " AND dmi.coverage_start <= ?"; $p[] = $f['end_date']; }
     return array($w, $p);
+}
+
+// SOA that matches each masterfile row (one query for the whole page): item_id => array(filename, file_link)
+function rp_mf_soa_map($conn, array $rows) {
+    $map = array();
+    $ids = array();
+    foreach ($rows as $row) { if (!empty($row['item_id'])) $ids[(int)$row['item_id']] = true; }
+    if (empty($ids)) return $map;
+    foreach (array_chunk(array_keys($ids), 500) as $chunk) {
+        $in = implode(',', array_fill(0, count($chunk), '?'));
+        try {
+            $found = rp_all($conn, "SELECT dmi.id AS item_id, pdf.filename, pdf.file_link
+                FROM debit_memo_items dmi
+                JOIN debit_memos dm ON dm.dm_id = dmi.dm_id
+                JOIN pdf_extracted_details pdf ON pdf.account_number = dm.account_number
+                WHERE dmi.id IN ($in)
+                  AND pdf.file_link IS NOT NULL AND pdf.file_link <> ''
+                  AND ABS(DATEDIFF(dmi.coverage_end, STR_TO_DATE(SUBSTRING_INDEX(pdf.billing_period, ' - ', -1), '%Y-%m-%d'))) <= 5
+                  AND (
+                      pdf.mobile_number IS NULL OR pdf.mobile_number = '' OR pdf.mobile_number = 'N/A'
+                      OR RIGHT(REGEXP_REPLACE(pdf.mobile_number, '[^0-9]', ''), 10) = RIGHT(REGEXP_REPLACE(dmi.mobile_number, '[^0-9]', ''), 10)
+                  )
+                ORDER BY dmi.id ASC,
+                         (RIGHT(REGEXP_REPLACE(pdf.mobile_number, '[^0-9]', ''), 10) = RIGHT(REGEXP_REPLACE(dmi.mobile_number, '[^0-9]', ''), 10)) DESC,
+                         ABS(DATEDIFF(dmi.coverage_end, STR_TO_DATE(SUBSTRING_INDEX(pdf.billing_period, ' - ', -1), '%Y-%m-%d'))) ASC,
+                         pdf.id DESC", $chunk);
+            foreach ($found as $fr) {
+                if (!isset($map[(int)$fr['item_id']])) {
+                    $map[(int)$fr['item_id']] = array('filename' => $fr['filename'], 'file_link' => $fr['file_link']);
+                }
+            }
+        } catch (Throwable $e) {
+            error_log('reports.php masterfile soa: ' . $e->getMessage());
+        }
+    }
+    return $map;
+}
+
+function rp_mf_group_rows(array $rows, array $soa_map) {
+    $numeric_fields = array(
+        'approved_plan', 'phone_amortization', 'debit_adj', 'credit_adj',
+        'other_charges', 'local_call_text', 'ndd_charges', 'idd_charges',
+        'roaming_charges', 'sms_charges', 'gprs_charges', 'wiz_usage',
+        'loading_charges', 'vat', 'oct', 'current_charges', 'total_amount_due',
+        'debit_memo_details', 'add_ons'
+    );
+    $groups = array();
+
+    foreach ($rows as $row) {
+        $account = trim((string)($row['account_number'] ?? ''));
+        $key = $account !== '' ? $account : 'dm:' . (string)($row['dm_id'] ?? '');
+        if (!isset($groups[$key])) {
+            $groups[$key] = array(
+                'account_number' => $account,
+                'dm_company' => array(),
+                'assignee_name' => array(),
+                'carrier_name' => array(),
+                'mobile_number' => array(),
+                'coverage_start' => '',
+                'coverage_end' => '',
+                'coverage_count' => 0,
+                'soa_count' => 0,
+                'soa_file' => null,
+                'item_ids' => array(),
+                'dm_ids' => array(),
+                'dm_id' => (int)($row['dm_id'] ?? 0),
+                'system_generated_dm' => 0,
+                'difference' => 0,
+                'bd_col1' => 0,
+                'bd_col2' => 0,
+                'final_dm' => 0,
+            );
+            foreach ($numeric_fields as $field) $groups[$key][$field] = 0;
+        }
+
+        foreach (array('dm_company', 'assignee_name', 'carrier_name', 'mobile_number') as $field) {
+            $value = trim((string)($row[$field] ?? ''));
+            if ($value !== '') $groups[$key][$field][$value] = true;
+        }
+
+        $start = trim((string)($row['coverage_start'] ?? ''));
+        $end = trim((string)($row['coverage_end'] ?? ''));
+        if ($start !== '' && ($groups[$key]['coverage_start'] === '' || $start < $groups[$key]['coverage_start'])) {
+            $groups[$key]['coverage_start'] = $start;
+        }
+        if ($end !== '' && ($groups[$key]['coverage_end'] === '' || $end > $groups[$key]['coverage_end'])) {
+            $groups[$key]['coverage_end'] = $end;
+        }
+
+        $item_id = (int)($row['item_id'] ?? 0);
+        $dm_id = (int)($row['dm_id'] ?? 0);
+        if ($dm_id > 0) $groups[$key]['dm_ids'][$dm_id] = true;
+        if ($item_id > 0 && !isset($groups[$key]['item_ids'][$item_id])) {
+            $groups[$key]['item_ids'][$item_id] = true;
+            $groups[$key]['coverage_count']++;
+            if (isset($soa_map[$item_id])) {
+                $groups[$key]['soa_count']++;
+                if ($groups[$key]['soa_file'] === null) $groups[$key]['soa_file'] = $soa_map[$item_id];
+            }
+        }
+
+        foreach ($numeric_fields as $field) {
+            $groups[$key][$field] += rp_amount($row[$field] ?? 0);
+        }
+
+        $current = rp_amount($row['current_charges'] ?? 0);
+        $plan = rp_amount($row['approved_plan'] ?? 0);
+        $processed = rp_amount($row['debit_memo_details'] ?? 0);
+        $add_ons = rp_amount($row['add_ons'] ?? 0);
+        $system_generated = $current - $plan;
+        $breakdown_one = max(0, $system_generated);
+        $groups[$key]['system_generated_dm'] += $system_generated;
+        $groups[$key]['difference'] += $processed - $system_generated;
+        $groups[$key]['bd_col1'] += $breakdown_one;
+        $groups[$key]['bd_col2'] += max(0, $processed - $breakdown_one);
+        $groups[$key]['final_dm'] += (isset($row['final_dm']) && $row['final_dm'] !== null && $row['final_dm'] !== '')
+            ? rp_amount($row['final_dm'])
+            : $processed - $add_ons;
+    }
+
+    foreach ($groups as &$group) {
+        foreach (array('dm_company', 'assignee_name', 'carrier_name', 'mobile_number') as $field) {
+            $group[$field] = implode(', ', array_keys($group[$field]));
+        }
+        $group['coverage_text'] = ($group['coverage_start'] !== '' ? rp_date($group['coverage_start']) : '?')
+            . ' to '
+            . ($group['coverage_end'] !== '' ? rp_date($group['coverage_end']) : '?');
+        $group['soa_label'] = $group['soa_count'] > 0
+            ? 'WITH SOA (' . $group['soa_count'] . '/' . $group['coverage_count'] . ')'
+            : 'NO SOA (0/' . $group['coverage_count'] . ')';
+        unset($group['coverage_start'], $group['coverage_end'], $group['item_ids']);
+    }
+    unset($group);
+
+    return array_values($groups);
+}
+
+function rp_mf_export_row(array $row, array $numeric_columns) {
+    $values = array(
+        $row['coverage_text'], $row['account_number'], $row['dm_company'],
+        $row['assignee_name'], $row['carrier_name'], $row['mobile_number']
+    );
+    foreach ($numeric_columns as $column) $values[] = (float)($row[$column[2]] ?? 0);
+    foreach (array('system_generated_dm', 'difference', 'bd_col1', 'bd_col2', 'add_ons', 'final_dm') as $field) {
+        $values[] = (float)($row[$field] ?? 0);
+    }
+    $values[] = $row['soa_label'];
+    return $values;
 }
 
 function rp_soa_where(array $f) {
@@ -398,6 +547,9 @@ function rp_email_where(array $f) {
     if ($f['status'] !== '')  { $w .= " AND UPPER(l.status) = ?"; $p[] = $f['status']; }
     if ($f['telco'] !== '')   { $w .= " AND l.telco = ?";         $p[] = $f['telco']; }
     if ($f['sent_by'] !== '') { $w .= " AND l.sent_by = ?";       $p[] = $f['sent_by']; }
+    if (!empty($f['email_type']) && in_array($f['email_type'], array('employee', 'bu_admin', 'president'), true)) {
+        $w .= " AND l.email_type = ?"; $p[] = $f['email_type'];
+    }
     if ($f['q'] !== '') {
         $like = '%' . $f['q'] . '%';
         $w .= " AND (l.account_number LIKE ? OR l.recipient_email LIKE ? OR l.filename LIKE ? OR l.mobile_number LIKE ?)";
@@ -438,6 +590,7 @@ $f = array(
     'check'          => rp_get('check'),
     'status'         => strtoupper(rp_get('status')),
     'sent_by'        => rp_get('sent_by'),
+    'email_type'     => rp_get('email_type'),
     'q'              => rp_get('q'),
     'start_date'     => rp_date_param('start_date', $default_start),
     'end_date'       => rp_date_param('end_date', $default_end),
@@ -452,152 +605,69 @@ $mf_cols = "dm.account_number, dm.company AS dm_company, dm.assignee_name, dmi.c
             dmi.coverage_start, dmi.coverage_end, dmi.approved_plan, dmi.phone_amortization, dmi.debit_adj,
             dmi.credit_adj, dmi.other_charges, dmi.local_call_text, dmi.ndd_charges, dmi.idd_charges,
             dmi.roaming_charges, dmi.sms_charges, dmi.gprs_charges, dmi.wiz_usage, dmi.loading_charges,
-            dmi.vat, dmi.oct, dmi.current_charges, dmi.total_amount_due, dmi.debit_memo_details";
+            dmi.vat, dmi.oct, dmi.current_charges, dmi.total_amount_due, dmi.debit_memo_details,
+            dm.dm_id, dmi.id AS item_id";
+// Add Ons / Final DM exist only in some databases: use them when the column is there
+$dmi_cols_present = array();
+try {
+    foreach ($conn->query("DESCRIBE debit_memo_items")->fetchAll(PDO::FETCH_ASSOC) as $dc) { $dmi_cols_present[strtolower($dc['Field'])] = true; }
+} catch (Throwable $e) { $dmi_cols_present = array(); }
+$mf_cols .= isset($dmi_cols_present['add_ons']) ? ", dmi.add_ons" : ", 0 AS add_ons";
+$mf_cols .= isset($dmi_cols_present['final_dm']) ? ", dmi.final_dm" : ", NULL AS final_dm";
 $mf_from = "FROM `debit_memo_items` AS dmi INNER JOIN debit_memos AS dm ON dm.dm_id = dmi.dm_id WHERE 1=1";
+
+$mf_num_cols = array(
+    array('Approved Plan', '#93C47D', 'approved_plan'),
+    array('MSF (GLOBE / MRC (SMART)', '#4A86E8', 'phone_amortization'),
+    array('Debit Adj', '#93C47D', 'debit_adj'),
+    array('Credit Adj', '#93C47D', 'credit_adj'),
+    array('Other charges / phone amortization', '#4A86E8', 'other_charges'),
+    array('Local (Call/Text)', '#4A86E8', 'local_call_text'),
+    array('NDD (National)', '#4A86E8', 'ndd_charges'),
+    array('IDD (International)', '#4A86E8', 'idd_charges'),
+    array('Roam', '#4A86E8', 'roaming_charges'),
+    array('SMS', '#4A86E8', 'sms_charges'),
+    array('GPRS', '#4A86E8', 'gprs_charges'),
+    array('Wiz Usage', '#4A86E8', 'wiz_usage'),
+    array('Loading Charges', '#4A86E8', 'loading_charges'),
+    array('VAT', '#4A86E8', 'vat'),
+    array('OCT', '#4A86E8', 'oct'),
+    array('Current Charges', '#4A86E8', 'current_charges'),
+    array('Total Amount Due', '#4A86E8', 'total_amount_due'),
+    array('Processed DM', '#93C47D', 'debit_memo_details'),
+);
+$mf_headers = array_merge(
+    array('Coverage Date', 'Account Number', 'Company', 'Assignee', 'Carrier / Telco', 'Mobile Number'),
+    array_column($mf_num_cols, 0),
+    array('System Generated DM', 'Difference', 'Approved Plan - MSF (GLOBE) / MRC (SMART)', 'Debit Memo - Column 1', 'Add Ons', 'Final DM (Processed DM - Add Ons)', 'SOA')
+);
 
 if ($report === 'masterfile' && $action === 'export') {
     try {
         list($mf_where, $mf_params) = rp_masterfile_where($f);
-        $carrier_name = $f['carrier_name'];
-        $company      = $f['company'];
+        $raw_rows = rp_all($conn, "SELECT $mf_cols $mf_from $mf_where ORDER BY dmi.coverage_start ASC", $mf_params);
+        $grouped_rows = rp_mf_group_rows($raw_rows, rp_mf_soa_map($conn, $raw_rows));
+        $export_rows = array();
+        foreach ($grouped_rows as $row) $export_rows[] = rp_mf_export_row($row, $mf_num_cols);
 
-        $stmt = $conn->prepare("SELECT $mf_cols $mf_from $mf_where ORDER BY dmi.coverage_start ASC");
-        $stmt->execute($mf_params);
-        $results = $stmt->fetchAll(PDO::FETCH_ASSOC);
-
-        $grouped_by_year = array();
-        foreach ($results as $row) {
-            $year = 'Unknown';
-            if (!empty($row['coverage_start'])) {
-                $parsed_year = date('Y', strtotime($row['coverage_start']));
-                if ($parsed_year) {
-                    $year = $parsed_year;
-                }
-            }
-            if (!isset($grouped_by_year[$year])) {
-                $grouped_by_year[$year] = array();
-            }
-            $grouped_by_year[$year][] = $row;
-        }
-
-        if (empty($grouped_by_year)) {
-            $grouped_by_year[date('Y')] = array();
-        }
-
-        $filename = 'Debit_Memo_Report_' . date('Y-m-d_His') . '.xls';
-        header('Content-Type: application/vnd.ms-excel; charset=UTF-8');
-        header('Content-Disposition: attachment; filename="' . $filename . '"');
-        header('Pragma: no-cache');
-        header('Expires: 0');
-
-        echo '<?xml version="1.0" encoding="UTF-8"?>' . "\n";
-        echo '<?mso-application progid="Excel.Sheet"?>' . "\n";
-        echo '<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"' . "\n";
-        echo ' xmlns:o="urn:schemas-microsoft-com:office:office"' . "\n";
-        echo ' xmlns:x="urn:schemas-microsoft-com:office:excel"' . "\n";
-        echo ' xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"' . "\n";
-        echo ' xmlns:html="http://www.w3.org/TR/REC-html40">' . "\n";
-
-        echo '<Styles>' . "\n";
-        echo '<Style ss:ID="DataCell"><Alignment ss:Horizontal="Center" ss:Vertical="Center"/><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1"/></Borders></Style>' . "\n";
-        echo '<Style ss:ID="RedCell"><Alignment ss:Horizontal="Center" ss:Vertical="Center"/><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1"/></Borders><Font ss:Bold="1" ss:Color="#dc2626"/></Style>' . "\n";
-
-        $unique_colors = ["#FFE599", "#93C47D", "#4A86E8", "#F7F700"];
-        foreach ($unique_colors as $color) {
-            $style_id = 'Header_' . md5($color);
-            echo '<Style ss:ID="' . $style_id . '">';
-            echo '<Alignment ss:Horizontal="Center" ss:Vertical="Center"/>';
-            echo '<Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1"/></Borders>';
-            echo '<Interior ss:Color="' . htmlspecialchars($color, ENT_QUOTES, 'UTF-8') . '" ss:Pattern="Solid"/>';
-            echo '<Font ss:Bold="1"/>';
-            echo '</Style>' . "\n";
-        }
-        echo '</Styles>' . "\n";
-
-        $headers = [
-            "COVERAGE DATE" => "#FFE599",
-            "MOBILE NUMBER" => "#93C47D",
-            "APPROVED PLAN" => "#93C47D",
-            "MSF (GLOBE / MRC (SMART)" => "#4A86E8",
-            "DEBIT ADJ" => "#93C47D",
-            "CREDIT ADJ" => "#93C47D",
-            "OTHER CHARGES / PHONE AMORTIZATION" => "#4A86E8",
-            "LOCAL (CALL/TEXT)" => "#4A86E8",
-            "NDD (NATIONAL)" => "#4A86E8",
-            "IDD (INTERNATIONAL)" => "#4A86E8",
-            "ROAM" => "#4A86E8",
-            "SMS" => "#4A86E8",
-            "GPRS" => "#4A86E8",
-            "WIZ USAGE" => "#4A86E8",
-            "LOADING CHARGES" => "#4A86E8",
-            "VAT" => "#4A86E8",
-            "OCT" => "#4A86E8",
-            "CURRENT CHARGES" => "#4A86E8",
-            "TOTAL AMOUNT DUE" => "#4A86E8",
-            "PROCESSED DM" => "#93C47D",
-            "SYSTEM GENERATED DM" => "#93C47D",
-            "DIFFERENCE" => "#F7F700"
-        ];
-
-        foreach ($grouped_by_year as $year => $year_items) {
-            echo '<Worksheet ss:Name="Year ' . htmlspecialchars($year, ENT_QUOTES, 'UTF-8') . '">' . "\n";
-            echo '<Table>' . "\n";
-
-            $colWidths = [150, 130, 110, 130, 100, 100, 180, 130, 130, 140, 90, 80, 80, 90, 120, 80, 80, 130, 130, 100, 140, 140];
-            foreach ($colWidths as $w) {
-                echo '<Column ss:Width="' . $w . '"/>' . "\n";
-            }
-
-            echo '<Row>' . "\n";
-            echo '<Cell ss:Index="1" ss:MergeAcross="3"><Data ss:Type="String">COMPANY FILTER: ' . (!empty($company) ? htmlspecialchars($company, ENT_QUOTES, 'UTF-8') : 'ALL COMPANIES') . '</Data></Cell>' . "\n";
-            echo '</Row>' . "\n";
-            echo '<Row>' . "\n";
-            echo '<Cell ss:Index="1" ss:MergeAcross="3"><Data ss:Type="String">CARRIER FILTER: ' . (!empty($carrier_name) ? htmlspecialchars($carrier_name, ENT_QUOTES, 'UTF-8') : 'ALL CARRIERS') . '</Data></Cell>' . "\n";
-            echo '</Row>' . "\n";
-            echo '<Row></Row>' . "\n";
-
-            echo '<Row>' . "\n";
-            foreach ($headers as $colTitle => $colorCode) {
-                $styleID = 'Header_' . md5($colorCode);
-                echo '<Cell ss:StyleID="' . $styleID . '"><Data ss:Type="String">' . htmlspecialchars($colTitle, ENT_QUOTES, 'UTF-8') . '</Data></Cell>' . "\n";
-            }
-            echo '</Row>' . "\n";
-
-            foreach ($year_items as $row) {
-                $start = isset($row['coverage_start']) && $row['coverage_start'] ? date('M d, Y', strtotime($row['coverage_start'])) : '';
-                $end   = isset($row['coverage_end']) && $row['coverage_end'] ? date('M d, Y', strtotime($row['coverage_end'])) : '';
-                $dateText = ($start && $end) ? ($start . ' to ' . $end) : '';
-                $mob = isset($row['mobile_number']) ? $row['mobile_number'] : '';
-
-                echo '<Row>' . "\n";
-                echo '<Cell ss:StyleID="DataCell"><Data ss:Type="String">' . htmlspecialchars($dateText, ENT_QUOTES, 'UTF-8') . '</Data></Cell>' . "\n";
-                echo '<Cell ss:StyleID="DataCell"><Data ss:Type="String">' . htmlspecialchars($mob, ENT_QUOTES, 'UTF-8') . '</Data></Cell>' . "\n";
-
-                $numericFields = array(
-                    'approved_plan', 'phone_amortization', 'debit_adj', 'credit_adj', 
-                    'other_charges', 'local_call_text', 'ndd_charges', 'idd_charges', 
-                    'roaming_charges', 'sms_charges', 'gprs_charges', 'wiz_usage', 
-                    'loading_charges', 'vat', 'oct', 'current_charges', 'total_amount_due', 
-                    'debit_memo_details'
-                );
-
-                foreach ($numericFields as $field) {
-                    $val = isset($row[$field]) ? (float)$row[$field] : 0.00;
-                    $cellStyle = ($field === 'debit_memo_details') ? 'RedCell' : 'DataCell';
-                    echo '<Cell ss:StyleID="' . $cellStyle . '"><Data ss:Type="Number">' . number_format($val, 2, '.', '') . '</Data></Cell>' . "\n";
-                }
-
-                echo '<Cell ss:StyleID="DataCell" ss:Formula="=RC[-3]-RC[-18]"><Data ss:Type="Number">0</Data></Cell>' . "\n";
-                echo '<Cell ss:StyleID="RedCell" ss:Formula="=RC[-2]-RC[-1]"><Data ss:Type="Number">0</Data></Cell>' . "\n";
-                echo '</Row>' . "\n";
-            }
-
-            echo '</Table>' . "\n";
-            echo '</Worksheet>' . "\n";
-        }
-
-        echo '</Workbook>';
-        exit;
+        $numeric_columns = array_merge(
+            range(6, 5 + count($mf_num_cols)),
+            range(6 + count($mf_num_cols), 11 + count($mf_num_cols))
+        );
+        rp_xml_excel(
+            'Debit_Memo_Report_' . date('Y-m-d_His') . '.xls',
+            'Debit Masterfile',
+            array(
+                'DEBIT MASTERFILE REPORT',
+                'COMPANY: ' . ($f['company'] !== '' ? $f['company'] : 'ALL COMPANIES'),
+                'CARRIER: ' . ($f['carrier_name'] !== '' ? $f['carrier_name'] : 'ALL CARRIERS'),
+                'ACCOUNT NUMBER: ' . ($f['q'] !== '' ? $f['q'] : 'ALL'),
+                'COVERAGE: ' . (($f['start_date'] !== '' || $f['end_date'] !== '') ? ($f['start_date'] . ' to ' . $f['end_date']) : 'ANY')
+            ),
+            $mf_headers,
+            $export_rows,
+            $numeric_columns
+        );
     } catch (Throwable $e) {
         echo "Export Error: " . $e->getMessage();
         exit;
@@ -651,11 +721,13 @@ $stats         = array();
 $progress      = array();
 $charts        = array('carriers' => array(), 'months' => array(), 'fields' => array(), 'days' => array(), 'reasons' => array(), 'recip' => array());
 $total_records = 0;
+$total_memo_items = 0;
 $total_pages   = 1;
 $need_scope_total = 0;
 $list_mode     = ($report === 'soa' && $f['check'] === 'need_upload') ? 'need_upload' : 'files';
 $load_error    = '';
 $rcp_preview   = null;
+$mf_soa        = array();
 
 $soa_cols = "p.id, p.filename, p.file_link, p.account_number, p.mobile_number, p.telco, p.amount_due, p.billing_period, p.invoice_date, p.due_date, p.updated_at";
 
@@ -663,13 +735,30 @@ try {
     if ($report === 'masterfile') {
         list($where, $params) = rp_masterfile_where($f);
 
-        $total_records = (int)rp_row($conn, "SELECT COUNT(*) AS c $mf_from $where", $params)['c'];
+        $total_memo_items = (int)rp_row($conn, "SELECT COUNT(*) AS c $mf_from $where", $params)['c'];
+        $total_records = (int)rp_row($conn, "SELECT COUNT(DISTINCT dm.account_number) AS c $mf_from $where", $params)['c'];
         $total_pages   = max(1, (int)ceil($total_records / $per_page));
 
         try {
             $cc = rp_clean_amount_sql('dmi.current_charges');
             $dd = rp_clean_amount_sql('dmi.debit_memo_details');
-            $stats = rp_row($conn, "SELECT COUNT(DISTINCT dm.account_number) AS accounts, SUM(COALESCE($cc, 0)) AS current_total, SUM(COALESCE($dd, 0)) AS processed_total $mf_from $where", $params);
+            $stats = rp_row($conn, "SELECT
+                    COUNT(DISTINCT dm.account_number) AS accounts,
+                    SUM(COALESCE($cc, 0)) AS current_total,
+                    SUM(COALESCE($dd, 0)) AS processed_total,
+                    SUM(CASE WHEN EXISTS (
+                        SELECT 1
+                        FROM pdf_extracted_details pdf
+                        INNER JOIN debit_memos dm_soa ON pdf.account_number = dm_soa.account_number
+                        WHERE dm_soa.dm_id = dmi.dm_id
+                          AND pdf.file_link IS NOT NULL AND pdf.file_link <> ''
+                          AND ABS(DATEDIFF(dmi.coverage_end, STR_TO_DATE(SUBSTRING_INDEX(pdf.billing_period, ' - ', -1), '%Y-%m-%d'))) <= 5
+                          AND (
+                              pdf.mobile_number IS NULL OR pdf.mobile_number = '' OR pdf.mobile_number = 'N/A'
+                              OR RIGHT(REGEXP_REPLACE(pdf.mobile_number, '[^0-9]', ''), 10) = RIGHT(REGEXP_REPLACE(dmi.mobile_number, '[^0-9]', ''), 10)
+                          )
+                    ) THEN 1 ELSE 0 END) AS soa_count
+                $mf_from $where", $params);
 
             if (!$is_view) {
                 $by_carrier = rp_all($conn, "SELECT UPPER(COALESCE(NULLIF(TRIM(dmi.carrier_name), ''), 'OTHER')) AS carrier, COUNT(*) AS items, SUM(COALESCE($dd, 0)) AS processed $mf_from $where GROUP BY carrier ORDER BY processed DESC LIMIT 8", $params);
@@ -691,7 +780,19 @@ try {
         }
 
         if ($is_view) {
-            $rows = rp_all($conn, "SELECT $mf_cols $mf_from $where ORDER BY dmi.coverage_start DESC LIMIT " . (int)$per_page . " OFFSET " . (int)$offset, $params);
+            $page_accounts = rp_col($conn, "SELECT dm.account_number $mf_from $where
+                GROUP BY dm.account_number
+                ORDER BY MAX(dmi.coverage_start) DESC, dm.account_number ASC
+                LIMIT " . (int)$per_page . " OFFSET " . (int)$offset, $params);
+
+            if (!empty($page_accounts)) {
+                $account_placeholders = implode(',', array_fill(0, count($page_accounts), '?'));
+                $raw_rows = rp_all($conn, "SELECT $mf_cols $mf_from $where
+                    AND dm.account_number IN ($account_placeholders)
+                    ORDER BY dmi.coverage_start DESC", array_merge($params, $page_accounts));
+                $mf_soa = rp_mf_soa_map($conn, $raw_rows);
+                $rows = rp_mf_group_rows($raw_rows, $mf_soa);
+            }
         }
 
     } elseif ($report === 'soa') {
@@ -815,6 +916,8 @@ try {
                     rp_date($r['dispatch_date'], 'M d, Y g:i A'), $r['status'], $r['account_number'], $r['telco'],
                     $r['mobile_number'], $r['recipient_email'], $r['billing_period'], (float)$r['total_charge'],
                     $r['filename'], $r['file_link'], $r['sent_by'], $r['details'],
+                    isset($r['email_type']) ? $r['email_type'] : 'employee', isset($r['group_name']) ? $r['group_name'] : '',
+                    isset($r['department']) ? $r['department'] : '', isset($r['cc_emails']) ? $r['cc_emails'] : '',
                 );
             }
             $meta = array(
@@ -824,7 +927,7 @@ try {
                 'SENT: ' . (($f['start_date'] !== '' || $f['end_date'] !== '') ? ($f['start_date'] . ' to ' . $f['end_date']) : 'ANY DATE'),
             );
             rp_xml_excel('Email_SOA_Report_' . date('Y-m-d_His') . '.xls', 'Email SOA', $meta,
-                array('Date Sent', 'Status', 'Account Number', 'Telco', 'Mobile Number', 'Recipient Email', 'Billing Period', 'Total Charge', 'Filename', 'File Link', 'Sent By', 'Details'),
+                array('Date Sent', 'Status', 'Account Number', 'Telco', 'Mobile Number', 'Recipient Email', 'Billing Period', 'Total Charge', 'Filename', 'File Link', 'Sent By', 'Details', 'Sent To (Type)', 'Group', 'Department', 'CC'),
                 $out, array(7));
         }
 
@@ -902,29 +1005,8 @@ try {
     $load_error = "This report couldn't be loaded. Check that its database tables exist, then try again.";
 }
 
-$mf_num_cols = array(
-    array('Approved Plan',                     '#93C47D', 'approved_plan'),
-    array('MSF (GLOBE / MRC (SMART)',          '#4A86E8', 'phone_amortization'),
-    array('Debit Adj',                         '#93C47D', 'debit_adj'),
-    array('Credit Adj',                        '#93C47D', 'credit_adj'),
-    array('Other charges / phone amortization', '#4A86E8', 'other_charges'),
-    array('Local (Call/Text)',                 '#4A86E8', 'local_call_text'),
-    array('NDD (National)',                    '#4A86E8', 'ndd_charges'),
-    array('IDD (International)',               '#4A86E8', 'idd_charges'),
-    array('Roam',                              '#4A86E8', 'roaming_charges'),
-    array('SMS',                               '#4A86E8', 'sms_charges'),
-    array('GPRS',                              '#4A86E8', 'gprs_charges'),
-    array('Wiz Usage',                         '#4A86E8', 'wiz_usage'),
-    array('Loading Charges',                   '#4A86E8', 'loading_charges'),
-    array('VAT',                               '#4A86E8', 'vat'),
-    array('OCT',                               '#4A86E8', 'oct'),
-    array('Current Charges',                   '#4A86E8', 'current_charges'),
-    array('Total Amount Due',                  '#4A86E8', 'total_amount_due'),
-    array('Processed DM',                      '#93C47D', 'debit_memo_details'),
-);
-
 $has_filters = false;
-foreach (array('carrier_name', 'company', 'telco', 'billing_period', 'check', 'status', 'sent_by', 'q', 'grp', 'department') as $k) {
+foreach (array('carrier_name', 'company', 'telco', 'billing_period', 'check', 'status', 'sent_by', 'q', 'grp', 'department', 'email_type') as $k) {
     if ($f[$k] !== '') $has_filters = true;
 }
 
@@ -1103,6 +1185,9 @@ body > .flex-1.flex.flex-col.overflow-y-auto > main {
 .rp-tbl .link:hover { text-decoration: underline; }
 .rp-mf thead th { color: #1b1b1b; text-align: center; white-space: normal; border: 1px solid #9aa5a3; }
 .rp-mf tbody td { border-right: 1px solid var(--line); }
+.rp-mf tbody tr.rp-soa-row td { background: #bbf7d0; }
+.rp-mf tbody tr.rp-soa-row:hover td { background: #a3efbc; }
+.rp-soa-badge { display: inline-block; padding: 2px 8px; border-radius: 6px; font-size: 10px; font-weight: 700; background: #dcfce7; color: #166534; border: 1px solid #86efac; text-decoration: none; }
 
 .rp-chip { display: inline-block; padding: .15rem .55rem; border-radius: 999px; font-size: .75rem; font-weight: 700; }
 .rp-chip-ok   { background: #d9f2e9; color: #0a6b4d; }
@@ -1204,6 +1289,9 @@ body > .flex-1.flex.flex-col.overflow-y-auto > main {
                 <?php if ($report === 'masterfile'): ?>
                     <?= rp_select('carrier_name', 'Carrier / Telco', rp_opts($opt['carriers']), $f['carrier_name'], 'All carriers') ?>
                     <?= rp_select('company', 'Company / Branch', rp_opts($opt['companies']), $f['company'], 'All companies') ?>
+                    <label class="rp-field"><span>Search account number</span>
+                        <input type="search" name="q" value="<?= rp_e($f['q']) ?>" placeholder="Enter account number">
+                    </label>
 
                 <?php elseif ($report === 'soa'): ?>
                     <?= rp_select('telco', 'Telco', rp_opts($opt['telcos']), $f['telco'], 'All telcos') ?>
@@ -1227,6 +1315,7 @@ body > .flex-1.flex.flex-col.overflow-y-auto > main {
                     <?= rp_select('status', 'Status', array('SUCCESS' => 'Sent', 'FAILED' => 'Failed'), $f['status'], 'Sent and failed') ?>
                     <?= rp_select('telco', 'Telco', rp_opts($opt['telcos']), $f['telco'], 'All telcos') ?>
                     <?= rp_select('sent_by', 'Sent by', rp_opts($opt['senders']), $f['sent_by'], 'Everyone') ?>
+                    <?= rp_select('email_type', 'Sent to', array('employee' => 'Employee', 'bu_admin' => 'BU Admin / Coordinator', 'president' => 'Group President'), $f['email_type'], 'Everyone') ?>
                     <label class="rp-field"><span>Search</span>
                         <input type="search" name="q" value="<?= rp_e($f['q']) ?>" placeholder="Account, email, mobile or file name">
                     </label>
@@ -1262,8 +1351,9 @@ body > .flex-1.flex.flex-col.overflow-y-auto > main {
     <?php if ($report === 'masterfile' && !empty($stats)): ?>
         <section class="rp-panel" aria-label="Summary">
             <dl class="rp-stats">
-                <div class="rp-stat"><dt>Memo items</dt><dd><?= number_format($total_records) ?></dd></div>
+                <div class="rp-stat"><dt>Memo items</dt><dd><?= number_format($total_memo_items) ?></dd></div>
                 <div class="rp-stat"><dt>Accounts</dt><dd><?= number_format((int)$stats['accounts']) ?></dd></div>
+                <div class="rp-stat"><dt>SOA</dt><dd><?= number_format((int)$stats['soa_count']) ?></dd></div>
                 <div class="rp-stat"><dt>Current charges</dt><dd><?= rp_money($stats['current_total']) ?></dd></div>
                 <div class="rp-stat"><dt>Processed DM</dt><dd><?= rp_money($stats['processed_total']) ?></dd></div>
             </dl>
@@ -1415,6 +1505,8 @@ body > .flex-1.flex.flex-col.overflow-y-auto > main {
             <span class="rp-muted">
                 <?php if ($list_mode === 'need_upload'): ?>
                     <?= number_format($total_records) ?> memo item<?= $total_records === 1 ? '' : 's' ?> need an SOA (of <?= number_format($need_scope_total) ?> in this range)
+                <?php elseif ($report === 'masterfile'): ?>
+                    <?= number_format($total_records) ?> matching account<?= $total_records === 1 ? '' : 's' ?>
                 <?php else: ?>
                     <?= number_format($total_records) ?> matching record<?= $total_records === 1 ? '' : 's' ?>
                 <?php endif; ?>
@@ -1442,10 +1534,15 @@ body > .flex-1.flex.flex-col.overflow-y-auto > main {
             </p>
 
         <?php elseif ($report === 'masterfile'): ?>
+            <div style="display:flex;justify-content:space-between;align-items:center;gap:1rem;flex-wrap:wrap;margin-bottom:.75rem;">
+                <span class="rp-muted"><span style="display:inline-block;width:.8rem;height:.8rem;background:#bbf7d0;border:1px solid #86efac;vertical-align:middle;"></span> Green rows have an SOA. Check rows to email the employees.</span>
+                <button type="button" class="rp-btn rp-btn-primary" onclick="rcpMfSend()"><i class="las la-paper-plane" aria-hidden="true"></i> Send Email (selected)</button>
+            </div>
             <div class="rp-scroll">
-                <table class="rp-tbl rp-mf" style="min-width: 2200px;">
+                <table class="rp-tbl rp-mf" style="min-width: 2900px;">
                     <thead>
                         <tr>
+                            <th scope="col" style="background:#E6E6E6;width:2.5rem;"><input type="checkbox" aria-label="Select all rows" onclick="rcpToggle(this, 'rcp-chk-mf')"></th>
                             <th scope="col" style="background:#FFE599;">Coverage Date</th>
                             <th scope="col" style="background:#4A86E8;">Account Number</th>
                             <th scope="col" style="background:#4A86E8;">Company</th>
@@ -1457,22 +1554,31 @@ body > .flex-1.flex.flex-col.overflow-y-auto > main {
                             <?php endforeach; ?>
                             <th scope="col" style="background:#93C47D;">System Generated DM</th>
                             <th scope="col" style="background:#F7F700;">Difference</th>
+                            <th scope="col" style="background:#9FC5E8;">Approved Plan - MSF (GLOBE) / MRC (SMART)</th>
+                            <th scope="col" style="background:#B4A7D6;">Debit Memo - Column 1</th>
+                            <th scope="col" style="background:#F9CB9C;">Add Ons</th>
+                            <th scope="col" style="background:#B6D7A8;">Final DM (Processed DM - Add Ons)</th>
+                            <th scope="col" style="background:#93C47D;">SOA</th>
                         </tr>
                     </thead>
                     <tbody>
                         <?php foreach ($rows as $row):
-                            $start = rp_date(isset($row['coverage_start']) ? $row['coverage_start'] : '');
-                            $end   = rp_date(isset($row['coverage_end']) ? $row['coverage_end'] : '');
-                            $coverage_text = ($start && $end) ? ($start . ' to ' . $end) : '';
+                            $coverage_text = $row['coverage_text'];
 
                             $current_raw    = (float)(isset($row['current_charges']) ? $row['current_charges'] : 0);
-                            $plan_raw       = (float)(isset($row['approved_plan']) ? $row['approved_plan'] : 0);
                             $dm_details_raw = (float)(isset($row['debit_memo_details']) ? $row['debit_memo_details'] : 0);
 
-                            $sys_gen_dm = $current_raw - $plan_raw;
-                            $difference = $dm_details_raw - $sys_gen_dm;
+                            $sys_gen_dm = (float)$row['system_generated_dm'];
+                            $difference = (float)$row['difference'];
+                            $bd_col1    = (float)$row['bd_col1'];
+                            $bd_col2    = (float)$row['bd_col2'];
+                            $add_ons_v  = (float)(isset($row['add_ons']) ? $row['add_ons'] : 0);
+                            $final_dm_v = (float)$row['final_dm'];
+
+                            $soa = $row['soa_file'];
                         ?>
-                            <tr>
+                            <tr<?= $soa ? ' class="rp-soa-row"' : '' ?>>
+                                <td><input type="checkbox" class="rcp-chk-mf" value="<?= rp_e(implode(',', array_keys($row['dm_ids']))) ?>" aria-label="Select row"></td>
                                 <td><?= rp_e($coverage_text) ?></td>
                                 <td class="strong"><?= rp_e(isset($row['account_number']) ? $row['account_number'] : 'N/A') ?></td>
                                 <td class="strong clip" style="color:var(--teal-deep);" title="<?= rp_e(isset($row['dm_company']) ? $row['dm_company'] : '') ?>"><?= rp_e(isset($row['dm_company']) ? $row['dm_company'] : 'N/A') ?></td>
@@ -1491,11 +1597,35 @@ body > .flex-1.flex.flex-col.overflow-y-auto > main {
                                 <?php endforeach; ?>
                                 <td class="r strong" style="color:var(--teal-deep);"><?= number_format($sys_gen_dm, 2) ?></td>
                                 <td class="r strong" style="<?= $difference != 0 ? 'color:var(--bad);' : '' ?>"><?= number_format($difference, 2) ?></td>
+                                <td class="r strong" style="color:#1d4ed8;"><?= number_format($bd_col1, 2) ?></td>
+                                <td class="r strong" style="color:#7e22ce;"><?= number_format($bd_col2, 2) ?></td>
+                                <td class="r strong" style="color:#c2410c;"><?= number_format($add_ons_v, 2) ?></td>
+                                <td class="r strong" style="color:#15803d;"><?= number_format($final_dm_v, 2) ?></td>
+                                <td style="text-align:center;">
+                                    <?php if ($soa): ?>
+                                        <a class="rp-soa-badge" href="<?= rp_e($soa['file_link']) ?>" target="_blank" rel="noopener" title="<?= rp_e($soa['filename']) ?>"><?= rp_e($row['soa_label']) ?></a>
+                                    <?php else: ?>
+                                        <span class="rp-muted"><?= rp_e($row['soa_label']) ?></span>
+                                    <?php endif; ?>
+                                </td>
                             </tr>
                         <?php endforeach; ?>
                     </tbody>
                 </table>
             </div>
+            <script>
+            function rcpMfSend() {
+                var seen = {}, keys = [];
+                document.querySelectorAll('.rcp-chk-mf:checked').forEach(function (b) {
+                    b.value.split(',').forEach(function (value) {
+                        if (value !== '' && value !== '0' && !seen[value]) { seen[value] = true; keys.push(value); }
+                    });
+                });
+                if (!keys.length) { alert('Please select at least one row.'); return; }
+                rcpOpenReviewKeys('emp', keys);
+            }
+            </script>
+            <?= rp_rcp_hub_html(array('start_date' => $f['start_date'], 'end_date' => $f['end_date'], 'grp' => '', 'department' => '', 'q' => '')) ?>
 
         <?php elseif ($report === 'soa' && $list_mode === 'need_upload'): ?>
             <div class="rp-scroll">
@@ -1602,7 +1732,8 @@ body > .flex-1.flex.flex-col.overflow-y-auto > main {
                         <tr>
                             <th scope="col">Date sent</th>
                             <th scope="col">Status</th>
-                            <th scope="col">Account number</th>
+                            <th scope="col">Sent to</th>
+                            <th scope="col">Account number / Group</th>
                             <th scope="col">Telco</th>
                             <th scope="col">Mobile number</th>
                             <th scope="col">Recipient email</th>
@@ -1621,7 +1752,12 @@ body > .flex-1.flex.flex-col.overflow-y-auto > main {
                             <tr>
                                 <td><?= rp_e(rp_date($r['dispatch_date'], 'M d, Y g:i A')) ?></td>
                                 <td><span class="rp-chip <?= $chip[0] ?>"><?= rp_e($chip[1]) ?></span></td>
-                                <td class="strong"><?= rp_e($r['account_number']) ?></td>
+                                <?php
+                                    $et = isset($r['email_type']) ? $r['email_type'] : 'employee';
+                                    $et_label = ($et === 'president') ? 'Group President' : (($et === 'bu_admin') ? 'BU Admin / Coordinator' : 'Employee');
+                                ?>
+                                <td><?= rp_e($et_label) ?></td>
+                                <td class="strong"><?= rp_e($r['account_number']) ?><?php if (!empty($r['group_name']) && $et === 'employee'): ?><div class="rp-muted"><?= rp_e($r['group_name']) ?><?= !empty($r['department']) ? ' / ' . rp_e($r['department']) : '' ?></div><?php endif; ?></td>
                                 <td><?= rp_e($r['telco']) ?></td>
                                 <td><?= rp_e($r['mobile_number']) ?></td>
                                 <td class="clip" title="<?= rp_e($r['recipient_email']) ?>"><?= rp_e($r['recipient_email']) ?></td>

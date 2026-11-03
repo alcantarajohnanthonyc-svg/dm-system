@@ -104,6 +104,9 @@ function rp_rcp_fetch_uncached($conn, array $f) {
     $head_email_col  = $pick(array('bu_head_email'));
     $coord_col       = $pick(array('bu_admin_coordinator', 'bu_admin_name', 'bu_coordinator'));
     $coord_email_col = $pick(array('bu_admin_coordinator_email', 'bu_admin_email', 'bu_coordinator_email'));
+    $emp_email_col   = $pick(array('email_address'));
+    $emp_status_col  = $pick(array('employee_status'));
+    $other_cc_col    = $pick(array('other_cc'));
 
     $cc = rp_rcp_amount_sql($conn, 'current_charges');
     $ap = rp_rcp_amount_sql($conn, 'approved_plan');
@@ -130,6 +133,7 @@ function rp_rcp_fetch_uncached($conn, array $f) {
                    $pres_col AS president_name, $pres_email_col AS president_email,
                    $head_col AS bu_head_name, $head_email_col AS bu_head_email,
                    $coord_col AS coord_name, $coord_email_col AS coord_email,
+                   $emp_email_col AS employee_email, $emp_status_col AS employee_status, $other_cc_col AS other_cc,
                    t.cur, t.plan, t.excess
             FROM (
                 SELECT dmi.dm_id,
@@ -357,6 +361,189 @@ function rp_rcp_summary_name($type, array $target) {
     return ($type === 'group' ? 'President_Summary_' : 'BU_Admin_Summary_') . trim($clean, '_') . '.pdf';
 }
 
+// -------------------------------------------------------------------------
+// EMPLOYEE EMAILS (isang email = isang account, kapareho ng list_dm)
+// -------------------------------------------------------------------------
+function rp_rcp_type($v) {
+    return ($v === 'dept' || $v === 'emp') ? $v : 'group';
+}
+
+function rp_rcp_emp_index(array $accounts) {
+    $m = array();
+    foreach ($accounts as $a) { $m[(string)$a['dm_id']] = $a; }
+    return $m;
+}
+
+// active + may email   -> employee email (CC: Other Personnel)
+// active + walang email -> BU Head + Telco BU Admin Coordinator (CC: Other Personnel)
+// resigned              -> BU Head + Telco BU Admin Coordinator (CC: Other Personnel only)
+function rp_rcp_emp_recipients(array $a) {
+    $g = function ($k) use ($a) { return isset($a[$k]) ? $a[$k] : ''; };
+    $emp  = rp_rcp_split_emails($g('employee_email'));
+    $head = rp_rcp_split_emails($g('bu_head_email'));
+    $adm  = rp_rcp_split_emails($g('coord_email'));
+    $pres = rp_rcp_split_emails($g('president_email'));
+    $oth  = rp_rcp_split_emails($g('other_cc'));
+    $resigned = strtolower(trim((string)$g('employee_status'))) === 'resigned';
+
+    $bu = array();
+    foreach (array_merge($head, $adm) as $e) { $bu[strtolower($e)] = $e; }
+    $bu = array_values($bu);
+
+    if ($resigned) {
+        $to = !empty($bu) ? $bu : $pres;
+        $cc = $oth;
+    } else {
+        $to = !empty($emp) ? $emp : (!empty($bu) ? $bu : $pres);
+        $cc = $oth;
+    }
+    $seen = array();
+    foreach ($to as $e) { $seen[strtolower($e)] = true; }
+    $cc_clean = array();
+    foreach ($cc as $e) {
+        if (isset($seen[strtolower($e)])) continue;
+        $seen[strtolower($e)] = true;
+        $cc_clean[] = $e;
+    }
+    return array('to' => $to, 'cc' => $cc_clean);
+}
+
+function rp_rcp_emp_target(array $a) {
+    $name = trim((string)$a['full_name']);
+    $rcp = rp_rcp_emp_recipients($a);
+    return array(
+        'key' => (string)$a['dm_id'], 'label' => ($name !== '' ? $name : 'Account') . ' (' . $a['account_number'] . ')',
+        'to' => $rcp['to'], 'cc' => $rcp['cc'], 'names' => array(), 'accounts' => array($a),
+        'cur' => (float)$a['cur'], 'plan' => (float)$a['plan'], 'excess' => (float)$a['excess'],
+    );
+}
+
+// Standard employee email (kapareho ng list_dm)
+function rp_rcp_emp_build(array $a, $coverage) {
+    return getEmailTemplate(
+        $a['account_number'], isset($a['company_name']) ? $a['company_name'] : '', $a['full_name'], $a['employee_id'], $a['mobile_number'],
+        $coverage, number_format((float)$a['plan'], 2), number_format((float)$a['cur'], 2), number_format((float)$a['excess'], 2), ''
+    );
+}
+
+// SOA files na tugma sa bawat debit memo (set-based: isang query para sa lahat). Returns dm_id => array of array(filename, file_link)
+function rp_rcp_soa_files($conn, array $dm_ids, array $pf) {
+    $map = array();
+    if (empty($dm_ids)) return $map;
+    $in = implode(',', array_fill(0, count($dm_ids), '?'));
+    $params = $dm_ids;
+    $range = '';
+    if (!empty($pf['start_date'])) { $range .= " AND dmi.coverage_start >= ?"; $params[] = $pf['start_date']; }
+    if (!empty($pf['end_date']))   { $range .= " AND dmi.coverage_start <= ?"; $params[] = $pf['end_date']; }
+    try {
+        $rows = rp_all($conn, "SELECT DISTINCT dm.dm_id, pdf.filename, pdf.file_link
+                               FROM debit_memo_items dmi
+                               JOIN debit_memos dm ON dm.dm_id = dmi.dm_id
+                               JOIN pdf_extracted_details pdf ON pdf.account_number = dm.account_number
+                               WHERE dm.dm_id IN ($in) $range
+                                 AND pdf.filename IS NOT NULL AND pdf.filename <> ''
+                                 AND ABS(DATEDIFF(dmi.coverage_end, STR_TO_DATE(SUBSTRING_INDEX(pdf.billing_period, ' - ', -1), '%Y-%m-%d'))) <= 5
+                                 AND (
+                                     pdf.mobile_number IS NULL OR pdf.mobile_number = '' OR pdf.mobile_number = 'N/A'
+                                     OR RIGHT(REGEXP_REPLACE(pdf.mobile_number, '[^0-9]', ''), 10) = RIGHT(REGEXP_REPLACE(dmi.mobile_number, '[^0-9]', ''), 10)
+                                 )", $params);
+        foreach ($rows as $r) {
+            $map[(int)$r['dm_id']][] = array('filename' => $r['filename'], 'file_link' => $r['file_link']);
+        }
+    } catch (Throwable $e) {
+        error_log('rcp soa files: ' . $e->getMessage());
+    }
+    return $map;
+}
+
+// Kunin ang SOA PDF (local uploads folder muna, saka Google Drive) - kapareho ng send_bulk_email.php
+function rp_rcp_soa_path($filename, $conn) {
+    $filename = basename($filename);
+    $temp = sys_get_temp_dir() . '/' . md5($filename) . '.pdf';
+    if (file_exists($temp) && filesize($temp) > 100) return $temp;
+
+    try {
+        $st = $conn->prepare("SELECT file_path, file_link FROM pdf_extracted_details WHERE filename = ? LIMIT 1");
+        $st->execute(array($filename));
+        $row = $st->fetch(PDO::FETCH_ASSOC);
+    } catch (Throwable $e) {
+        return '';
+    }
+    if (!$row) return '';
+
+    if (!empty($row['file_path'])) {
+        $local = __DIR__ . '/uploads/' . $row['file_path'] . '/' . $filename;
+        if (file_exists($local) && filesize($local) > 100) {
+            @copy($local, $temp);
+            if (file_exists($temp) && filesize($temp) > 100) return $temp;
+        }
+    }
+
+    $link = isset($row['file_link']) ? $row['file_link'] : '';
+    $id = '';
+    if (preg_match('/\/d\/([a-zA-Z0-9_-]+)/', $link, $m)) $id = $m[1];
+    elseif (preg_match('/[?&]id=([a-zA-Z0-9_-]+)/', $link, $m)) $id = $m[1];
+    if ($id !== '') {
+        $ctx = stream_context_create(array(
+            'http' => array('method' => 'GET', 'header' => "User-Agent: Mozilla/5.0\r\n", 'follow_location' => 1, 'max_redirects' => 5),
+            'ssl'  => array('verify_peer' => false, 'verify_peer_name' => false),
+        ));
+        $resp = @file_get_contents('https://drive.google.com/uc?export=download&id=' . $id, false, $ctx);
+        if ($resp !== false && preg_match('/confirm=([a-zA-Z0-9_\-]+)/', $resp, $mm) && (stripos($resp, 'confirm=') !== false || stripos($resp, 'download-warning') !== false)) {
+            $resp = @file_get_contents('https://drive.google.com/uc?export=download&confirm=' . $mm[1] . '&id=' . $id, false, $ctx);
+        }
+        if (!empty($resp) && strlen($resp) > 500 && stripos($resp, '<html') === false) {
+            file_put_contents($temp, $resp);
+            if (file_exists($temp) && filesize($temp) > 100) return $temp;
+        }
+    }
+    return '';
+}
+
+// I-save ang bawat ipinadalang email sa dispatch_logs (gumagana kahit hindi pa na-ALTER ang table)
+function rp_rcp_log_dispatch($conn, array $item) {
+    static $cols = null;
+    try {
+        if ($cols === null) {
+            $cols = array();
+            $st = $conn->query("DESCRIBE dispatch_logs");
+            while ($r = $st->fetch(PDO::FETCH_ASSOC)) { $cols[strtolower($r['Field'])] = true; }
+        }
+        $cut = function ($s, $n) { $s = (string)$s; return strlen($s) > $n ? substr($s, 0, $n) : $s; };
+        $data = array(
+            'status'          => $item['status'],
+            'email_type'      => $item['etype'],
+            'dispatch_date'   => $item['date'],
+            'account_number'  => $cut($item['account'], 50),
+            'group_name'      => $cut($item['group'], 150),
+            'department'      => $cut($item['department'], 150),
+            'mobile_number'   => $cut($item['mobile'], 30),
+            'recipient_email' => $cut($item['to'], 255),
+            'cc_emails'       => $cut($item['cc'], 500),
+            'billing_period'  => $cut($item['coverage'], 100),
+            'accounts_count'  => (int)$item['accounts'],
+            'total_charge'    => (float)$item['excess'],
+            'total_current'   => (float)$item['current'],
+            'filename'        => $item['filename'] !== '' ? $cut($item['filename'], 255) : null,
+            'file_link'       => $item['file_link'] !== '' ? $item['file_link'] : null,
+            'attachments'     => $item['attachments'],
+            'sent_by'         => $cut($item['sent_by'], 100),
+            'details'         => $item['details'],
+        );
+        $names = array(); $marks = array(); $vals = array();
+        foreach ($data as $k => $v) {
+            if (!isset($cols[$k])) continue;   // column not added yet
+            $names[] = '`' . $k . '`'; $marks[] = '?'; $vals[] = $v;
+        }
+        if (empty($names)) return;
+        $st = $conn->prepare('INSERT INTO dispatch_logs (' . implode(', ', $names) . ') VALUES (' . implode(', ', $marks) . ')');
+        $st->execute($vals);
+    } catch (Throwable $e) {
+        error_log('rcp log dispatch: ' . $e->getMessage());
+    }
+}
+
+// Debit Memo PDF ng bawat account (kapareho ng list_dm.php)
 function rp_rcp_dm_pdfs($conn, array $accounts, array $f) {
     $files = array();
     if (!is_file(__DIR__ . '/pdf_generator.php')) return $files;
@@ -622,13 +809,67 @@ function rp_rcp_handle_post($conn) {
             if (!is_array($input) || !$csrf_ok(isset($input['csrf']) ? $input['csrf'] : '')) {
                 $out(array('status' => 'error', 'message' => 'Session expired. Reload the page and try again.'));
             }
-            $type = (isset($input['type']) && $input['type'] === 'dept') ? 'dept' : 'group';
+            $type = rp_rcp_type(isset($input['type']) ? $input['type'] : '');
             $keys = (isset($input['keys']) && is_array($input['keys'])) ? array_map('strval', $input['keys']) : array();
             $pf   = rp_rcp_clean_filters(isset($input['filters']) ? $input['filters'] : array());
 
-            $targets  = rp_rcp_targets(rp_rcp_fetch($conn, $pf), $type);
+            $all      = !empty($input['all']);     // every row that has a recipient (Send All)
+            $light    = !empty($input['light']);   // no subject / body yet (built when the email is sent or previewed)
+            $targets  = ($type === 'emp') ? array() : rp_rcp_targets(rp_rcp_fetch($conn, $pf), $type);
+            if ($all && $type !== 'emp') {
+                $keys = array();
+                foreach ($targets as $k => $tt) { if (!empty($tt['to']) && !empty($tt['accounts'])) $keys[] = (string)$k; }
+            }
             $coverage = rp_rcp_coverage($pf);
             $pdf_ok   = rp_rcp_load_fpdf();
+
+            // ----- Employees: one email per account, with Debit Memo / SOA to choose from -----
+            if ($type === 'emp') {
+                $index = rp_rcp_emp_index(rp_rcp_fetch($conn, $pf));
+                if ($all) {
+                    $keys = array();
+                    foreach ($index as $k => $acc_row) {
+                        $rr = rp_rcp_emp_recipients($acc_row);
+                        if (!empty($rr['to'])) $keys[] = (string)$k;
+                    }
+                }
+                $ids = array();
+                foreach ($keys as $k) { if (ctype_digit($k)) $ids[] = (int)$k; }
+                $soa_map = array();
+                foreach (array_chunk($ids, 500) as $chunk) {
+                    foreach (rp_rcp_soa_files($conn, $chunk, $pf) as $dmk => $sfiles) { $soa_map[$dmk] = $sfiles; }
+                }
+
+                $items = array();
+                foreach ($keys as $key) {
+                    $item = array('key' => $key, 'label' => $key, 'type' => 'emp', 'has_data' => false, 'recipient_email' => '', 'cc_emails' => '',
+                                  'subject' => '', 'html_content' => '', 'coverage' => $coverage, 'account_count' => 0, 'excess' => 0,
+                                  'names' => '', 'attachments' => array());
+                    if (isset($index[$key])) {
+                        $a = $index[$key];
+                        $t = rp_rcp_emp_target($a);
+                        $mail = $light ? array('subject' => '', 'body' => '') : rp_rcp_emp_build($a, $coverage);
+                        $att = array(array('kind' => 'dm', 'name' => 'Debit_Memo_' . $a['account_number'] . '.pdf', 'dm_id' => (int)$a['dm_id'], 'checked' => true));
+                        $dm = (int)$a['dm_id'];
+                        if (isset($soa_map[$dm])) {
+                            foreach ($soa_map[$dm] as $s) { $att[] = array('kind' => 'soa', 'name' => $s['filename'], 'dm_id' => 0, 'checked' => true); }
+                        }
+                        $item['label']           = $t['label'];
+                        $item['has_data']        = true;
+                        $item['recipient_email'] = implode(', ', $t['to']);
+                        $item['cc_emails']       = implode(', ', $t['cc']);
+                        $item['subject']         = $mail['subject'];
+                        $item['html_content']    = $mail['body'];
+                        $item['account_count']   = 1;
+                        $item['excess']          = (float)$a['excess'];
+                        $item['names']           = trim((string)$a['employee_id']) !== '' ? 'Employee ID ' . $a['employee_id'] : (trim((string)$a['mobile_number']) !== '' ? $a['mobile_number'] : '');
+                        $item['attachments']     = $att;
+                        $item['light']           = $light;
+                    }
+                    $items[] = $item;
+                }
+                $out(array('status' => 'success', 'items' => $items, 'summary_pdf_available' => true));
+            }
 
             $items = array();
             foreach ($keys as $key) {
@@ -637,7 +878,7 @@ function rp_rcp_handle_post($conn) {
                               'names' => '', 'attachments' => array());
                 if (isset($targets[$key])) {
                     $t = $targets[$key];
-                    $mail = rp_rcp_build($type, $t, $coverage);
+                    $mail = $light ? array('subject' => '', 'body' => '') : rp_rcp_build($type, $t, $coverage);
                     $att = array(array('kind' => 'summary', 'name' => rp_rcp_summary_name($type, $t), 'dm_id' => 0, 'checked' => $pdf_ok));
                     $seen = array();
                     foreach ($t['accounts'] as $a) {
@@ -656,6 +897,7 @@ function rp_rcp_handle_post($conn) {
                     $item['excess']          = (float)$t['excess'];
                     $item['names']           = implode(', ', array_keys($t['names']));
                     $item['attachments']     = $att;
+                    $item['light']           = $light;
                 }
                 $items[] = $item;
             }
@@ -667,7 +909,7 @@ function rp_rcp_handle_post($conn) {
             if (!$csrf_ok(isset($_POST['csrf']) ? $_POST['csrf'] : '')) {
                 $out(array('status' => 'error', 'message' => 'Session expired. Reload the page and try again.'));
             }
-            $type    = (isset($_POST['type']) && $_POST['type'] === 'dept') ? 'dept' : 'group';
+            $type    = rp_rcp_type(isset($_POST['type']) ? $_POST['type'] : '');
             $key     = isset($_POST['key']) ? (string)$_POST['key'] : '';
             $pf      = rp_rcp_clean_filters($_POST);
             $to      = rp_rcp_split_emails(isset($_POST['to']) ? $_POST['to'] : '');
@@ -681,7 +923,14 @@ function rp_rcp_handle_post($conn) {
             $item = array(
                 'status'      => 'FAILED',
                 'date'        => date('Y-m-d H:i:s'),
-                'type'        => ($type === 'group') ? 'President' : 'BU Admin / Coordinator',
+                'type'        => ($type === 'group') ? 'President' : (($type === 'dept') ? 'BU Admin / Coordinator' : 'Employee'),
+                'etype'       => ($type === 'group') ? 'president' : (($type === 'dept') ? 'bu_admin' : 'employee'),
+                'account'     => $key,
+                'group'       => '',
+                'department'  => '',
+                'mobile'      => '',
+                'filename'    => '',
+                'file_link'   => '',
                 'label'       => $key,
                 'to'          => implode(', ', $to),
                 'cc'          => implode(', ', $cc),
@@ -695,11 +944,12 @@ function rp_rcp_handle_post($conn) {
             );
 
             // record the result of this email (for the admin report) and answer the browser
-            $finish = function ($ok, $msg) use (&$item, $out) {
+            $finish = function ($ok, $msg) use (&$item, $out, $conn) {
                 $item['status']  = $ok ? 'SUCCESS' : 'FAILED';
                 $item['details'] = $msg;
                 if (!isset($_SESSION['rcp_batch']) || !is_array($_SESSION['rcp_batch'])) { $_SESSION['rcp_batch'] = array(); }
                 $_SESSION['rcp_batch'][] = $item;
+                rp_rcp_log_dispatch($conn, $item);   // saved in dispatch_logs (Email report)
                 $out(array(
                     'status'          => 'success',
                     'success_count'   => $ok ? 1 : 0,
@@ -710,15 +960,40 @@ function rp_rcp_handle_post($conn) {
             };
 
             if (empty($to)) $finish(false, 'No valid recipient email');
-            if ($subject === '' || trim($html) === '') $finish(false, 'Subject or message is empty');
 
-            $targets = rp_rcp_targets(rp_rcp_fetch($conn, $pf), $type);
-            if (!isset($targets[$key])) $finish(false, 'Not found for these filters');
-            $t = $targets[$key];
+            if ($type === 'emp') {
+                $index = rp_rcp_emp_index(rp_rcp_fetch($conn, $pf));
+                if (!isset($index[$key])) $finish(false, 'Not found for these filters');
+                $acct = $index[$key];
+                $t = rp_rcp_emp_target($acct);
+                $item['account']    = (string)$acct['account_number'];
+                $item['group']      = (string)$acct['group_name'];
+                $item['department'] = (string)$acct['department'];
+                $item['mobile']     = (string)$acct['mobile_number'];
+            } else {
+                $targets = rp_rcp_targets(rp_rcp_fetch($conn, $pf), $type);
+                if (!isset($targets[$key])) $finish(false, 'Not found for these filters');
+                $t = $targets[$key];
+                $item['account'] = $t['label'];
+                if ($type === 'group') {
+                    $item['group'] = $t['label'];
+                } else {
+                    $item['department'] = $t['label'];
+                    $first = reset($t['accounts']);
+                    $item['group'] = $first ? (string)$first['group_name'] : '';
+                }
+            }
             $item['label']    = $t['label'];
             $item['accounts'] = count($t['accounts']);
             $item['current']  = (float)$t['cur'];
             $item['excess']   = (float)$t['excess'];
+
+            // Send All: the subject / body are built here, when the email is sent
+            if ($subject === '' || trim($html) === '') {
+                $mail = ($type === 'emp') ? rp_rcp_emp_build($acct, rp_rcp_coverage($pf)) : rp_rcp_build($type, $t, rp_rcp_coverage($pf));
+                $subject = $mail['subject'];
+                $html    = $mail['body'];
+            }
 
             $files = array();
             $notes = array();
@@ -738,6 +1013,28 @@ function rp_rcp_handle_post($conn) {
                 $files = array_merge($files, rp_rcp_dm_pdfs($conn, $sel, $pf));
             }
 
+            // 2b) SOA files that were checked (employees only) - only files that belong to this account
+            if ($type === 'emp' && !empty($_POST['soa_files'])) {
+                $wanted = json_decode((string)$_POST['soa_files'], true);
+                if (is_array($wanted)) {
+                    foreach ($wanted as $nm) {
+                        $nm = basename((string)$nm);
+                        if ($nm === '') continue;
+                        $chk = $conn->prepare("SELECT file_link FROM pdf_extracted_details WHERE filename = ? AND account_number = ? LIMIT 1");
+                        $chk->execute(array($nm, $item['account']));
+                        $own = $chk->fetch(PDO::FETCH_ASSOC);
+                        if (!$own) { $notes[] = 'SOA ' . $nm . ' skipped (not this account)'; continue; }
+                        $sp = rp_rcp_soa_path($nm, $conn);
+                        if ($sp !== '') {
+                            $files[] = array('path' => $sp, 'name' => $nm, 'type' => 'application/pdf');
+                            if ($item['file_link'] === '' && !empty($own['file_link'])) $item['file_link'] = $own['file_link'];
+                        } else {
+                            $notes[] = 'SOA ' . $nm . ' could not be downloaded';
+                        }
+                    }
+                }
+            }
+
             // 3) Extra uploaded files
             if (!empty($_FILES['additional_attachments']['name']) && is_array($_FILES['additional_attachments']['name'])) {
                 foreach ($_FILES['additional_attachments']['name'] as $n => $name) {
@@ -753,6 +1050,7 @@ function rp_rcp_handle_post($conn) {
             $names = array();
             foreach ($files as $fl) { $names[] = $fl['name']; }
             $item['attachments'] = implode('; ', $names);
+            if ($type === 'emp') { $item['filename'] = 'Debit_Memo_' . $item['account'] . '.pdf'; }
 
             list($ok, $msg) = rp_rcp_send($to, $subject, $html, $files, $cc);
             rp_rcp_cleanup($files);
@@ -894,6 +1192,54 @@ function rp_rcp_table($type, array $targets, array $f) {
     return $h . '</section>';
 }
 
+function rp_rcp_emp_table(array $accounts, array $f) {
+    $max   = 1000;
+    $total = count($accounts);
+
+    $h  = '<section class="rp-panel rp-card" style="margin-top:1.5rem;">';
+    $h .= '<h3>Totals by Employee</h3>';
+    $h .= '<div class="rp-scroll" style="max-height:540px;overflow:auto;"><table class="rp-tbl"><thead><tr>';
+    $h .= '<th style="width:2.5rem;"><input type="checkbox" aria-label="Select all" onclick="rcpToggle(this, \'rcp-chk-emp\')"></th>';
+    $h .= '<th>Account Number</th><th>Employee ID</th><th>Employee Name</th><th>Group</th><th>Department</th><th>Mobile Number</th><th>Send to</th>';
+    $h .= '<th class="r">Approved Plan</th><th class="r">Current Charges</th><th class="r">Total Excess Charges</th><th>Actions</th>';
+    $h .= '</tr></thead><tbody>';
+
+    $n = 0;
+    foreach ($accounts as $a) {
+        if ($n++ >= $max) break;
+        $rcp  = rp_rcp_emp_recipients($a);
+        $key  = (string)$a['dm_id'];
+        $jkey = rp_e(json_encode($key, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT));
+        $to   = implode(', ', $rcp['to']);
+
+        $h .= '<tr>';
+        $h .= '<td>' . (empty($rcp['to']) ? '' : '<input type="checkbox" class="rcp-chk-emp" value="' . rp_e($key) . '">') . '</td>';
+        $h .= '<td class="strong">' . rp_e($a['account_number']) . '</td>';
+        $h .= '<td>' . rp_e($a['employee_id']) . '</td>';
+        $h .= '<td>' . rp_e($a['full_name']) . '</td>';
+        $h .= '<td>' . rp_e($a['group_name']) . '</td>';
+        $h .= '<td>' . rp_e($a['department']) . '</td>';
+        $h .= '<td>' . rp_e($a['mobile_number']) . '</td>';
+        $h .= '<td class="clip" title="' . rp_e($to) . '">' . (empty($rcp['to']) ? '<span class="rp-chip rp-chip-bad">No email</span>' : rp_e($to)) . '</td>';
+        $h .= '<td class="r">₱ ' . number_format((float)$a['plan'], 2) . '</td>';
+        $h .= '<td class="r">₱ ' . number_format((float)$a['cur'], 2) . '</td>';
+        $h .= '<td class="r strong">₱ ' . number_format((float)$a['excess'], 2) . '</td>';
+        $h .= '<td>' . (empty($rcp['to']) ? '' : '<button type="button" class="rp-btn" style="height:2rem;padding:0 .8rem;" onclick="rcpPreviewRow(\'emp\', ' . $jkey . ')">Preview &amp; Send</button>') . '</td>';
+        $h .= '</tr>';
+    }
+    if (!$accounts) { $h .= '<tr><td colspan="12">No employee accounts found.</td></tr>'; }
+    $h .= '</tbody></table></div>';
+
+    if ($total > $max) {
+        $h .= '<p class="rp-muted" style="margin-top:.75rem;">Showing the first ' . number_format($max) . ' of ' . number_format($total) . ' accounts. Use the Group, Department or Search filter to narrow the list.</p>';
+    }
+    if ($accounts) {
+        $h .= '<div style="margin-top:1rem;display:flex;justify-content:flex-end;">'
+            . '<button type="button" class="rp-btn rp-btn-primary" onclick="rcpOpenReview(\'emp\')"><i class="las la-paper-plane" aria-hidden="true"></i> Email Employees (selected)</button></div>';
+    }
+    return $h . '</section>';
+}
+
 function rp_rcp_hub_html(array $f) {
     $cfg = array(
         'csrf'    => rp_rcp_csrf(),
@@ -907,7 +1253,7 @@ function rp_rcp_hub_html(array $f) {
     );
     $json = json_encode($cfg, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT);
 
-   $html = <<<'RCPHUB'
+    $html = <<<'RCPHUB'
 <!-- ========================================================================= -->
 <!-- BU ADMIN & PRESIDENT EMAIL MODALS (review, preview, live log) - like list_dm -->
 <!-- ========================================================================= -->
@@ -939,10 +1285,12 @@ function rp_rcp_hub_html(array $f) {
                 <thead class="bg-slate-100/80 sticky top-0 z-10 text-slate-700 font-bold uppercase text-[10px] tracking-wider">
                     <tr>
                         <th class="p-3 text-center w-28">Status</th>
-                        <th class="p-3">Group / Department</th>
+                        <th class="p-3" id="rcpThLabel">Group / Department</th>
                         <th class="p-3">Coverage Dates</th>
                         <th class="p-3">Recipient Email</th>
                         <th class="p-3">CC Emails</th>
+                        <th class="p-3 text-center w-20" id="rcpThDm" style="display:none;">Attach DM</th>
+                        <th class="p-3 text-center w-24" id="rcpThSoa" style="display:none;">Attach SOA</th>
                         <th class="p-3 text-center w-24">Preview</th>
                     </tr>
                 </thead>
@@ -996,7 +1344,7 @@ function rp_rcp_hub_html(array $f) {
             <div>
                 <div class="flex justify-between items-center mb-1">
                     <label class="block text-[10px] font-bold text-gray-500 uppercase">Attachments to Include</label>
-                    <button type="button" onclick="rcpToggleDm()" class="text-[10px] font-bold text-blue-600 hover:underline">Select / clear all Debit Memo PDFs</button>
+                    <button type="button" onclick="rcpToggleDm()" class="text-[10px] font-bold text-blue-600 hover:underline">Select / clear all optional files</button>
                 </div>
                 <div id="rcpPvAtt" class="p-2 border rounded-xl bg-gray-50 text-xs space-y-1 max-h-28 overflow-y-auto"></div>
                 <div class="mt-2 pt-2 border-t border-gray-200">
@@ -1023,7 +1371,7 @@ function rp_rcp_hub_html(array $f) {
                     <i class="las la-paper-plane text-amber-600 text-xl animate-pulse"></i>
                 </div>
                 <div>
-                    <h3 class="text-base font-extrabold text-gray-900 tracking-tight">Dispatching Summary Emails</h3>
+                    <h3 class="text-base font-extrabold text-gray-900 tracking-tight">Dispatching Emails</h3>
                     <p class="text-[11px] text-gray-500 font-medium">Sending one email at a time...</p>
                 </div>
             </div>
@@ -1071,6 +1419,7 @@ function rp_rcp_hub_html(array $f) {
 const RCP_CFG = __RCP_CONFIG__;
 let rcpItems = [];
 let rcpCur = -1;
+let rcpType = 'group';
 let rcpDirect = false;   // preview opened straight from a table row (no review window behind it)
 
 function rcpEsc(s) {
@@ -1108,6 +1457,7 @@ async function rcpFetchJson(url, options) {
 }
 
 async function rcpLoad(type, keys) {
+    rcpType = type;
     rcpLoader(true);
     try {
         const data = await rcpFetchJson('reports.php?rcp_ajax=review', {
@@ -1118,7 +1468,7 @@ async function rcpLoad(type, keys) {
         rcpLoader(false);
         if (data.status !== 'success') throw new Error(data.message || 'Server error');
         rcpItems = data.items || [];
-        document.getElementById('rcpPdfWarn').style.display = data.summary_pdf_available ? 'none' : 'block';
+        document.getElementById('rcpPdfWarn').style.display = (type !== 'emp' && !data.summary_pdf_available) ? 'block' : 'none';
         return rcpItems.length > 0;
     } catch (err) {
         rcpLoader(false);
@@ -1128,9 +1478,16 @@ async function rcpLoad(type, keys) {
 }
 
 async function rcpOpenReview(type) {
-    const cls = type === 'group' ? '.rcp-chk-group' : '.rcp-chk-dept';
+    const cls = type === 'group' ? '.rcp-chk-group' : (type === 'dept' ? '.rcp-chk-dept' : '.rcp-chk-emp');
     const keys = Array.from(document.querySelectorAll(cls + ':checked')).map(function (c) { return c.value; });
-    if (!keys.length) { alert('Please select at least one ' + (type === 'group' ? 'group' : 'department') + '.'); return; }
+    if (!keys.length) { alert('Please select at least one ' + (type === 'group' ? 'group' : (type === 'dept' ? 'department' : 'employee')) + '.'); return; }
+    rcpDirect = false;
+    if (await rcpLoad(type, keys)) { rcpRenderReview(); document.getElementById('rcpReviewModal').style.display = 'flex'; }
+}
+
+// Open the review window for a ready-made list of keys (used by the Debit Masterfile report: key = debit memo id)
+async function rcpOpenReviewKeys(type, keys) {
+    if (!keys || !keys.length) { alert('Please select at least one row.'); return; }
     rcpDirect = false;
     if (await rcpLoad(type, keys)) { rcpRenderReview(); document.getElementById('rcpReviewModal').style.display = 'flex'; }
 }
@@ -1153,22 +1510,51 @@ function rcpCounters() {
 function rcpRenderReview() {
     const tb = document.getElementById('rcpReviewBody');
     tb.innerHTML = '';
+    const anyEmp = rcpItems.some(function (x) { return x.type === 'emp'; });
+    document.getElementById('rcpThLabel').innerText = (rcpType === 'emp') ? 'Employee / Account' : (rcpType === 'all' ? 'Group / Department / Employee' : 'Group / Department');
+    document.getElementById('rcpThDm').style.display = anyEmp ? '' : 'none';
+    document.getElementById('rcpThSoa').style.display = anyEmp ? '' : 'none';
     rcpItems.forEach(function (it, idx) {
         const tr = document.createElement('tr');
         tr.className = 'hover:bg-slate-50/80 transition-colors';
         tr.innerHTML =
             '<td class="p-3 align-middle" id="rcpBadge_' + idx + '">' + rcpBadge(rcpStatus(it)) + '</td>' +
-            '<td class="p-3 align-middle"><div class="font-bold text-gray-900">' + rcpEsc(it.label) + '</div>' +
+            '<td class="p-3 align-middle"><div class="font-bold text-gray-900">' + rcpEsc(it.label) + ' ' + rcpTypeBadge(it) + '</div>' +
                 '<div class="text-[10px] text-gray-500">' + Number(it.account_count || 0).toLocaleString() + ' accounts' +
                 (it.names ? ' &bull; ' + rcpEsc(it.names) : '') + ' &bull; Excess ₱ ' + Number(it.excess || 0).toLocaleString('en-US', {minimumFractionDigits: 2}) + '</div></td>' +
             '<td class="p-3 align-middle text-gray-700">' + rcpEsc(it.coverage) + '</td>' +
             '<td class="p-3 align-middle"><input type="text" value="' + rcpEsc(it.recipient_email) + '" oninput="rcpSetField(' + idx + ', \'recipient_email\', this.value)" class="w-full p-1.5 border rounded-lg text-xs bg-white"></td>' +
             '<td class="p-3 align-middle"><input type="text" value="' + rcpEsc(it.cc_emails) + '" oninput="rcpSetField(' + idx + ', \'cc_emails\', this.value)" class="w-full p-1.5 border rounded-lg text-xs bg-white" placeholder="cc@company.com"></td>' +
+            rcpEmpCells(it, idx) +
             '<td class="p-3 align-middle text-center"><button type="button" onclick="rcpPreview(' + idx + ')" class="px-3 py-1.5 bg-blue-50 text-blue-700 border border-blue-200 rounded-lg text-[11px] font-bold hover:bg-blue-100">Preview</button></td>';
         tb.appendChild(tr);
     });
     document.getElementById('rcpReviewCount').innerText = rcpItems.length + ' emails loaded for review';
     rcpCounters();
+}
+
+/* employee rows: choose to attach the Debit Memo and / or the SOA */
+function rcpTypeBadge(it) {
+    const m = {group: ['President', 'bg-amber-50 text-amber-700 border-amber-200'], dept: ['BU Admin', 'bg-sky-50 text-sky-700 border-sky-200'], emp: ['Employee', 'bg-violet-50 text-violet-700 border-violet-200']};
+    const t = m[it.type] || ['', ''];
+    return t[0] ? '<span class="ml-1 px-1.5 py-0.5 border rounded text-[9px] font-bold align-middle ' + t[1] + '">' + t[0] + '</span>' : '';
+}
+function rcpEmpCells(it, idx) {
+    if (!rcpItems.some(function (x) { return x.type === 'emp'; })) return '';
+    if (it.type !== 'emp') return '<td class="p-3 align-middle text-center text-gray-300">-</td><td class="p-3 align-middle text-center text-gray-300">-</td>';
+    const dm = (it.attachments || []).filter(function (a) { return a.kind === 'dm'; });
+    const soa = (it.attachments || []).filter(function (a) { return a.kind === 'soa'; });
+    let h = '<td class="p-3 align-middle text-center">' +
+        (dm.length ? '<input type="checkbox" class="rounded border-gray-300 text-blue-600" ' + (dm.every(function (a) { return a.checked; }) ? 'checked' : '') + ' onchange="rcpSetAtt(' + idx + ', \'dm\', this.checked)">' : '<span class="text-[10px] text-gray-400">-</span>') +
+        '</td>';
+    h += '<td class="p-3 align-middle text-center">' +
+        (soa.length ? '<input type="checkbox" class="rounded border-gray-300 text-blue-600" ' + (soa.every(function (a) { return a.checked; }) ? 'checked' : '') + ' onchange="rcpSetAtt(' + idx + ', \'soa\', this.checked)">' +
+            '<div class="text-[9px] text-gray-400">' + soa.length + ' file(s)</div>' : '<span class="text-[10px] text-gray-400">No SOA</span>') +
+        '</td>';
+    return h;
+}
+function rcpSetAtt(idx, kind, val) {
+    (rcpItems[idx].attachments || []).forEach(function (a) { if (a.kind === kind) a.checked = val; });
 }
 
 function rcpSetField(idx, field, value) {
@@ -1195,7 +1581,31 @@ function rcpSwitchMode(mode) {
 }
 function rcpSyncVisual() { document.getElementById('rcpVisual').innerHTML = document.getElementById('rcpPvBody').value; }
 
-function rcpPreview(idx) {
+async function rcpPreview(idx) {
+    const li = rcpItems[idx];
+    if (li.light) {
+        rcpLoader(true);
+        try {
+            const data = await rcpFetchJson('reports.php?rcp_ajax=review', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({csrf: RCP_CFG.csrf, type: li.type, keys: [li.key], filters: RCP_CFG.filters})
+            });
+            rcpLoader(false);
+            if (data.status !== 'success' || !data.items || !data.items[0] || !data.items[0].has_data) throw new Error(data.message || 'Could not load the email');
+            li.subject = data.items[0].subject;
+            li.html_content = data.items[0].html_content;
+            li.light = false;
+        } catch (err) {
+            rcpLoader(false);
+            alert('Error: ' + err.message);
+            return;
+        }
+    }
+    rcpShowPreview(idx);
+}
+
+function rcpShowPreview(idx) {
     rcpCur = idx;
     const it = rcpItems[idx];
     document.getElementById('rcpPreviewTitle').innerText = 'Email Preview & Customization - ' + it.label;
@@ -1212,6 +1622,8 @@ function rcpPreview(idx) {
              '<input type="checkbox" class="rcp-att rounded border-gray-300 text-blue-600" data-i="' + i + '"' + (a.checked ? ' checked' : '') + '>' +
              '<span class="font-medium text-gray-700">' + rcpEsc(a.name) + '</span>' +
              (a.kind === 'summary' ? '<span class="text-[9px] font-bold text-emerald-600 bg-emerald-50 border border-emerald-200 rounded px-1.5">SUMMARY REPORT</span>' : '') +
+             (a.kind === 'soa' ? '<span class="text-[9px] font-bold text-blue-600 bg-blue-50 border border-blue-200 rounded px-1.5">SOA</span>' : '') +
+             (a.kind === 'dm' && it.type === 'emp' ? '<span class="text-[9px] font-bold text-purple-600 bg-purple-50 border border-purple-200 rounded px-1.5">DEBIT MEMO</span>' : '') +
              '</label>';
     });
     document.getElementById('rcpPvAtt').innerHTML = h || '<span class="text-gray-400 italic">No attachments.</span>';
@@ -1222,7 +1634,7 @@ function rcpPreview(idx) {
 
 function rcpToggleDm() {
     const boxes = Array.from(document.querySelectorAll('#rcpPvAtt .rcp-att')).filter(function (b) {
-        return rcpItems[rcpCur].attachments[b.getAttribute('data-i')].kind === 'dm';
+        return rcpItems[rcpCur].attachments[b.getAttribute('data-i')].kind !== 'summary';
     });
     const anyOff = boxes.some(function (b) { return !b.checked; });
     boxes.forEach(function (b) { b.checked = anyOff; });
@@ -1260,11 +1672,44 @@ function rcpSendNow() {
 }
 
 /* ---------- send ---------- */
+async function rcpSendAll() {
+    rcpDirect = false;
+    rcpType = 'all';
+    rcpLoader(true);
+    try {
+        let all = [];
+        let pdfOk = true;
+        for (const t of ['group', 'dept', 'emp']) {
+            const data = await rcpFetchJson('reports.php?rcp_ajax=review', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({csrf: RCP_CFG.csrf, type: t, all: true, light: true, keys: [], filters: RCP_CFG.filters})
+            });
+            if (data.status !== 'success') throw new Error(data.message || 'Server error');
+            if (t !== 'emp' && !data.summary_pdf_available) pdfOk = false;
+            all = all.concat(data.items || []);
+        }
+        rcpLoader(false);
+        if (!all.length) { alert('There are no emails to send for these filters.'); return; }
+        rcpItems = all;
+        document.getElementById('rcpPdfWarn').style.display = pdfOk ? 'none' : 'block';
+        rcpRenderReview();
+        document.getElementById('rcpReviewModal').style.display = 'flex';
+    } catch (err) {
+        rcpLoader(false);
+        alert('Error: ' + err.message);
+    }
+}
+
 function rcpProceed() {
     const ready = rcpItems.filter(function (it) { return rcpStatus(it) === 'ready'; });
     if (!ready.length) { alert('There is nothing ready to send. Check the recipient emails.'); return; }
     const skipped = rcpItems.length - ready.length;
-    const msg = 'Send ' + ready.length + ' email(s)?' + (skipped ? '\n' + skipped + ' will be skipped (missing email / no data).' : '');
+    const nG = ready.filter(function (x) { return x.type === 'group'; }).length;
+    const nD = ready.filter(function (x) { return x.type === 'dept'; }).length;
+    const nE = ready.filter(function (x) { return x.type === 'emp'; }).length;
+    const msg = 'Send ' + ready.length + ' email(s)?\n' + nG + ' President, ' + nD + ' BU Admin / Coordinator, ' + nE + ' Employee' +
+        (skipped ? '\n' + skipped + ' will be skipped (missing email / no data).' : '');
     if (!confirm(msg)) return;
     rcpCloseReview();
     rcpDispatch(ready);
@@ -1289,8 +1734,8 @@ async function rcpDispatch(items) {
     let ok = 0, fail = 0, done = 0;
     const clientFails = [];
     for (const it of items) {
-        log.innerHTML += '<div class="text-sky-300">&gt; Preparing ' + rcpEsc(it.label) + ' (summary PDF' +
-            (it.attachments.some(function (a) { return a.kind === 'dm' && a.checked; }) ? ' + debit memos' : '') + ')...</div>';
+        const attOn = it.attachments.filter(function (a) { return a.checked; }).length + (it.extra_files ? it.extra_files.length : 0);
+        log.innerHTML += '<div class="text-sky-300">&gt; Preparing ' + rcpEsc(it.label) + ' (' + attOn + ' attachment' + (attOn === 1 ? '' : 's') + ')...</div>';
         log.scrollTop = log.scrollHeight;
 
         const fd = new FormData();
@@ -1304,6 +1749,7 @@ async function rcpDispatch(items) {
         fd.append('html_content', it.html_content);
         fd.append('include_summary', it.attachments.some(function (a) { return a.kind === 'summary' && a.checked; }) ? '1' : '0');
         fd.append('dm_ids', it.attachments.filter(function (a) { return a.kind === 'dm' && a.checked; }).map(function (a) { return a.dm_id; }).join(','));
+        fd.append('soa_files', JSON.stringify(it.attachments.filter(function (a) { return a.kind === 'soa' && a.checked; }).map(function (a) { return a.name; })));
         Object.keys(RCP_CFG.filters).forEach(function (k) { fd.append(k, RCP_CFG.filters[k]); });
         (it.extra_files || []).forEach(function (f) { fd.append('additional_attachments[]', f); });
 
@@ -1374,8 +1820,20 @@ function rp_rcp_breakdown(array $accounts, $f = null) {
     $group_targets = rp_rcp_targets($accounts, 'group');
     $dept_targets  = rp_rcp_targets($accounts, 'dept');
 
-    $h  = rp_rcp_table('group', $group_targets, $f);
+    // how many emails "Send All" will prepare
+    $n_group = 0; $n_dept = 0; $n_emp = 0;
+    foreach ($group_targets as $tt) { if (!empty($tt['to'])) $n_group++; }
+    foreach ($dept_targets as $tt)  { if (!empty($tt['to'])) $n_dept++; }
+    foreach ($accounts as $aa) { $rr = rp_rcp_emp_recipients($aa); if (!empty($rr['to'])) $n_emp++; }
+
+    $h  = '<section class="rp-panel rp-card" style="margin-bottom:1.5rem;display:flex;align-items:center;justify-content:space-between;gap:1rem;flex-wrap:wrap;">'
+        . '<div><h3 style="margin:0;">Send all emails</h3>'
+        . '<p class="rp-muted" style="margin:.25rem 0 0;">' . number_format($n_group) . ' President(s) &bull; ' . number_format($n_dept) . ' BU Admin / Coordinator (departments) &bull; ' . number_format($n_emp) . ' Employee(s), using the filters above.</p></div>'
+        . '<button type="button" class="rp-btn rp-btn-primary" onclick="rcpSendAll()"><i class="las la-paper-plane" aria-hidden="true"></i> Send All (President, BU Admin &amp; Employee)</button>'
+        . '</section>';
+    $h .= rp_rcp_table('group', $group_targets, $f);
     $h .= rp_rcp_table('dept',  $dept_targets,  $f);
+    $h .= rp_rcp_emp_table($accounts, $f);
     $h .= rp_rcp_hub_html($f);
     return $h;
 }

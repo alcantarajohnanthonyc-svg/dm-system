@@ -726,118 +726,419 @@ if (isset($_GET['account_number'])) {
     exit; 
 }
 
-// 1. Setup Parameters
-$page        = isset($_GET['page']) ? max(1, (int)$_GET['page']) : 1;
-$limit_input = isset($_GET['limit']) ? $_GET['limit'] : '20';
-$search      = isset($_GET['search']) ? trim($_GET['search']) : '';
-$search_by   = isset($_GET['search_by']) ? trim($_GET['search_by']) : 'all'; 
-$carrier     = isset($_GET['carrier']) ? trim($_GET['carrier']) : '';
-$start_date  = isset($_GET['start_date']) ? trim($_GET['start_date']) : '';
-$end_date    = isset($_GET['end_date']) ? trim($_GET['end_date']) : '';
+// =====================================================
+// 1. SETUP PARAMETERS
+// =====================================================
 
-$eff_start = !empty($start_date) ? $start_date : '1900-01-01';
-$eff_end   = !empty($end_date) ? $end_date : '2999-12-31';
+$page = max(1, (int)($_GET['page'] ?? 1));
 
-$limit  = ($limit_input === 'ALL') ? 999999 : (in_array((int)$limit_input, [20, 50, 100]) ? (int)$limit_input : 20);
+$limit_input = $_GET['limit'] ?? '20';
+$search      = trim($_GET['search'] ?? '');
+$search_by   = trim($_GET['search_by'] ?? 'all');
+
+$start_date = trim($_GET['start_date'] ?? '');
+$end_date   = trim($_GET['end_date'] ?? '');
+
+$selected_telcos = isset($_GET['telcos'])
+    ? array_map('trim', (array)$_GET['telcos'])
+    : [];
+
+$selected_companies = isset($_GET['companies'])
+    ? array_map('trim', (array)$_GET['companies'])
+    : [];
+
+
+// =====================================================
+// 2. VALIDATE DATE INPUTS
+// =====================================================
+
+function isValidFilterDate($date)
+{
+    if ($date === '') {
+        return true;
+    }
+
+    $parsed = DateTime::createFromFormat('!Y-m-d', $date);
+
+    return $parsed !== false
+        && $parsed->format('Y-m-d') === $date;
+}
+
+if (!isValidFilterDate($start_date)) {
+    $start_date = '';
+}
+
+if (!isValidFilterDate($end_date)) {
+    $end_date = '';
+}
+
+// Swap dates if From is later than To
+if (
+    $start_date !== '' &&
+    $end_date !== '' &&
+    $start_date > $end_date
+) {
+    [$start_date, $end_date] = [$end_date, $start_date];
+}
+
+$eff_start = $start_date !== ''
+    ? $start_date
+    : '1900-01-01';
+
+$eff_end = $end_date !== ''
+    ? $end_date
+    : '2999-12-31';
+
+
+// =====================================================
+// 3. PAGINATION
+// =====================================================
+
+$limit = ($limit_input === 'ALL')
+    ? 999999
+    : (
+        in_array((int)$limit_input, [20, 50, 100], true)
+            ? (int)$limit_input
+            : 20
+    );
+
 $offset = ($page - 1) * $limit;
 
 
-$filteredSubQuery = "SELECT dmi.dm_id, 
-                            GROUP_CONCAT(DISTINCT dmi.carrier_name SEPARATOR '|') as carrier_names, 
-                            MIN(dmi.coverage_start) as start_date, 
-                            MAX(dmi.coverage_end) as end_date, 
-                            SUM(CAST(dmi.debit_memo_details AS DECIMAL(10,2))) as filtered_total,
-                            COUNT(DISTINCT dmi.id) as total_items_count,
-                            SUM(
-                                CASE 
-                                    WHEN EXISTS (
-                                        SELECT 1 
-                                        FROM pdf_extracted_details pdf 
-                                        JOIN debit_memos dm ON pdf.account_number = dm.account_number
-                                        WHERE dm.dm_id = dmi.dm_id 
-                                          AND ABS(DATEDIFF(dmi.coverage_end, STR_TO_DATE(SUBSTRING_INDEX(pdf.billing_period, ' - ', -1), '%Y-%m-%d'))) <= 5
-                                          AND (
-                                              pdf.mobile_number IS NULL 
-                                              OR pdf.mobile_number = '' 
-                                              OR pdf.mobile_number = 'N/A' 
-                                              OR RIGHT(REGEXP_REPLACE(pdf.mobile_number, '[^0-9]', ''), 10) = RIGHT(REGEXP_REPLACE(dmi.mobile_number, '[^0-9]', ''), 10)
-                                          )
-                                    ) THEN 1 
-                                    ELSE 0 
-                                END
-                            ) as matched_soa_count
-                     FROM `debit_memo_items` dmi
-                     WHERE dmi.coverage_start >= :where_start 
-                       AND dmi.coverage_end <= :where_end
-                     GROUP BY dmi.dm_id";
+// =====================================================
+// 4. LOAD VALID CARRIERS FROM DATABASE
+// =====================================================
+
+$telco_stmt = $conn->query("
+    SELECT DISTINCT TRIM(carrier_name) AS carrier
+    FROM debit_memo_items
+    WHERE carrier_name IS NOT NULL
+      AND TRIM(carrier_name) <> ''
+    ORDER BY carrier ASC
+");
+
+$allowed_telcos = $telco_stmt->fetchAll(PDO::FETCH_COLUMN);
+
+// Keep only carriers that exist in the database
+$selected_telcos = array_values(
+    array_intersect($selected_telcos, $allowed_telcos)
+);
+
+
+// =====================================================
+// 5. CLEAN COMPANY FILTER
+// =====================================================
+
+$selected_companies = array_values(
+    array_unique(
+        array_filter(
+            $selected_companies,
+            fn($company) => $company !== ''
+        )
+    )
+);
+
+
+// =====================================================
+// 6. COVERAGE SUBQUERY
+// =====================================================
+
+$filteredSubQuery = "
+    SELECT
+        dmi.dm_id,
+
+        GROUP_CONCAT(
+            DISTINCT TRIM(dmi.carrier_name)
+            SEPARATOR '|'
+        ) AS carrier_names,
+
+        MIN(dmi.coverage_start) AS start_date,
+
+        MAX(dmi.coverage_end) AS end_date,
+
+        SUM(
+            CAST(dmi.debit_memo_details AS DECIMAL(10,2))
+        ) AS filtered_total,
+
+        COUNT(DISTINCT dmi.id) AS total_items_count,
+
+        SUM(
+            CASE
+                WHEN EXISTS (
+                    SELECT 1
+                    FROM pdf_extracted_details pdf
+
+                    INNER JOIN debit_memos dm_soa
+                        ON pdf.account_number = dm_soa.account_number
+
+                    WHERE dm_soa.dm_id = dmi.dm_id
+
+                      AND ABS(
+                          DATEDIFF(
+                              dmi.coverage_end,
+                              STR_TO_DATE(
+                                  SUBSTRING_INDEX(
+                                      pdf.billing_period,
+                                      ' - ',
+                                      -1
+                                  ),
+                                  '%Y-%m-%d'
+                              )
+                          )
+                      ) <= 5
+
+                      AND (
+                          pdf.mobile_number IS NULL
+                          OR pdf.mobile_number = ''
+                          OR pdf.mobile_number = 'N/A'
+
+                          OR RIGHT(
+                              REGEXP_REPLACE(
+                                  pdf.mobile_number,
+                                  '[^0-9]',
+                                  ''
+                              ),
+                              10
+                          ) = RIGHT(
+                              REGEXP_REPLACE(
+                                  dmi.mobile_number,
+                                  '[^0-9]',
+                                  ''
+                              ),
+                              10
+                          )
+                      )
+                )
+                THEN 1
+                ELSE 0
+            END
+        ) AS matched_soa_count
+
+    FROM debit_memo_items dmi
+
+    WHERE dmi.coverage_start >= :where_start
+      AND dmi.coverage_end <= :where_end
+
+    GROUP BY dmi.dm_id
+";
+
+
+// =====================================================
+// 7. INITIALIZE QUERY PARAMETERS
+// =====================================================
 
 $params = [
     'where_start' => $eff_start,
     'where_end'   => $eff_end
 ];
 
-$whereClause = " WHERE 1=1";
+$whereClause = " WHERE 1=1 ";
+
+
+// =====================================================
+// 8. SEARCH FILTER
+// =====================================================
+
+$searchFields = [
+    'account_number' => 'dm.account_number',
+    'company'        => 'dm.company',
+    'carrier'        => 'sub.carrier_names'
+];
+
 if ($search !== '') {
-    if ($search_by === 'account_number') {
-        $whereClause .= " AND dm.account_number LIKE :search";
-        $params['search'] = "%$search%";
-    } elseif ($search_by === 'company') {
-        $whereClause .= " AND dm.company LIKE :search";
-        $params['search'] = "%$search%";
-    } elseif ($search_by === 'carrier') {
-        $whereClause .= " AND sub.carrier_names LIKE :search";
-        $params['search'] = "%$search%";
-    } elseif ($search_by === 'phone_number') {
-        $whereClause .= " AND dm.dm_id IN (SELECT dm_id FROM debit_memo_items WHERE mobile_number LIKE :search)";
-        $params['search'] = "%$search%";
+
+    if ($search_by === 'phone_number') {
+
+        $whereClause .= "
+            AND EXISTS (
+                SELECT 1
+                FROM debit_memo_items si
+                WHERE si.dm_id = dm.dm_id
+                  AND si.mobile_number LIKE :search
+            )
+        ";
+
+        $params['search'] = "%{$search}%";
+
+    } elseif (isset($searchFields[$search_by])) {
+
+        $whereClause .= "
+            AND {$searchFields[$search_by]} LIKE :search
+        ";
+
+        $params['search'] = "%{$search}%";
+
     } else {
-        $whereClause .= " AND (dm.account_number LIKE :search OR dm.company LIKE :search OR sub.carrier_names LIKE :search OR dm.dm_id IN (SELECT dm_id FROM debit_memo_items WHERE mobile_number LIKE :search))";
-        $params['search'] = "%$search%";
+
+        $whereClause .= "
+            AND (
+                dm.account_number LIKE :search_account
+                OR dm.company LIKE :search_company
+                OR sub.carrier_names LIKE :search_carrier
+
+                OR EXISTS (
+                    SELECT 1
+                    FROM debit_memo_items si
+                    WHERE si.dm_id = dm.dm_id
+                      AND si.mobile_number LIKE :search_phone
+                )
+            )
+        ";
+
+        $params['search_account'] = "%{$search}%";
+        $params['search_company'] = "%{$search}%";
+        $params['search_carrier'] = "%{$search}%";
+        $params['search_phone']   = "%{$search}%";
     }
 }
 
-// 3. Count Query
-$countSql = "SELECT COUNT(*) 
-             FROM `debit_memos` AS dm
-             INNER JOIN ($filteredSubQuery) AS sub ON dm.dm_id = sub.dm_id
-             $whereClause";
 
-if ($carrier !== '') {
-    $countSql .= " AND sub.carrier_names LIKE :carrier";
-    $params['carrier'] = "%$carrier%";
+// =====================================================
+// 9. TELCO / CARRIER CHECKBOX FILTER
+// =====================================================
+
+if (!empty($selected_telcos)) {
+
+    $telcoConditions = [];
+
+    foreach ($selected_telcos as $i => $telco) {
+
+        $key = "telco_{$i}";
+
+        // Match an exact carrier name in the aggregated list
+        $telcoConditions[] = "
+            CONCAT('|', sub.carrier_names, '|')
+            LIKE :{$key}
+        ";
+
+        $params[$key] = '%|' . $telco . '|%';
+    }
+
+    $whereClause .= "
+        AND (
+            " . implode(' OR ', $telcoConditions) . "
+        )
+    ";
 }
+
+
+// =====================================================
+// 10. COMPANY CHECKBOX FILTER
+// =====================================================
+
+if (!empty($selected_companies)) {
+
+    $companyPlaceholders = [];
+
+    foreach ($selected_companies as $i => $company) {
+
+        $key = "company_{$i}";
+
+        $companyPlaceholders[] = ":{$key}";
+        $params[$key] = $company;
+    }
+
+    $whereClause .= "
+        AND dm.company IN (
+            " . implode(', ', $companyPlaceholders) . "
+        )
+    ";
+}
+
+
+// =====================================================
+// 11. COUNT QUERY
+// =====================================================
+
+$countSql = "
+    SELECT COUNT(*)
+
+    FROM debit_memos dm
+
+    INNER JOIN (
+        {$filteredSubQuery}
+    ) sub
+        ON dm.dm_id = sub.dm_id
+
+    {$whereClause}
+";
 
 $countStmt = $conn->prepare($countSql);
 $countStmt->execute($params);
-$total_rows = $countStmt->fetchColumn();
-$total_pages = ($total_rows > 0) ? ceil($total_rows / $limit) : 1;
 
-// 4. Main Query
-$sort_by = isset($_GET['sort']) ? $_GET['sort'] : 'created_at';
-$sort_dir = (isset($_GET['dir']) && $_GET['dir'] === 'asc') ? 'ASC' : 'DESC';
+$total_rows = (int)$countStmt->fetchColumn();
 
-$sort_map = [
-    '1' => 'dm.account_number',
-    '2' => 'dm.company',
-    '3' => 'sub.carrier_names',
-    '4' => 'sub.start_date',
-    '5' => 'sub.filtered_total'
-];
-$order_col = isset($sort_map[$sort_by]) ? $sort_map[$sort_by] : 'dm.created_at';
+$total_pages = $total_rows > 0
+    ? (int)ceil($total_rows / $limit)
+    : 1;
 
-$sql = "SELECT dm.*, sub.carrier_names, sub.start_date, sub.end_date, sub.filtered_total as sum_debit_memo_details, sub.matched_soa_count, sub.total_items_count
-        FROM `debit_memos` AS dm
-        INNER JOIN ($filteredSubQuery) AS sub ON dm.dm_id = sub.dm_id$whereClause";
-
-if ($carrier !== '') {
-    $sql .= " AND sub.carrier_names LIKE :carrier";
+// Prevent an out-of-range page from showing empty results
+if ($page > $total_pages) {
+    $page = $total_pages;
+    $offset = ($page - 1) * $limit;
 }
 
-$sql .= " ORDER BY $order_col $sort_dir LIMIT $limit OFFSET $offset";
+
+// =====================================================
+// 12. SORTING
+// =====================================================
+
+$sort_by = $_GET['sort'] ?? 'created_at';
+
+$sort_dir = (
+    strtolower($_GET['dir'] ?? 'desc') === 'asc'
+)
+    ? 'ASC'
+    : 'DESC';
+
+$sort_map = [
+    '1'          => 'dm.account_number',
+    '2'          => 'dm.company',
+    '3'          => 'sub.carrier_names',
+    '4'          => 'sub.start_date',
+    '5'          => 'sub.filtered_total',
+    'created_at' => 'dm.created_at'
+];
+
+$order_col = $sort_map[$sort_by] ?? 'dm.created_at';
+
+
+// =====================================================
+// 13. MAIN QUERY
+// =====================================================
+
+$sql = "
+    SELECT
+        dm.*,
+
+        sub.carrier_names,
+        sub.start_date,
+        sub.end_date,
+
+        sub.filtered_total AS sum_debit_memo_details,
+
+        sub.matched_soa_count,
+        sub.total_items_count
+
+    FROM debit_memos dm
+
+    INNER JOIN (
+        {$filteredSubQuery}
+    ) sub
+        ON dm.dm_id = sub.dm_id
+
+    {$whereClause}
+
+    ORDER BY {$order_col} {$sort_dir}
+
+    LIMIT {$limit}
+    OFFSET {$offset}
+";
 
 $stmt = $conn->prepare($sql);
 $stmt->execute($params);
-$memos = $stmt->fetchAll();
+
+$memos = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
 ob_start();
 ?>
@@ -859,6 +1160,7 @@ ob_start();
 <div class="fixed-layout-container p-2">
     <div class="bg-white p-2 rounded-lg shadow-sm border border-gray-100 mb-0">
         <form method="GET" action="" class="flex flex-col md:flex-row gap-3 items-center justify-between">
+            <input type="hidden" name="limit" value="<?= htmlspecialchars($limit_input, ENT_QUOTES, 'UTF-8') ?>">
             <div class="relative inline-block text-left">
                 <button type="button" onclick="toggleMainGearDropdown(event)" class="px-3 py-1.5 bg-slate-100 text-slate-700 border border-slate-300 rounded-md text-[10px] font-bold hover:bg-slate-200 flex items-center gap-1">
                     <i class="las la-cog text-base"></i> Actions
@@ -900,16 +1202,9 @@ ob_start();
                 </div>
             </div>
 
-            <div class="flex gap-1 w-full md:w-auto items-center">
-                <input type="text" name="search" value="<?= htmlspecialchars($search) ?>" class="px-2 py-1.5 border rounded-md text-[10px] w-full md:w-55 bg-gray-50" placeholder="Search by mobile number or details...">
-
-                <div class="flex items-center gap-1">
-                    <input type="date" name="start_date" value="<?= htmlspecialchars($start_date) ?>" class="px-2 py-1.5 border rounded-md text-[10px] bg-gray-50">
-                    <span class="text-[9px] font-bold text-gray-400">TO</span>
-                    <input type="date" name="end_date" value="<?= htmlspecialchars($end_date) ?>" class="px-2 py-1.5 border rounded-md text-[10px] bg-gray-50">
-                </div>
-
-                <select name="search_by" class="px-1 py-1.5 border rounded-md text-[10px] bg-gray-50">
+           <div class="flex gap-1.5 w-full md:w-auto items-center flex-wrap md:flex-nowrap">
+                <!-- Search Field Selector -->
+                <select name="search_by" class="px-2 py-1.5 border border-gray-300 rounded-md text-[10px] bg-gray-50 text-gray-700 font-medium">
                     <option value="all" <?= (isset($search_by) && $search_by == 'all') ? 'selected' : '' ?>>All Fields</option>
                     <option value="account_number" <?= (isset($search_by) && $search_by == 'account_number') ? 'selected' : '' ?>>Account Number</option>
                     <option value="company" <?= (isset($search_by) && $search_by == 'company') ? 'selected' : '' ?>>Company</option>
@@ -917,10 +1212,119 @@ ob_start();
                     <option value="phone_number" <?= (isset($search_by) && $search_by == 'phone_number') ? 'selected' : '' ?>>Phone Number</option>
                 </select>
 
-                <button type="submit" class="bg-slate-800 text-white px-3 py-1.5 rounded-md text-[10px] font-bold hover:bg-slate-900">Apply</button>
+                <!-- Search Input Text -->
+                <input type="text" name="search" value="<?= htmlspecialchars($search) ?>" class="px-2 py-1.5 border border-gray-300 rounded-md text-[10px] w-full md:w-48 bg-gray-50" placeholder="Search keyword...">
+
+                <!-- UNIFIED FILTER DROPDOWN BUTTON -->
+                <div class="relative inline-block text-left">
+                    <button type="button" onclick="toggleUnifiedFilterMenu(event)" class="px-3 py-1.5 bg-gray-50 border border-gray-300 rounded-md text-[10px] font-bold text-gray-700 hover:bg-gray-100 flex items-center gap-1.5 shadow-xs">
+                        <i class="las la-filter text-sm"></i> Filters <i class="las la-angle-down"></i>
+                    </button>
+
+                    <!-- UNIFIED DROPDOWN CONTAINER -->
+                    <div id="unifiedFilterMenu" class="hidden absolute right-0 mt-2 w-72 bg-white border border-gray-200 rounded-xl shadow-2xl z-50 p-4 space-y-4 max-h-[80vh] overflow-y-auto">
+                        
+                        <!-- SECTION 1: DATE COVERAGE -->
+                        <div class="space-y-1.5">
+                            <label class="block text-[9px] font-bold text-slate-400 uppercase tracking-wider border-b pb-1">Date Coverage</label>
+                            <div class="grid grid-cols-2 gap-2 pt-1">
+                                <div>
+                                    <span class="block text-[9px] text-gray-500 font-semibold mb-0.5">From</span>
+                                    <input type="date" name="start_date" value="<?= htmlspecialchars($start_date ?? '') ?>" class="w-full px-2 py-1 border rounded text-[10px] bg-gray-50">
+                                </div>
+                                <div>
+                                    <span class="block text-[9px] text-gray-500 font-semibold mb-0.5">To</span>
+                                    <input type="date" name="end_date" value="<?= htmlspecialchars($end_date ?? '') ?>" class="w-full px-2 py-1 border rounded text-[10px] bg-gray-50">
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- SECTION 2: TELCO (CARRIER) CHECKBOXES -->
+                       
+<!-- SECTION 2: TELCO (CARRIER) CHECKBOXES -->
+<div class="space-y-1.5">
+    <label class="block text-[9px] font-bold text-slate-400 uppercase tracking-wider border-b pb-1">
+        Telco / Carrier
+    </label>
+
+    <div class="grid grid-cols-2 gap-1.5 pt-1">
+        <?php
+        // Get available carriers directly from the database
+        $telco_stmt = $conn->query("
+            SELECT DISTINCT TRIM(carrier_name) AS carrier
+            FROM debit_memo_items
+            WHERE carrier_name IS NOT NULL
+              AND TRIM(carrier_name) != ''
+            ORDER BY carrier ASC
+        ");
+
+        $telcos_list = $telco_stmt->fetchAll(PDO::FETCH_COLUMN);
+
+        $selected_telcos = isset($_GET['telcos'])
+            ? array_map('trim', (array) $_GET['telcos'])
+            : [];
+
+        foreach ($telcos_list as $t):
+            $checked = in_array($t, $selected_telcos, true)
+                ? 'checked'
+                : '';
+        ?>
+            <label class="flex items-center gap-2 text-[10px] text-gray-700 cursor-pointer hover:bg-slate-50 p-1 rounded">
+                <input
+                    type="checkbox"
+                    name="telcos[]"
+                    value="<?= htmlspecialchars($t, ENT_QUOTES, 'UTF-8') ?>"
+                    <?= $checked ?>
+                    class="rounded border-gray-300 text-slate-800 focus:ring-0"
+                >
+                <span class="font-medium">
+                    <?= htmlspecialchars($t, ENT_QUOTES, 'UTF-8') ?>
+                </span>
+            </label>
+        <?php endforeach; ?>
+
+        <?php if (empty($telcos_list)): ?>
+            <p class="col-span-2 text-[10px] text-gray-400">
+                No carriers found.
+            </p>
+        <?php endif; ?>
+    </div>
+</div>
+
+
+                        <!-- SECTION 3: COMPANY CHECKBOXES -->
+                        <div class="space-y-1.5">
+                            <label class="block text-[9px] font-bold text-slate-400 uppercase tracking-wider border-b pb-1">Company</label>
+                            <div class="space-y-1 max-h-36 overflow-y-auto pr-1 pt-1">
+                                <?php 
+                                $comp_stmt = $conn->query("SELECT DISTINCT company FROM debit_memos WHERE company IS NOT NULL AND company != '' ORDER BY company ASC");
+                                $all_companies = $comp_stmt->fetchAll(PDO::FETCH_COLUMN);
+                                $selected_companies = isset($_GET['companies']) ? (array)$_GET['companies'] : [];
+                                foreach($all_companies as $comp): 
+                                    $comp_checked = in_array($comp, $selected_companies) ? 'checked' : '';
+                                ?>
+                                    <label class="flex items-center gap-2 text-[10px] text-gray-700 cursor-pointer hover:bg-slate-50 p-1 rounded">
+                                        <input type="checkbox" name="companies[]" value="<?= htmlspecialchars($comp) ?>" <?= $comp_checked ?> class="rounded border-gray-300 text-slate-800 focus:ring-0">
+                                        <span class="truncate font-medium" title="<?= htmlspecialchars($comp) ?>"><?= htmlspecialchars($comp) ?></span>
+                                    </label>
+                                <?php endforeach; ?>
+                            </div>
+                        </div>
+
+                        <!-- APPLY BUTTON INSIDE DROPDOWN -->
+                        <div class="pt-2 border-t flex gap-2">
+                            <button type="submit" class="w-full bg-slate-800 text-white py-1.5 rounded-md text-[10px] font-bold hover:bg-slate-900 transition-all shadow-xs">
+                                Apply Filters
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Search & Reset Action Buttons -->
+                <button type="submit" class="bg-slate-800 text-white px-3.5 py-1.5 rounded-md text-[10px] font-bold hover:bg-slate-900 transition-all shadow-xs">Search</button>
                 
-                <a href="list_dm.php" title="Reset Filters" class="px-2 py-1.5 bg-gray-100 text-gray-600 border border-gray-300 rounded-md text-[10px] font-bold hover:bg-gray-200 flex items-center">
-                    <i class="las la-redo-alt text-base"></i>
+                <a href="list_dm.php" title="Reset All Filters" class="px-2.5 py-1.5 bg-gray-100 text-gray-600 border border-gray-300 rounded-md text-[10px] font-bold hover:bg-gray-200 flex items-center transition-all">
+                    <i class="las la-redo-alt text-sm"></i>
                 </a>
             </div>
         </form>
@@ -931,9 +1335,16 @@ ob_start();
   <form method="GET" action="list_dm.php" class="flex items-center gap-2">
     <input type="hidden" name="search_by" value="<?= htmlspecialchars($search_by) ?>">
     <input type="hidden" name="search" value="<?= htmlspecialchars($search) ?>">
-    <input type="hidden" name="carrier" value="<?= htmlspecialchars($carrier) ?>">
     <input type="hidden" name="start_date" value="<?= htmlspecialchars($start_date) ?>">
     <input type="hidden" name="end_date" value="<?= htmlspecialchars($end_date) ?>">
+        <input type="hidden" name="sort" value="<?= htmlspecialchars($sort_by, ENT_QUOTES, 'UTF-8') ?>">
+        <input type="hidden" name="dir" value="<?= strtolower($sort_dir) ?>">
+        <?php foreach ($selected_telcos as $telco): ?>
+            <input type="hidden" name="telcos[]" value="<?= htmlspecialchars($telco, ENT_QUOTES, 'UTF-8') ?>">
+        <?php endforeach; ?>
+        <?php foreach ($selected_companies as $company): ?>
+            <input type="hidden" name="companies[]" value="<?= htmlspecialchars($company, ENT_QUOTES, 'UTF-8') ?>">
+        <?php endforeach; ?>
 
     <span class="text-[11px] font-bold text-gray-500 uppercase">Show</span>
     <select name="limit" onchange="this.form.submit()" class="px-1 py-1 border rounded-md text-xs bg-gray-50">
@@ -948,10 +1359,12 @@ ob_start();
     <?php
     $query_params = http_build_query([
         'limit'      => $limit_input,
+        'search_by'  => $search_by,
         'search'     => $search,
-        'carrier'    => $carrier,
         'start_date' => $start_date,
-        'end_date'   => $end_date
+        'end_date'   => $end_date,
+        'telcos'     => $selected_telcos,
+        'companies'  => $selected_companies
     ]);
     ?>
     <a href="?page=1&<?= $query_params ?>" class="px-3 py-1 text-xs text-gray-500 bg-white border border-gray-300 rounded-l-md hover:bg-gray-100">First</a>
@@ -974,11 +1387,13 @@ ob_start();
 
 <?php
 $current_params = [
+    'search_by' => $search_by,
     'search' => $search,
-    'carrier' => $carrier,
     'start_date' => $start_date,
     'end_date' => $end_date,
-    'limit' => $limit_input
+    'limit' => $limit_input,
+    'telcos' => $selected_telcos,
+    'companies' => $selected_companies
 ];
 $base_query = http_build_query($current_params);
 ?>
@@ -2363,26 +2778,61 @@ function previewEmailBeforeSend(dmId, itemIds = '', startDate = '', endDate = ''
         // BAGONG URL: list_dm.php
         let fetchUrl = `list_dm.php?action=get_email_preview&dm_id=${dmId}&item_ids=${itemIds}&start_date=${cachedAccount.start_date || startDate}&end_date=${cachedAccount.end_date || endDate}`;
 
-        fetch(fetchUrl)
-        .then(res => res.json())
-        .then(data => {
-            let attContainer = document.getElementById('preview_attachments_container');
-            attContainer.innerHTML = '';
-            
-            if (data.status === 'success' && data.attachments && data.attachments.length > 0) {
-                data.attachments.forEach((att) => {
-                    attContainer.innerHTML += `
-                        <label class="flex items-center gap-2 py-0.5 px-1 hover:bg-gray-100 rounded cursor-pointer">
-                            <input type="checkbox" name="selected_attachments[]" value="${att.path}" checked class="rounded border-gray-300 text-blue-600">
-                            <span class="font-medium text-gray-700">${att.name}</span>
-                        </label>`;
-                });
-            } else {
-                attContainer.innerHTML = `<span class="text-gray-400 italic">No attachments found.</span>`;
-            }
+        
+fetch(fetchUrl)
+    .then(res => res.json())
+    .then(data => {
+        if (data.status !== 'success') {
+            throw new Error(data.message || 'Failed to load email preview.');
+        }
 
-            document.getElementById('emailPreviewModal').style.display = 'flex';
-        });
+        // Load the generated email template from PHP
+        const subjectInput = document.getElementById('preview_subject');
+        const bodyTextarea = document.getElementById('preview_body');
+        const visualContainer = document.getElementById('visualPreviewContainer');
+
+        subjectInput.value = data.subject || '';
+        bodyTextarea.value = data.html_content || '';
+
+        // Render the email template in Visual Preview
+        visualContainer.innerHTML = bodyTextarea.value;
+        switchPreviewMode('visual');
+
+        // Continue loading attachments
+        let attContainer = document.getElementById('preview_attachments_container');
+        attContainer.innerHTML = '';
+
+        if (data.attachments && data.attachments.length > 0) {
+            data.attachments.forEach((att) => {
+                const label = document.createElement('label');
+                label.className = 'flex items-center gap-2 py-0.5 px-1 hover:bg-gray-100 rounded cursor-pointer';
+
+                const checkbox = document.createElement('input');
+                checkbox.type = 'checkbox';
+                checkbox.name = 'selected_attachments[]';
+                checkbox.value = att.path;
+                checkbox.checked = true;
+                checkbox.className = 'rounded border-gray-300 text-blue-600';
+
+                const span = document.createElement('span');
+                span.className = 'font-medium text-gray-700';
+                span.textContent = att.name;
+
+                label.append(checkbox, span);
+                attContainer.appendChild(label);
+            });
+        } else {
+            attContainer.innerHTML =
+                '<span class="text-gray-400 italic">No attachments found.</span>';
+        }
+
+        document.getElementById('emailPreviewModal').style.display = 'flex';
+    })
+    .catch(err => {
+        console.error('Email preview error:', err);
+        alert('Unable to load email preview: ' + err.message);
+    });
+
     }
 }
 
@@ -2853,7 +3303,26 @@ function sendEmailBreakdownSelected() {
         alert("Error: " + err.message);
     });
 }
+function toggleUnifiedFilterMenu(event) {
+    if (event) {
+        event.preventDefault();
+        event.stopPropagation();
+    }
+    const menu = document.getElementById('unifiedFilterMenu');
+    if (menu) {
+        menu.classList.toggle('hidden');
+    }
+}
 
+// Close the unified dropdown when clicking outside
+window.addEventListener('click', function(e) {
+    const menu = document.getElementById('unifiedFilterMenu');
+    if (menu && !menu.classList.contains('hidden')) {
+        if (!e.target.closest('.relative')) {
+            menu.classList.add('hidden');
+        }
+    }
+});
 </script>
 
 <?php
