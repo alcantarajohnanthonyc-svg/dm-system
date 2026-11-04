@@ -52,7 +52,7 @@ function et_wrap($inner_html) {
     return "
 <div style='font-family: Arial, sans-serif; font-size: 11pt; color: #333; max-width: 750px; margin: 0 auto; padding: 20px; border: 1px solid #e2e8f0; border-radius: 8px; background-color: #ffffff;'>
 
-
+    
     {$inner_html}
 
     <!-- Footer -->
