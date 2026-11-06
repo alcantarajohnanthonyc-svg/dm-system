@@ -3,15 +3,38 @@
 session_start();
 
 require_once 'config.php';
+require_once __DIR__ . '/dm_period.php';
 
 // Verify the user is logged in
 if (!isset($_SESSION['user_id'])) {
     exit('Unauthorized access');
 }
 
-$dm_id = isset($_GET['dm_id']) ? intval($_GET['dm_id']) : 0;
+$dm_id      = isset($_GET['dm_id']) ? intval($_GET['dm_id']) : 0;
 $start_date = isset($_GET['start']) ? $_GET['start'] : '';
-$end_date = isset($_GET['end']) ? $_GET['end'] : '';
+$end_date   = isset($_GET['end']) ? $_GET['end'] : '';
+
+// ---- Row counts per tab (used by the modal to auto-select the tab that has data) ----
+if (isset($_GET['counts'])) {
+    $csql = "SELECT COALESCE(SUM(coverage_start >= '" . DM_NEW_TEMPLATE_START . "'), 0) AS new_cnt,
+                    COALESCE(SUM(coverage_start <  '" . DM_NEW_TEMPLATE_START . "'), 0) AS legacy_cnt
+             FROM debit_memo_items WHERE dm_id = :dm_id";
+    $cparams = [':dm_id' => $dm_id];
+    if (!empty($start_date) && !empty($end_date)) {
+        $csql .= " AND coverage_start >= :start AND coverage_end <= :end";
+        $cparams[':start'] = $start_date;
+        $cparams[':end']   = $end_date;
+    }
+    $cst = $conn->prepare($csql);
+    $cst->execute($cparams);
+    $crow = $cst->fetch(PDO::FETCH_ASSOC);
+    header('Content-Type: application/json');
+    echo json_encode(['new' => (int)$crow['new_cnt'], 'legacy' => (int)$crow['legacy_cnt']]);
+    exit;
+}
+
+// Tab: 'new' = 2026 and forward (new template), 'legacy' = 2025 and backward (old columns)
+$period = (isset($_GET['period']) && $_GET['period'] === 'legacy') ? 'legacy' : 'new';
 
 $sql = "SELECT dmi.*, pdf.file_link, pdf.filename 
         FROM `debit_memo_items` dmi 
@@ -37,118 +60,107 @@ $sql = "SELECT dmi.*, pdf.file_link, pdf.filename
              )
         WHERE dmi.dm_id = :dm_id";
 
-
 $params = [':dm_id' => $dm_id];
+
+// Tab filter (2025 & backward vs 2026 & forward)
+$sql .= dm_period_clause($period, 'dmi.coverage_start');
 
 // Filter base sa coverage dates
 if (!empty($start_date) && !empty($end_date)) {
-    $sql .= " AND coverage_start >= :start AND coverage_end <= :end";
+    $sql .= " AND dmi.coverage_start >= :start AND dmi.coverage_end <= :end";
     $params[':start'] = $start_date;
     $params[':end'] = $end_date;
 }
 
-$sql .= " ORDER BY coverage_start ASC";
+$sql .= " ORDER BY dmi.coverage_start ASC";
 
 $stmt = $conn->prepare($sql);
 $stmt->execute($params);
 $items = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
+// Number of columns in each layout (incl. checkbox + SOA + action)
+$colspan = ($period === 'legacy') ? 27 : 22;
+$is_admin = (isset($_SESSION['role']) && ($_SESSION['role'] === 'superadmin' || $_SESSION['role'] === 'admin'));
+
 // Render the Table Body
 if (empty($items)) {
-    echo "<tr><td colspan='21' class='text-center py-10 text-gray-400'>No records found.</td></tr>";
+    echo "<tr><td colspan='" . $colspan . "' class='text-center py-10 text-gray-400'>No records found.</td></tr>";
 } else {
     foreach ($items as $row) {
-        $id_val = isset($row['id']) ? $row['id'] : 0;
+        $id_val  = isset($row['id']) ? $row['id'] : 0;
+        $mobile  = isset($row['mobile_number']) ? $row['mobile_number'] : '-';
+        $has_soa = !empty($row['file_link']);
 
-        $mobile = isset($row['mobile_number']) ? $row['mobile_number'] : '-';
-       $has_soa = !empty($row['file_link']);
-
-        // Pinalitan natin ng mas matingkad na light green (#bbf7d0) para madaling makita agad
-        $row_style = $has_soa ? "background-color: #bbf7d0 !important;" : "";
+        // Light green highlight when an SOA is matched
+        $row_style = $has_soa ? "background-color: #d7f7e3 !important;" : "";
         $row_class = $has_soa ? "border-b hover:bg-green-300 text-[10px] text-center" : "border-b hover:bg-gray-50 text-[10px] text-center";
 
-        echo "<tr class='" . $row_class . "' style='" . $row_style . "' id='row-".$id_val."'>";
-        
+        echo "<tr class='" . $row_class . "' style='" . $row_style . "' id='row-" . $id_val . "'>";
+
         // Checkbox
-        echo "<td class='p-2 border'><input type='checkbox' class='item-checkbox' value='".$id_val."'></td>";
-        
+        echo "<td class='p-2 border'><input type='checkbox' class='item-checkbox' value='" . $id_val . "'></td>";
+
         // Date Covered
-        $start_f = isset($row['coverage_start']) ? date('M d, Y', strtotime($row['coverage_start'])) : 'N/A';
-        $end_f = isset($row['coverage_end']) ? date('M d, Y', strtotime($row['coverage_end'])) : 'N/A';
-        echo "<td class='p-2 border font-bold'>" . $start_f . " to " . $end_f . "</td>";
-        
+        // Three lines for easy reading:  Dec 16 2024 / TO / Jan 15 2025
+        $start_f = !empty($row['coverage_start']) ? date('M d Y', strtotime($row['coverage_start'])) : 'N/A';
+        $end_f   = !empty($row['coverage_end'])   ? date('M d Y', strtotime($row['coverage_end']))   : 'N/A';
+        echo "<td class='p-2 border font-bold bd-date'>" . $start_f . "<span class='bd-to'>TO</span>" . $end_f . "</td>";
+
         // Mobile Number
-        echo "<td class='p-2 border text-center font-bold'>";
-        echo "<span>" . $mobile . "</span>";
-        echo "</td>";
-        
-        // Numeric Columns Mapping
-        $cols = [
-            'approved_plan', 'phone_amortization', 'debit_adj', 'credit_adj', 
-            'other_charges', 'local_call_text', 'ndd_charges', 'idd_charges', 
-            'roaming_charges', 'sms_charges', 'gprs_charges', 'wiz_usage', 
-            'loading_charges', 'vat', 'oct', 'current_charges', 'total_amount_due'
-        ];
-        
-        foreach ($cols as $col) {
-            $val = isset($row[$col]) ? $row[$col] : 0;
-            echo "<td class='p-2 border'>" . number_format((float)$val, 2) . "</td>";
+        echo "<td class='p-2 border text-center font-bold'><span>" . htmlspecialchars($mobile) . "</span></td>";
+
+        // Amount columns (everything between Mobile Number and the SOA column) come from the shared definition
+        $columns = dm_columns($period);
+        $css = array(
+            'plain'  => '',
+            'red'    => ' font-bold text-red-600',
+            'blue'   => ' font-bold text-blue-600',
+            'purple' => ' font-bold text-purple-600',
+            'orange' => ' font-bold text-orange-600',
+            'green'  => ' font-bold text-green-600',
+        );
+        // Same colour language on both tabs:  green = excess / processed, blue = add ons, amber = final / difference
+        $pill = array(
+            'excess'             => 'bd-pill-green',   // 2026: Excess Charges
+            'debit_memo_details' => 'bd-pill-green',   // 2025: Processed DM
+            'sys_dm'             => 'bd-pill-green',   // 2025: System Generated DM
+            'add_ons'            => 'bd-pill-blue',    // both: Add Ons
+            'diff'               => 'bd-pill-amber',   // 2025: Difference
+            'final_excess'       => 'bd-pill-amber',   // 2026: Final Excess Charges
+            'final_dm'           => 'bd-pill-amber',   // 2025: Final DM
+        );
+        foreach ($columns as $c) {
+            if ($c['type'] === 'date' || $c['type'] === 'mobile') continue;
+            $val_txt = number_format(dm_cell_value($row, $c), 2);
+            if (isset($pill[$c['key']])) {
+                echo "<td class='p-2 border'><span class='bd-pill " . $pill[$c['key']] . "'>" . $val_txt . "</span></td>";
+            } else {
+                echo "<td class='p-2 border'>" . $val_txt . "</td>";
+            }
         }
-        
-        // Debit Memo Details
-        $dm_val = isset($row['debit_memo_details']) ? $row['debit_memo_details'] : 0;
-        echo "<td class='p-2 border font-bold text-red-600'>" . number_format((float)$dm_val, 2) . "</td>";
 
-        // CALCULATIONS FOR NEW COLUMNS
-        $approved_plan_val = isset($row['approved_plan']) ? (float)$row['approved_plan'] : 0;
-        $msf_mrc_val = isset($row['current_charges']) ? (float)$row['current_charges'] : 0; 
-        
-        // Column 1: Approved Plan - MSF (GLOBE / MRC (SMART))
-        $col1_val = max(0, $msf_mrc_val - $approved_plan_val);
-        echo "<td class='p-2 border font-bold text-blue-600'>" . number_format($col1_val, 2) . "</td>";
-
-        // Column 2: Debit Memo - Column 1
-        $col2_val = max(0, (float)$dm_val - $col1_val);
-        echo "<td class='p-2 border font-bold text-purple-600'>" . number_format($col2_val, 2) . "</td>";
-
-        // NEW: Add Ons Column
-        $add_ons_val = isset($row['add_ons']) ? (float)$row['add_ons'] : 0;
-        echo "<td class='p-2 border font-bold text-orange-600'>" . number_format($add_ons_val, 2) . "</td>";
-
-        // NEW: Final DM Column (Processed DM - Add Ons)
-        $final_dm_val = isset($row['final_dm']) ? (float)$row['final_dm'] : ($dm_val - $add_ons_val);
-        echo "<td class='p-2 border font-bold text-green-600'>" . number_format($final_dm_val, 2) . "</td>";
-        
-        // Huling Column para sa Status (WITH SOA Badge o Dash)
-       echo "<td class='p-2 border text-center font-bold text-xs'>";
+        // SOA column (WITH SOA badge or blank)
+        echo "<td class='p-2 border text-center font-bold text-xs'>";
         if ($has_soa) {
             $file_link = htmlspecialchars($row['file_link']);
-            $filename = !empty($row['filename']) ? htmlspecialchars($row['filename']) : 'View SOA File';
+            $filename  = !empty($row['filename']) ? htmlspecialchars($row['filename']) : 'View SOA File';
             echo "<a href='" . $file_link . "' target='_blank' title='" . $filename . "' class='inline-block px-2 py-0.5 rounded text-[9px] font-bold bg-green-100 text-green-700 border border-green-300 shadow-xs hover:bg-green-200 transition-colors'>WITH SOA</a>";
-        } else {
-            echo ""; // Blank / walang ilalagay na kahit ano
         }
         echo "</td>";
 
-        // ACTION COLUMN
+        // ACTION column - Edit only for Admin/Superadmin
         echo "<td class='p-2 border'>";
-        echo "<div class='flex items-center justify-center gap-4'>"; 
-
-
-
-        // Only show the Edit button to Admin/Superadmin
-        if ($_SESSION['role'] === 'superadmin' || $_SESSION['role'] === 'admin') {
+        echo "<div class='flex items-center justify-center gap-4'>";
+        if ($is_admin) {
             echo "<button type='button' onclick='editBreakdownItem(" . $id_val . ")' class='text-blue-600 hover:text-blue-800 text-2xl' title='Edit Record'>";
             echo "<i class='las la-pencil-alt'></i>";
             echo "</button>";
         } else {
-            // Visual indicator for non-admins
             echo "<span class='text-gray-300 text-xl'>-</span>";
         }
-
         echo "</div>";
         echo "</td>";
-        echo "</tr>"; 
+        echo "</tr>";
     }
 }
 ?>

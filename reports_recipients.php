@@ -9,6 +9,8 @@
  *  - Naka-attach rin ang individual Debit Memo PDF ng bawat account.
  */
 
+require_once __DIR__ . '/dm_period.php';
+
 if (!function_exists('getBuAdminEmailTemplate')) {
     require_once __DIR__ . '/email_template.php';
 }
@@ -112,7 +114,12 @@ function rp_rcp_fetch_uncached($conn, array $f) {
     $ap = rp_rcp_amount_sql($conn, 'approved_plan');
     $processed_dm = rp_rcp_amount_sql($conn, 'debit_memo_details');
     $add_ons = rp_rcp_amount_sql($conn, 'add_ons');
-    $dd = "(($processed_dm) - ($add_ons))";
+    // Excess per row:
+    //   2025 & backward -> Final DM            = Processed DM - Add Ons
+    //   2026 & forward  -> Final Excess Charges = (Current Charges - Approved Plan) - Add Ons   (both floored at 0)
+    $dd = "(CASE WHEN dmi.coverage_start >= '" . DM_NEW_TEMPLATE_START . "'
+                 THEN GREATEST(0, GREATEST(0, ($cc) - ($ap)) - ($add_ons))
+                 ELSE (($processed_dm) - ($add_ons)) END)";
 
     $item_where = '';
     $params = array();

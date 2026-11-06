@@ -26,23 +26,32 @@
         $is_super           = (($_SESSION['role'] ?? '') === 'superadmin');
         $is_settings_active = in_array($current_script, ['users.php', 'logs.php', 'backup.php']);
 
+        // Icon shown in the header title pill (theme.css)
+        $icon_map = array(
+            'list_dm.php' => 'la-file-invoice-dollar', 'reports.php' => 'la-chart-bar', 'dashboard.php' => 'la-th-large',
+            'email_mapping.php' => 'la-sitemap', 'users.php' => 'la-users', 'logs.php' => 'la-history',
+            'backup.php' => 'la-database', 'email_monitor.php' => 'la-envelope-open-text', 'import_dm.php' => 'la-file-import', 'debit_memo_upload.php' => 'la-file-upload',
+            'debit_memo_dispatch.php' => 'la-mail-bulk', 'change_password.php' => 'la-key'
+        );
+        $page_icon = isset($icon_map[$current_script]) ? $icon_map[$current_script] : 'la-file-alt';
+
         // Top-level sidebar link
         $nav_item = function ($href, $icon, $label, $active) {
-            $cls = $active ? 'bg-blue-600 text-white shadow-md' : 'text-gray-400 hover:bg-slate-800 hover:text-white';
+            $cls = $active ? 'nav-active bg-blue-600 text-white shadow-md' : 'nav-link';
             echo '<a href="' . $href . '" class="flex items-center space-x-3 px-4 py-2.5 rounded-md transition ' . $cls . '"' . ($active ? ' aria-current="page"' : '') . '>'
                . '<i class="las ' . $icon . ' text-xl"></i> <span>' . $label . '</span></a>';
         };
 
         // Link inside a dropdown group
         $nav_child = function ($href, $icon, $label, $active) {
-            $cls = $active ? 'bg-blue-500/15 text-blue-300 font-semibold' : 'text-gray-400 hover:bg-slate-800 hover:text-white';
+            $cls = $active ? 'nav-child-active font-semibold' : 'nav-link';
             echo '<a href="' . $href . '" class="flex items-center space-x-2.5 px-3 py-2 rounded-md text-sm transition ' . $cls . '"' . ($active ? ' aria-current="page"' : '') . '>'
                . '<i class="las ' . $icon . ' text-lg"></i> <span>' . $label . '</span></a>';
         };
 
         // Dropdown group header + wrapper open
         $nav_group_open = function ($key, $icon, $label, $active) {
-            $btn = $active ? 'text-white font-semibold' : 'text-gray-400 hover:bg-slate-800 hover:text-white';
+            $btn = $active ? 'nav-link nav-group-active font-semibold' : 'nav-link';
             echo '<div>'
                . '<button type="button" id="navBtn-' . $key . '" onclick="toggleNavGroup(\'' . $key . '\')" aria-expanded="' . ($active ? 'true' : 'false') . '" aria-controls="navSub-' . $key . '" '
                . 'class="w-full flex items-center justify-between px-4 py-2.5 rounded-md transition ' . $btn . '">'
@@ -50,7 +59,7 @@
                . '<i class="las la-angle-down text-sm transition-transform duration-200 nav-arrow ' . ($active ? 'rotate-180' : '') . '"></i>'
                . '</button>'
                . '<div id="navSub-' . $key . '" class="nav-sub ' . ($active ? 'open' : '') . '"><div>'
-               . '<div class="ml-6 mt-1 mb-1 pl-3 border-l border-slate-700 space-y-1">';
+               . '<div class="ml-6 mt-1 mb-1 pl-3 border-l border-emerald-200 space-y-1">';
         };
         $nav_group_close = function () {
             echo '</div></div></div></div>';
@@ -87,14 +96,18 @@
 
         <script src="https://cdn.tailwindcss.com"></script>
         <link rel="stylesheet" href="https://maxst.icons8.com/vue-static/landings/line-awesome/line-awesome/1.3.0/css/line-awesome.min.css">
+        <link rel="preconnect" href="https://fonts.googleapis.com">
+        <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+        <!-- Aqua Glass theme (applies to every page that uses render_layout). Remove this line to go back to the old look. -->
+        <link rel="stylesheet" href="theme.css?v=<?php echo @filemtime(__DIR__ . '/theme.css'); ?>">
     </head>
-    <body class="bg-gray-100 font-sans flex h-screen overflow-hidden">
+    <body class="theme-aqua bg-gray-100 font-sans flex h-screen overflow-hidden">
 
-        <div class="w-64 bg-slate-900 text-white flex flex-col justify-between hidden md:flex shadow-xl">
+        <div id="appSidebar" class="w-64 flex-shrink-0 flex flex-col justify-between hidden md:flex shadow-xl">
             <div>
-                <div class="p-5 bg-slate-950 border-b border-slate-800 text-center">
-                    <h1 class="text-lg font-bold text-blue-400 tracking-wider uppercase">Telco Charge DM</h1>
-                    <p class="text-xs text-gray-400">Management Portal</p>
+                <div class="nav-brand p-5 text-center">
+                    <h1 class="text-lg font-bold tracking-wider uppercase">Telco Charge DM</h1>
+                    <p class="text-xs">Management Portal</p>
                 </div>
         
                 <nav class="mt-6 px-4 space-y-1.5" aria-label="Main navigation">
@@ -107,11 +120,13 @@
                     ?>
 
                     <?php if ($is_super): ?>
-                        <div class="my-3 border-t border-slate-800" role="separator"></div>
+                        <div class="my-3 border-t border-emerald-100" role="separator"></div>
 
                         <?php
                         // Maps accounts to their email recipients (set up once, used by Email SOA)
                         $nav_item('email_mapping.php', 'la-sitemap', 'Account Mapping', in_array($current_script, ['email_mapping.php', 'mappings.php']));
+                        // Did the dispatched emails really arrive? Sent / Delivered / Bounced / Delayed
+                        $nav_item('email_monitor.php', 'la-envelope-open-text', 'Email Monitor', $current_script === 'email_monitor.php');
                         ?>
 
                         <!-- Manage SOA: import statements, then email them -->
@@ -131,23 +146,23 @@
                         $nav_group_close();
                         ?>
                     <?php else: ?>
-                        <div class="my-3 border-t border-slate-800" role="separator"></div>
+                        <div class="my-3 border-t border-emerald-100" role="separator"></div>
                         <?php $nav_item('change_password.php', 'la-key', 'Change Password', $current_script === 'change_password.php'); ?>
                     <?php endif; ?>
 
                 </nav>
             </div>
 
-            <div class="p-4 bg-slate-950 border-t border-slate-800">
+            <div class="p-4 border-t border-emerald-100">
                 <!-- Blank/Placeholder area at the bottom sidebar -->
             </div>
         </div>
 
-        <div class="flex-1 flex flex-col overflow-y-auto">
-            <header class="bg-white border-b px-8 py-3 flex items-center justify-between shadow-sm">
-                <h2 class="text-xl font-semibold text-gray-800"><?php echo $page_title; ?></h2>
+        <div class="flex-1 min-w-0 flex flex-col overflow-y-auto">
+            <header id="appHeader" class="bg-white border-b px-8 py-3 flex items-center justify-between shadow-sm">
+                <div class="app-title"><span class="app-title-ico"><i class="las <?php echo $page_icon; ?>"></i></span><h2 class="text-xl font-semibold text-gray-800"><?php echo $page_title; ?></h2></div>
             
-                <div class="flex items-center bg-gradient-to-r from-slate-50 to-white border border-slate-200 rounded-xl p-1 shadow-sm space-x-3">
+                <div class="app-user flex items-center bg-gradient-to-r from-slate-50 to-white border border-slate-200 rounded-xl p-1 shadow-sm space-x-3">
                     <div class="flex items-center space-x-2.5 pl-2">
                         <div class="w-8 h-8 rounded-lg bg-blue-600 flex items-center justify-center text-white text-xs font-bold uppercase shadow-sm">
                             <?php echo substr($current_user_username, 0, 2); ?>

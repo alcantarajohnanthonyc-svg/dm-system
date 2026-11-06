@@ -6,6 +6,7 @@ session_start();
 require_once 'config.php';
 require_once 'main.php';
 require_once 'email_template.php';
+require_once 'dm_period.php';
 
 if (!isset($_SESSION['user_id'])) {
     header("Location: login.php");
@@ -169,9 +170,8 @@ if (isset($_GET['action'])) {
             $curr_charge_v = isset($it['current_charges']) ? (float)$it['current_charges'] : 0.00;
             $total_current_charges += $curr_charge_v;
 
-            $dm_v = isset($it['debit_memo_details']) ? (float)$it['debit_memo_details'] : 0.00;
-            $ao_v = isset($it['add_ons']) ? (float)$it['add_ons'] : 0.00;
-            $final_dm_val = isset($it['final_dm']) ? (float)$it['final_dm'] : ($dm_v - $ao_v);
+            // 2025 & backward: Final DM | 2026 & forward: Final Excess Charges (see dm_period.php)
+            $final_dm_val = dm_final_amount($it);
             $total_final_dm += $final_dm_val;
 
             if (isset($it['approved_plan'])) {
@@ -598,9 +598,8 @@ if (isset($_GET['action'])) {
             $curr_charge_v = isset($it['current_charges']) ? (float)$it['current_charges'] : 0.00;
             $total_current_charges += $curr_charge_v;
 
-            $dm_v = isset($it['debit_memo_details']) ? (float)$it['debit_memo_details'] : 0.00;
-            $ao_v = isset($it['add_ons']) ? (float)$it['add_ons'] : 0.00;
-            $final_dm_val = isset($it['final_dm']) ? (float)$it['final_dm'] : ($dm_v - $ao_v);
+            // 2025 & backward: Final DM | 2026 & forward: Final Excess Charges (see dm_period.php)
+            $final_dm_val = dm_final_amount($it);
             $total_final_dm += $final_dm_val;
 
             if (isset($it['approved_plan'])) {
@@ -857,7 +856,11 @@ $filteredSubQuery = "
         MAX(dmi.coverage_end) AS end_date,
 
         SUM(
-            CAST(dmi.debit_memo_details AS DECIMAL(10,2))
+            CASE
+                WHEN dmi.coverage_start >= '" . DM_NEW_TEMPLATE_START . "'
+                THEN GREATEST(0, GREATEST(0, COALESCE(dmi.current_charges, 0) - COALESCE(dmi.approved_plan, 0)) - COALESCE(dmi.add_ons, 0))
+                ELSE COALESCE(CAST(dmi.debit_memo_details AS DECIMAL(12,2)), 0) - COALESCE(dmi.add_ons, 0)
+            END
         ) AS filtered_total,
 
         COUNT(DISTINCT dmi.id) AS total_items_count,
@@ -1347,7 +1350,7 @@ ob_start();
         <?php endforeach; ?>
 
     <span class="text-[11px] font-bold text-gray-500 uppercase">Show</span>
-    <select name="limit" onchange="this.form.submit()" class="px-1 py-1 border rounded-md text-xs bg-gray-50">
+    <select name="limit" onchange="dmSubmit(this.form)" class="px-1 py-1 border rounded-md text-xs bg-gray-50">
         <option value="20"  <?= $limit_input == '20'  ? 'selected' : '' ?>>20</option>
         <option value="50"  <?= $limit_input == '50'  ? 'selected' : '' ?>>50</option>
         <option value="100" <?= $limit_input == '100' ? 'selected' : '' ?>>100</option>
@@ -1406,20 +1409,20 @@ $base_query = http_build_query($current_params);
                     <th class="pl-6 py-3 w-10 sticky top-0 bg-gray-50 z-10">
                         <input type="checkbox" id="selectAll" onclick="toggleSelectAll(this)">
                     </th>
-                    <th class="py-3 px-2 sticky top-0 bg-gray-50 z-10 cursor-pointer hover:text-black" onclick="window.location='?sort=1&dir=<?= ($sort_dir == 'ASC' ? 'desc' : 'asc') . '&' . $base_query ?>'">
+                    <th class="py-3 px-2 sticky top-0 bg-gray-50 z-10 cursor-pointer hover:text-black" onclick="dmGo('?sort=1&dir=<?= ($sort_dir == 'ASC' ? 'desc' : 'asc') . '&' . $base_query ?>')">
                         Account Number &uarr;&darr;
                     </th>
-                    <th class="py-3 px-2 sticky top-0 bg-gray-50 z-10 cursor-pointer hover:text-black" onclick="window.location='?sort=2&dir=<?= ($sort_dir == 'ASC' ? 'desc' : 'asc') . '&' . $base_query ?>'">
+                    <th class="py-3 px-2 sticky top-0 bg-gray-50 z-10 cursor-pointer hover:text-black" onclick="dmGo('?sort=2&dir=<?= ($sort_dir == 'ASC' ? 'desc' : 'asc') . '&' . $base_query ?>')">
                         Company &uarr;&darr;
                     </th>
-                    <th class="py-3 px-2 sticky top-0 bg-gray-50 z-10 cursor-pointer hover:text-black" onclick="window.location='?sort=3&dir=<?= ($sort_dir == 'ASC' ? 'desc' : 'asc') . '&' . $base_query ?>'">
+                    <th class="py-3 px-2 sticky top-0 bg-gray-50 z-10 cursor-pointer hover:text-black" onclick="dmGo('?sort=3&dir=<?= ($sort_dir == 'ASC' ? 'desc' : 'asc') . '&' . $base_query ?>')">
                         Carrier &uarr;&darr;
                     </th>
-                    <th class="py-3 px-2 sticky top-0 bg-gray-50 z-10 cursor-pointer hover:text-black" onclick="window.location='?sort=4&dir=<?= ($sort_dir == 'ASC' ? 'desc' : 'asc') . '&' . $base_query ?>'">
+                    <th class="py-3 px-2 sticky top-0 bg-gray-50 z-10 cursor-pointer hover:text-black" onclick="dmGo('?sort=4&dir=<?= ($sort_dir == 'ASC' ? 'desc' : 'asc') . '&' . $base_query ?>')">
                         Date Covered &uarr;&darr;
                     </th>
-                    <th class="py-3 px-2 sticky top-0 bg-gray-50 z-10 text-right cursor-pointer hover:text-black" onclick="window.location='?sort=5&dir=<?= ($sort_dir == 'ASC' ? 'desc' : 'asc') . '&' . $base_query ?>'">
-                        PROCESSED DM &uarr;&darr;
+                    <th class="dm-final-th py-3 px-2 sticky top-0 bg-gray-50 z-10 text-center cursor-pointer hover:text-black" onclick="dmGo('?sort=5&dir=<?= ($sort_dir == 'ASC' ? 'desc' : 'asc') . '&' . $base_query ?>')">
+                        FINAL EXCESS CHARGES &uarr;&darr;
                     </th>
                     <th class="py-3 px-2 sticky top-0 bg-gray-50 z-10 text-center">SOA</th>
                     <th class="pr-3 py-3 sticky top-0 bg-gray-50 z-10 text-center">Actions</th>
@@ -1467,13 +1470,14 @@ $base_query = http_build_query($current_params);
                         }
                         ?>
                     </td>
-                    <td class="py-3 px-4 text-[11px] font-bold text-gray-500 uppercase whitespace-nowrap">
-                        <?= $row['start_date'] ? date('F d Y', strtotime($row['start_date'])) : '-' ?> <br> to <br> <?= $row['end_date'] ? date('F d Y', strtotime($row['end_date'])) : '-' ?>
+                    <td class="dm-date py-3 px-4 whitespace-nowrap">
+                        <?= $row['start_date'] ? date('M d Y', strtotime($row['start_date'])) : '-' ?><span class="dm-to">TO</span><?= $row['end_date'] ? date('M d Y', strtotime($row['end_date'])) : '-' ?>
                     </td>
-                    <td class="py-3 px-4 text-right font-bold text-rose-600">
+                    <td class="py-3 px-4 text-center">
                         <?php 
+                            // Final Excess Charges (<=2025: Final DM | 2026+: Final Excess Charges)
                             $total = isset($row['sum_debit_memo_details']) ? $row['sum_debit_memo_details'] : 0;
-                            echo '₱' . number_format($total, 2); 
+                            echo '<span class="bd-pill bd-pill-amber">₱' . number_format($total, 2) . '</span>';
                         ?>
                     </td>
                    <td class="py-3 px-4 text-center">
@@ -1508,70 +1512,118 @@ $base_query = http_build_query($current_params);
             </tbody>
         </table>
     </div>
+    <?php
+        $dm_from = $total_rows > 0 ? $offset + 1 : 0;
+        $dm_to   = $total_rows > 0 ? min($offset + count($memos), $total_rows) : 0;
+    ?>
+    <div class="dm-footer">
+        <div class="dm-footer-info">
+            <span class="dm-info-ico"><i class="las la-info"></i></span>
+            <span>Showing <?= $dm_from ?>&ndash;<?= $dm_to ?> of <?= number_format($total_rows) ?> records</span>
+        </div>
+        <div class="dm-pg">
+            <a href="?page=<?= max(1, $page - 1) ?>&<?= $query_params ?>" title="Previous"><i class="las la-angle-left"></i></a>
+            <span class="dm-pg-cur"><?= $page ?></span>
+            <a href="?page=<?= min($total_pages, $page + 1) ?>&<?= $query_params ?>" title="Next"><i class="las la-angle-right"></i></a>
+        </div>
+    </div>
 </div>
 
 <!-- BREAKDOWN MODAL -->
-<div id="breakdownModal" class="hidden fixed inset-0 bg-gray-600 bg-opacity-50 flex items-center justify-center z-50">
-    <div class="bg-white rounded-lg shadow-xl w-[98%] max-w-[1600px] max-h-[90vh] flex flex-col p-6">
-        <div class="flex justify-between items-start mb-4">
-            <div>
-                <h3 id="modalAccountNumber" class="font-bold text-xl"></h3>
-                <p id="modalCompany" class="text-sm text-gray-500"></p>
+<div id="breakdownModal" class="hidden fixed inset-0 flex items-center justify-center z-50">
+    <div class="bd-card w-[98%] max-w-[1600px] flex flex-col">
+        <div class="bd-head">
+            <div class="bd-id">
+                <div class="bd-avatar"><i class="las la-user"></i></div>
+                <div>
+                    <h3 id="modalAccountNumber"></h3>
+                    <p id="modalCompany"></p>
+                </div>
             </div>
-            <div class="flex gap-2">
+            <div class="bd-actions">
                 <?php if ($_SESSION['role'] === 'superadmin' || $_SESSION['role'] === 'admin'): ?>
-                    <button type="button" onclick="deleteSelectedItems()" class="px-4 py-2 bg-rose-50 text-rose-700 border border-rose-200 rounded-md text-xs font-bold hover:bg-rose-100">
-                        <i class="las la-trash mr-1"></i> DELETE SELECTED
-                    </button>
+                    <button type="button" onclick="deleteSelectedItems()" class="bd-btn bd-btn-soft"><i class="las la-trash"></i> DELETE SELECTED</button>
                 <?php endif; ?>
-                <button type="button" onclick="sendEmailBreakdownSelected()" class="bg-amber-600 text-white px-4 py-2 rounded text-xs font-bold hover:bg-amber-700 flex items-center gap-1">
-        <i class="las la-paper-plane text-sm"></i> SEND EMAIL
-    </button>
-
-                <button type="button" onclick="exportSelectedItems()" class="bg-green-600 text-white px-4 py-2 rounded text-xs font-bold hover:bg-green-700">
-                    EXPORT SELECTED
-                </button>
-                <button type="button" onclick="closeBreakdownModal(event)" class="bg-red-500 hover:bg-red-600 text-white px-4 py-2 rounded text-xs font-bold">
-                    CLOSE
-                </button>
+                <button type="button" onclick="sendEmailBreakdownSelected()" class="bd-btn bd-btn-warn"><i class="las la-paper-plane"></i> SEND EMAIL</button>
+                <button type="button" onclick="exportSelectedItems()" class="bd-btn bd-btn-ok"><i class="las la-download"></i> EXPORT SELECTED</button>
+                <button type="button" onclick="closeBreakdownModal(event)" class="bd-btn bd-btn-close"><i class="las la-times"></i> CLOSE</button>
             </div>
         </div>
 
-        <div class="overflow-x-auto border border-gray-300 rounded-lg flex-grow">
+        <!-- BREAKDOWN TABS -->
+        <div class="bd-tabs">
+            <button type="button" id="tabBreakdownLegacy" onclick="setBreakdownTab('legacy')" class="bd-tab" title="Coverage up to Dec 31, 2025 (old columns)"><i class="las la-calendar"></i> 2025 &ndash; LEGACY COMPUTATION <span id="cntBreakdownLegacy" class="bd-count"></span></button>
+            <button type="button" id="tabBreakdownNew" onclick="setBreakdownTab('new')" class="bd-tab active" title="Coverage from Jan 1, 2026 (new columns)"><i class="las la-calendar"></i> 2026 &ndash; UPDATED COMPUTATION <span id="cntBreakdownNew" class="bd-count"></span></button>
+            <div class="bd-search"><i class="las la-search"></i><input id="bdSearch" type="text" placeholder="Search records..." oninput="bdSearchChanged()" autocomplete="off"></div>
+        </div>
+
+        <div class="bd-panel">
+            <div class="bd-scroll">
             <table class="w-full text-left border-separate border-spacing-0 text-[10px]">
-                <thead class="text-black uppercase font-bold sticky top-0 z-10" style="background-color: #4A86E8;">
+                <thead id="theadNew" class="text-black uppercase font-bold sticky top-0 z-10">
+                    <tr>
+                        <th class="p-2 text-center" style="background-color: #6D9EEB;"><input type="checkbox" id="modalSelectAll" class="modal-select-all" onclick="toggleModalCheckboxes(this)"></th>
+                        <th class="p-2 whitespace-normal text-center" style="background-color: #FFE599;"><i class="las la-calendar bd-ico"></i>Coverage Date</th>
+                        <th class="p-2 whitespace-normal text-center" style="background-color: #FFE599;"><i class="las la-phone bd-ico"></i>Mobile Number</th>
+                        <th class="p-2 whitespace-normal text-center" style="background-color: #FFE599;"><i class="las la-file-alt bd-ico"></i>Approved Plan</th>
+                        <th class="p-2 whitespace-normal text-center" style="background-color: #6D9EEB;"><i class="las la-chart-bar bd-ico"></i>MSF (GLOBE / MRC (SMART)</th>
+                        <th class="p-2 whitespace-normal text-center" style="background-color: #6D9EEB;"><i class="las la-file-alt bd-ico"></i>OTHER CHARGES / PHONE AMORTIZATION</th>
+                        <th class="p-2 whitespace-normal text-center" style="background-color: #6D9EEB;"><i class="las la-phone bd-ico"></i>Local (Call/Text)</th>
+                        <th class="p-2 whitespace-normal text-center" style="background-color: #6D9EEB;"><i class="las la-envelope bd-ico"></i>NDD</th>
+                        <th class="p-2 whitespace-normal text-center" style="background-color: #6D9EEB;"><i class="las la-envelope bd-ico"></i>IDD</th>
+                        <th class="p-2 whitespace-normal text-center" style="background-color: #6D9EEB;"><i class="las la-wifi bd-ico"></i>Roam</th>
+                        <th class="p-2 whitespace-normal text-center" style="background-color: #6D9EEB;"><i class="las la-comment-dots bd-ico"></i>SMS</th>
+                        <th class="p-2 whitespace-normal text-center" style="background-color: #6D9EEB;"><i class="las la-cog bd-ico"></i>GPRS</th>
+                        <th class="p-2 whitespace-normal text-center" style="background-color: #6D9EEB;"><i class="las la-globe bd-ico"></i>Wiz Usage</th>
+                        <th class="p-2 whitespace-normal text-center" style="background-color: #6D9EEB;"><i class="las la-credit-card bd-ico"></i>Loading Charges</th>
+                        <th class="p-2 whitespace-normal text-center" style="background-color: #6D9EEB;"><i class="las la-credit-card bd-ico"></i>VAT</th>
+                        <th class="p-2 whitespace-normal text-center" style="background-color: #6D9EEB;"><i class="las la-calendar bd-ico"></i>OCT</th>
+                        <th class="p-2 whitespace-normal text-center" style="background-color: #6D9EEB;"><i class="las la-credit-card bd-ico"></i>Current Charges</th>
+                        <th class="p-2 whitespace-normal text-center" style="background-color: #93C47D;"><i class="las la-arrow-circle-up bd-ico"></i>EXCESS CHARGES<br><span class="text-[9px] font-semibold normal-case">(CURRENT CHARGES - APPROVED PLAN)</span></th>
+                        <th class="p-2 whitespace-normal text-center" style="background-color: #6D9EEB;"><i class="las la-plus-circle bd-ico"></i>ADD ONS<br><span class="text-[9px] font-semibold normal-case">(TELCO SYSTEM ERROR ADD ONS)</span></th>
+                        <th class="p-2 whitespace-normal text-center" style="background-color: #F7F700;"><i class="las la-star bd-ico"></i>FINAL EXCESS CHARGES<br><span class="text-[9px] font-semibold normal-case">(EXCESS CHARGES - ADD ONS)</span></th>
+                        <th class="p-2 whitespace-normal text-center" style="background-color: #6D9EEB;"><i class="las la-file-invoice bd-ico"></i>SOA</th>
+                        <th class="p-2 whitespace-normal text-center" style="background-color: #6D9EEB;"><i class="las la-sliders-h bd-ico"></i>ACTION</th>
+                    </tr>
+                </thead>
+                <thead id="theadLegacy" class="hidden text-black uppercase font-bold sticky top-0 z-10" style="background-color: #4A86E8;">
                     <tr class="border-b border-black">
-                        <th class="p-2 border border-gray-300 text-center"><input type="checkbox" id="modalSelectAll" onclick="toggleModalCheckboxes(this)"></th>
-                        <th class="p-2 border border-gray-300 whitespace-normal text-center" style="background-color: #FFE599;">Coverage Date</th>
-                        <th class="p-2 border border-gray-300 whitespace-normal text-center" style="background-color: #93C47D;">Mobile Number</th>
-                        <th class="p-2 border border-gray-300 whitespace-normal text-center" style="background-color: #93C47D;">Approved Plan</th>
-                        <th class="p-2 border border-gray-300 whitespace-normal text-center" style="background-color: #4A86E8;">MSF (GLOBE / MRC (SMART)</th>
-                        <th class="p-2 border border-gray-300 whitespace-normal text-center" style="background-color: #93C47D;">Debit Adj</th>
-                        <th class="p-2 border border-gray-300 whitespace-normal text-center" style="background-color: #93C47D;">Credit Adj</th>
-                        <th class="p-2 border border-gray-300 whitespace-normal text-center" style="background-color: #4A86E8;">OTHER CHARGES / PHONE AMORTIZATION</th>
-                        <th class="p-2 border border-gray-300 whitespace-normal text-center" style="background-color: #4A86E8;">Local (Call/Text)</th>
-                        <th class="p-2 border border-gray-300 whitespace-normal text-center" style="background-color: #4A86E8;">NDD (National)</th>
-                        <th class="p-2 border border-gray-300 whitespace-normal text-center" style="background-color: #4A86E8;">IDD (International)</th>
-                        <th class="p-2 border border-gray-300 whitespace-normal text-center" style="background-color: #4A86E8;">Roam</th>
-                        <th class="p-2 border border-gray-300 whitespace-normal text-center" style="background-color: #4A86E8;">SMS</th>
-                        <th class="p-2 border border-gray-300 whitespace-normal text-center" style="background-color: #4A86E8;">GPRS</th>
-                        <th class="p-2 border border-gray-300 whitespace-normal text-center" style="background-color: #4A86E8;">Wiz Usage</th>
-                        <th class="p-2 border border-gray-300 whitespace-normal text-center" style="background-color: #4A86E8;">Loading Charges</th>
-                        <th class="p-2 border border-gray-300 whitespace-normal text-center" style="background-color: #4A86E8;">VAT</th>
-                        <th class="p-2 border border-gray-300 whitespace-normal text-center" style="background-color: #4A86E8;">OCT</th>
-                        <th class="p-2 border border-gray-300 whitespace-normal text-center" style="background-color: #4A86E8;">Current Charges</th>
-                        <th class="p-2 border border-gray-300 whitespace-normal text-center" style="background-color: #4A86E8;">Total Amount Due</th>
-                        <th class="p-2 border border-gray-300 whitespace-normal text-center" style="background-color: #93C47D;">PROCESSED DM</th>
-                        <th class="p-2 border border-gray-300 whitespace-normal text-center" style="background-color: #93C47D;">SYSTEM GENERATED DM</th>
-                        <th class="p-2 border border-gray-300 whitespace-normal text-center" style="background-color: #F7F700;">DIFFERENCE<br><span class="text-[9px] font-normal">(PROCESSED DM - SYSTEM GENERATED DM)</span></th>
-                        <th class="p-2 border border-gray-300 whitespace-normal text-center" style="background-color: #93C47D;">ADD ONS</th>
-                        <th class="p-2 border border-gray-300 whitespace-normal text-center" style="background-color: #F7F700;">FINAL DM<br><span class="text-[9px] font-normal">(PROCESSED DM - ADD ONS)</span></th>
-                        <th class="p-2 border border-gray-300 whitespace-normal text-center" style="background-color: #93C47D;">SOA</th>
-                        <th class="p-2 border border-gray-300 text-center">ACTION</th>
+                        <th class="p-2 border border-gray-300 text-center"><input type="checkbox" class="modal-select-all" onclick="toggleModalCheckboxes(this)"></th>
+                        <th class="p-2 border border-gray-300 whitespace-normal text-center" style="background-color: #FFE599;"><i class="las la-calendar bd-ico"></i>Coverage Date</th>
+                        <th class="p-2 border border-gray-300 whitespace-normal text-center" style="background-color: #FFE599;"><i class="las la-phone bd-ico"></i>Mobile Number</th>
+                        <th class="p-2 border border-gray-300 whitespace-normal text-center" style="background-color: #FFE599;"><i class="las la-file-alt bd-ico"></i>Approved Plan</th>
+                        <th class="p-2 border border-gray-300 whitespace-normal text-center" style="background-color: #4A86E8;"><i class="las la-chart-bar bd-ico"></i>MSF (GLOBE / MRC (SMART)</th>
+                        <th class="p-2 border border-gray-300 whitespace-normal text-center" style="background-color: #4A86E8;"><i class="las la-plus-circle bd-ico"></i>Debit Adj</th>
+                        <th class="p-2 border border-gray-300 whitespace-normal text-center" style="background-color: #4A86E8;"><i class="las la-minus-circle bd-ico"></i>Credit Adj</th>
+                        <th class="p-2 border border-gray-300 whitespace-normal text-center" style="background-color: #4A86E8;"><i class="las la-file-alt bd-ico"></i>OTHER CHARGES / PHONE AMORTIZATION</th>
+                        <th class="p-2 border border-gray-300 whitespace-normal text-center" style="background-color: #4A86E8;"><i class="las la-phone bd-ico"></i>Local (Call/Text)</th>
+                        <th class="p-2 border border-gray-300 whitespace-normal text-center" style="background-color: #4A86E8;"><i class="las la-envelope bd-ico"></i>NDD (National)</th>
+                        <th class="p-2 border border-gray-300 whitespace-normal text-center" style="background-color: #4A86E8;"><i class="las la-envelope bd-ico"></i>IDD (International)</th>
+                        <th class="p-2 border border-gray-300 whitespace-normal text-center" style="background-color: #4A86E8;"><i class="las la-wifi bd-ico"></i>Roam</th>
+                        <th class="p-2 border border-gray-300 whitespace-normal text-center" style="background-color: #4A86E8;"><i class="las la-comment-dots bd-ico"></i>SMS</th>
+                        <th class="p-2 border border-gray-300 whitespace-normal text-center" style="background-color: #4A86E8;"><i class="las la-cog bd-ico"></i>GPRS</th>
+                        <th class="p-2 border border-gray-300 whitespace-normal text-center" style="background-color: #4A86E8;"><i class="las la-globe bd-ico"></i>Wiz Usage</th>
+                        <th class="p-2 border border-gray-300 whitespace-normal text-center" style="background-color: #4A86E8;"><i class="las la-credit-card bd-ico"></i>Loading Charges</th>
+                        <th class="p-2 border border-gray-300 whitespace-normal text-center" style="background-color: #4A86E8;"><i class="las la-credit-card bd-ico"></i>VAT</th>
+                        <th class="p-2 border border-gray-300 whitespace-normal text-center" style="background-color: #4A86E8;"><i class="las la-calendar bd-ico"></i>OCT</th>
+                        <th class="p-2 border border-gray-300 whitespace-normal text-center" style="background-color: #4A86E8;"><i class="las la-credit-card bd-ico"></i>Current Charges</th>
+                        <th class="p-2 border border-gray-300 whitespace-normal text-center" style="background-color: #4A86E8;"><i class="las la-money-bill-wave bd-ico"></i>Total Amount Due</th>
+                        <th class="p-2 border border-gray-300 whitespace-normal text-center" style="background-color: #93C47D;"><i class="las la-file-invoice-dollar bd-ico"></i>PROCESSED DM</th>
+                        <th class="p-2 border border-gray-300 whitespace-normal text-center" style="background-color: #93C47D;"><i class="las la-cogs bd-ico"></i>SYSTEM GENERATED DM</th>
+                        <th class="p-2 border border-gray-300 whitespace-normal text-center" style="background-color: #F7F700;"><i class="las la-balance-scale bd-ico"></i>DIFFERENCE<br><span class="text-[9px] font-normal">(PROCESSED DM - SYSTEM GENERATED DM)</span></th>
+                        <th class="p-2 border border-gray-300 whitespace-normal text-center" style="background-color: #6D9EEB;"><i class="las la-plus-circle bd-ico"></i>ADD ONS</th>
+                        <th class="p-2 border border-gray-300 whitespace-normal text-center" style="background-color: #F7F700;"><i class="las la-star bd-ico"></i>FINAL DM<br><span class="text-[9px] font-normal">(PROCESSED DM - ADD ONS)</span></th>
+                        <th class="p-2 border border-gray-300 whitespace-normal text-center" style="background-color: #93C47D;"><i class="las la-file-invoice bd-ico"></i>SOA</th>
+                        <th class="p-2 border border-gray-300 text-center"><i class="las la-sliders-h bd-ico"></i>ACTION</th>
                     </tr>
                 </thead>
                 <tbody id="modalContentBody"></tbody>
             </table>
+            </div>
+            <div class="bd-footer">
+                <div class="bd-footer-info"><span class="bd-info-ico"><i class="las la-info"></i></span><span id="bdShowing">Showing 0 records</span></div>
+                <div class="bd-pager" id="bdPager"></div>
+            </div>
         </div>
     </div>
 </div>
@@ -1685,6 +1737,7 @@ $base_query = http_build_query($current_params);
                         'vat' => 'VAT', 
                         'oct' => 'Overseas Comm. Tax',
                         'current_charges' => 'Current Charges', 
+                        'excess_charges' => 'Excess Charges (Current - Approved Plan)',
                         'total_amount_due' => 'Total Amount Due',
                         'debit_memo_details' => 'Processed DM',
                         'system_generated_dm' => 'System Generated DM',
@@ -1694,18 +1747,18 @@ $base_query = http_build_query($current_params);
                     ];
 
                     foreach ($amounts as $name => $label): 
-                        $isComputed = in_array($name, ['difference', 'final_dm', 'system_generated_dm']);
+                        $isComputed = in_array($name, ['difference', 'final_dm', 'system_generated_dm', 'excess_charges']);
                         $isProcessed = ($name === 'debit_memo_details');
                         
                         $bgClass = 'bg-white';
                         if ($isComputed) $bgClass = 'bg-yellow-50/60 border-yellow-200/80';
                         if ($isProcessed) $bgClass = 'bg-emerald-50/60 border-emerald-200/80';
                     ?>
-                        <div class="p-2.5 rounded-lg border border-slate-200/80 <?= $bgClass ?>">
-                            <label class="block text-[10px] font-bold text-slate-500 uppercase tracking-tight mb-1 leading-snug"><?= $label ?></label>
+                        <div data-field="<?= $name ?>" class="p-2.5 rounded-lg border border-slate-200/80 <?= $bgClass ?>">
+                            <label data-lbl="<?= $name ?>" class="block text-[10px] font-bold text-slate-500 uppercase tracking-tight mb-1 leading-snug"><?= $label ?></label>
                             <input type="number" step="0.01" name="<?= $name ?>" id="field_<?= $name ?>" 
                                    class="w-full p-2 bg-white border border-slate-200 rounded-md text-xs font-semibold text-slate-700 focus:ring-2 focus:ring-slate-900 focus:outline-none transition" 
-                                   value="0.00" <?= ($name === 'difference' || $name === 'final_dm') ? 'readonly tabindex="-1"' : '' ?>>
+                                   value="0.00" <?= ($name === 'difference' || $name === 'final_dm' || $name === 'excess_charges') ? 'readonly tabindex="-1"' : '' ?>>
                         </div>
                     <?php endforeach; ?>
                 </div>
@@ -1909,11 +1962,13 @@ $base_query = http_build_query($current_params);
     </div>
 </div>
 
-<!-- 4. FULL-PAGE LOADER OVERLAY -->
-<div id="pageLoaderOverlay" style="display: none;" class="fixed inset-0 z-[999999] flex flex-col items-center justify-center bg-slate-900/60 backdrop-blur-sm">
-    <div class="bg-white p-6 rounded-2xl shadow-2xl flex flex-col items-center space-y-3 border border-slate-100">
-        <i class="las la-spinner animate-spin text-4xl text-amber-600"></i>
-        <p class="text-xs font-bold text-slate-700 tracking-wide uppercase">Processing accounts, please wait...</p>
+<!-- 4. FULL-PAGE LOADER OVERLAY (showLoader / hideLoader) -->
+<div id="pageLoaderOverlay" style="display: none;" class="app-loader" role="status" aria-live="polite">
+    <div class="app-loader-card">
+        <div class="app-loader-ring"></div>
+        <p id="pageLoaderText" class="app-loader-text">Loading, please wait...</p>
+        <p class="app-loader-sub">Please don't close or refresh this page.</p>
+        <div class="app-loader-bar"><span></span></div>
     </div>
 </div>
 
@@ -2116,7 +2171,9 @@ function executeUnifiedExport(format) {
             a.href = url;
             a.download = "Export_" + new Date().getTime() + ".zip";
             a.click();
-        });
+        })
+        .catch(() => alert('Export failed. Please try again.'))
+        .finally(hideLoader);
 
     } else if (currentExportContext === 'breakdown_selected' || currentExportContext === 'breakdown_single') {
         let ids = [];
@@ -2124,7 +2181,7 @@ function executeUnifiedExport(format) {
             ids = Array.from(document.querySelectorAll('.item-checkbox:checked')).map(cb => cb.value);
         }
         let target = 'export_breakdown_pdf.php';
-        window.location.href = target + '?type=' + format + '&dm_id=' + activeDmId + (ids.length ? '&item_ids=' + ids.join(',') : '') + '&start_date=' + startDate + '&end_date=' + endDate;
+        window.location.href = target + '?type=' + format + '&dm_id=' + activeDmId + (ids.length ? '&item_ids=' + ids.join(',') : '') + '&start_date=' + startDate + '&end_date=' + endDate + '&period=' + activeBreakdownPeriod;
     }
 }
 
@@ -2141,27 +2198,197 @@ function openBreakdownModal(event, dm_id, accountNum, company, assignee) {
         modal.classList.remove('hidden');
     }
 
-    document.getElementById('modalAccountNumber').innerText = "Account Number: " + accountNum;
-    document.getElementById('modalCompany').innerText = "Company: " + company;
+    // Only overwrite the header when called with real values (re-loads after delete pass blanks)
+    if (accountNum) {
+        document.getElementById('modalAccountNumber').innerText = "Account Number: " + accountNum;
+        document.getElementById('modalCompany').innerText = "Company: " + company;
+    }
+
+    // Fresh open -> auto-select the tab that has data (2026 & forward first; falls back to 2025 & backward
+    // when only older data exists). A re-load (event === null) keeps the current tab.
+    if (event) {
+        bdShowLoading();
+        pickInitialBreakdownTab();
+    } else {
+        setBreakdownTab(activeBreakdownPeriod);
+    }
+}
+
+function breakdownDateRange() {
+    const startDateInput = document.querySelector('input[name="start_date"]');
+    const endDateInput = document.querySelector('input[name="end_date"]');
+    return {
+        start: startDateInput ? startDateInput.value : '',
+        end: endDateInput ? endDateInput.value : ''
+    };
+}
+
+// Row counts per tab -> shown on the tab buttons; resolves with {new, legacy}
+function fetchBreakdownCounts() {
+    const r = breakdownDateRange();
+    return fetch('get_breakdown.php?counts=1&dm_id=' + activeDmId +
+                 '&start=' + encodeURIComponent(r.start) + '&end=' + encodeURIComponent(r.end))
+        .then(res => res.json())
+        .then(c => {
+            const n = document.getElementById('cntBreakdownNew');
+            const l = document.getElementById('cntBreakdownLegacy');
+            if (n) n.textContent = c.new;
+            if (l) l.textContent = c.legacy;
+            return c;
+        });
+}
+
+// ---- Loading helpers: one themed overlay for every slow action ----
+let loaderFailsafe = null;
+function showLoader(msg, maxMs) {
+    const ov = document.getElementById('pageLoaderOverlay');
+    if (!ov) return;
+    const t = document.getElementById('pageLoaderText');
+    if (t) t.textContent = msg || 'Loading, please wait...';
+    ov.style.display = 'flex';
+    clearTimeout(loaderFailsafe);
+    loaderFailsafe = setTimeout(hideLoader, maxMs || 120000);   // never leave the user stuck behind the overlay
+}
+function hideLoader() {
+    const ov = document.getElementById('pageLoaderOverlay');
+    if (ov) ov.style.display = 'none';
+    clearTimeout(loaderFailsafe);
+}
+function dmGo(url) { showLoader('Loading records...'); window.location.href = url; }
+function dmSubmit(form) { showLoader('Loading records...'); form.submit(); }
+
+// Page navigation (search, filters, sort, paging, reset): show the loader while the next page loads
+document.addEventListener('submit', function (e) {
+    const f = e.target;
+    if (e.defaultPrevented || !f || f.target === '_blank') return;
+    if ((f.getAttribute('method') || 'get').toLowerCase() === 'get') showLoader('Loading records...');
+});
+document.addEventListener('click', function (e) {
+    if (e.defaultPrevented || e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey) return;
+    const a = e.target.closest ? e.target.closest('a[href]') : null;
+    if (!a || a.target === '_blank' || a.hasAttribute('download')) return;
+    if (/^(\?|list_dm\.php)/.test(a.getAttribute('href') || '')) showLoader('Loading records...');
+});
+window.addEventListener('pageshow', hideLoader);   // coming back with the browser Back button
+
+// Breakdown table: spinner row while loading, retry row on failure
+function bdShowLoading(msg) {
+    const body = document.getElementById('modalContentBody');
+    if (body) body.innerHTML = '<tr><td colspan="30" class="bd-loading"><span class="bd-spin"></span><span>' + (msg || 'Loading records...') + '</span></td></tr>';
+    const box = document.getElementById('bdSearch');
+    if (box) box.value = '';
+    const showing = document.getElementById('bdShowing');
+    if (showing) showing.textContent = 'Loading records...';
+    const pager = document.getElementById('bdPager');
+    if (pager) pager.innerHTML = '';
+}
+function bdShowError() {
+    const body = document.getElementById('modalContentBody');
+    if (body) body.innerHTML = '<tr><td colspan="30" class="bd-loading bd-error">Could not load the records. <button type="button" class="bd-retry" onclick="setBreakdownTab(activeBreakdownPeriod)">Retry</button></td></tr>';
+    const showing = document.getElementById('bdShowing');
+    if (showing) showing.textContent = 'Failed to load records';
+}
+
+// ---- Breakdown: client-side search + paging (10 rows per page) ----
+let bdPage = 1;
+const BD_PAGE_SIZE = 10;
+
+function bdRows() {
+    return Array.from(document.querySelectorAll('#modalContentBody tr')).filter(tr => tr.querySelector('.item-checkbox'));
+}
+function bdSearchChanged() { bdPage = 1; bdRefresh(); }
+function bdGo(p) { bdPage = p; bdRefresh(); }
+
+function bdRefresh(resetPage) {
+    if (resetPage) bdPage = 1;
+    const box = document.getElementById('bdSearch');
+    const q = box ? box.value.trim().toLowerCase() : '';
+    const rows = bdRows();
+    const matched = rows.filter(tr => q === '' || tr.textContent.toLowerCase().indexOf(q) !== -1);
+    const total = matched.length;
+    const pages = Math.max(1, Math.ceil(total / BD_PAGE_SIZE));
+    if (bdPage > pages) bdPage = pages;
+    if (bdPage < 1) bdPage = 1;
+    const from = (bdPage - 1) * BD_PAGE_SIZE;
+    const to = from + BD_PAGE_SIZE;
+
+    rows.forEach(tr => { tr.style.display = 'none'; });
+    matched.forEach((tr, i) => { if (i >= from && i < to) tr.style.display = ''; });
+
+    const showing = document.getElementById('bdShowing');
+    if (showing) {
+        showing.textContent = total === 0
+            ? (rows.length ? 'No matching records' : 'Showing 0 records')
+            : 'Showing ' + (from + 1) + '\u2013' + Math.min(to, total) + ' of ' + total + ' records';
+    }
+
+    const pager = document.getElementById('bdPager');
+    if (!pager) return;
+    if (total <= BD_PAGE_SIZE) { pager.innerHTML = ''; return; }
+    let start = Math.max(1, bdPage - 2);
+    let end = Math.min(pages, start + 4);
+    start = Math.max(1, end - 4);
+    let h = '<button type="button" class="bd-pg" ' + (bdPage === 1 ? 'disabled' : '') + ' onclick="bdGo(' + (bdPage - 1) + ')"><i class="las la-angle-left"></i></button>';
+    for (let i = start; i <= end; i++) {
+        h += '<button type="button" class="bd-pg' + (i === bdPage ? ' active' : '') + '" onclick="bdGo(' + i + ')">' + i + '</button>';
+    }
+    h += '<button type="button" class="bd-pg" ' + (bdPage === pages ? 'disabled' : '') + ' onclick="bdGo(' + (bdPage + 1) + ')"><i class="las la-angle-right"></i></button>';
+    pager.innerHTML = h;
+}
+
+function pickInitialBreakdownTab() {
+    fetchBreakdownCounts()
+        .then(c => setBreakdownTab((c.new === 0 && c.legacy > 0) ? 'legacy' : 'new', true))
+        .catch(() => setBreakdownTab('new'));
+}
+
+// ---- Breakdown tabs: 'new' = 2026 & forward (new template), 'legacy' = 2025 & backward ----
+let activeBreakdownPeriod = 'new';
+
+function setBreakdownTab(period, skipCounts) {
+    activeBreakdownPeriod = (period === 'legacy') ? 'legacy' : 'new';
+    const isLegacy = activeBreakdownPeriod === 'legacy';
+
+    const tabNew = document.getElementById('tabBreakdownNew');
+    const tabOld = document.getElementById('tabBreakdownLegacy');
+    if (tabNew && tabOld) {
+        tabNew.classList.toggle('active', !isLegacy);
+        tabOld.classList.toggle('active', isLegacy);
+    }
+
+    document.getElementById('theadNew').classList.toggle('hidden', isLegacy);
+    document.getElementById('theadLegacy').classList.toggle('hidden', !isLegacy);
+    document.querySelectorAll('.modal-select-all').forEach(chk => { chk.checked = false; });
+
+    bdShowLoading();
+
+    if (!skipCounts) { fetchBreakdownCounts().catch(() => {}); }
 
     const startDateInput = document.querySelector('input[name="start_date"]');
     const endDateInput = document.querySelector('input[name="end_date"]');
     const startDate = startDateInput ? startDateInput.value : '';
     const endDate = endDateInput ? endDateInput.value : '';
 
-    fetch('get_breakdown.php?dm_id=' + dm_id + '&start=' + encodeURIComponent(startDate) + '&end=' + encodeURIComponent(endDate))
+    fetch('get_breakdown.php?dm_id=' + activeDmId + '&period=' + activeBreakdownPeriod +
+          '&start=' + encodeURIComponent(startDate) + '&end=' + encodeURIComponent(endDate))
     .then(response => response.text())
     .then(html => {
         document.getElementById('modalContentBody').innerHTML = html;
+        bdRefresh(true);
     })
     .catch(err => {
         console.error("Fetch error:", err);
+        bdShowError();
     });
 }
 
 function toggleModalCheckboxes(source) {
-    const checkboxes = document.querySelectorAll('.item-checkbox');
-    checkboxes.forEach(checkbox => checkbox.checked = source.checked);
+    // Only the rows currently shown (search / page) - hidden rows are never selected by "select all"
+    document.querySelectorAll('#modalContentBody tr').forEach(tr => {
+        if (tr.style.display === 'none') return;
+        const cb = tr.querySelector('.item-checkbox');
+        if (cb) cb.checked = source.checked;
+    });
 }
 
 function toggleSelectAll(source) {
@@ -2194,6 +2421,7 @@ function deleteSelectedItems() {
 
     const ids = Array.from(checkedBoxes).map(cb => cb.value);
 
+    showLoader('Deleting records...');
     fetch('delete_bulk_dm.php', {
         method: 'POST',
         headers: {'Content-Type': 'application/x-www-form-urlencoded'},
@@ -2220,12 +2448,15 @@ function deleteSelectedItems() {
                     totalDisplay.innerText = '₱' + data.new_total;
                 }
                 checkedBoxes.forEach(cb => cb.closest('tr').remove());
+                bdRefresh();
+                fetchBreakdownCounts().catch(() => {});
             }
         } else {
             alert('Error: ' + data.message);
         }
     })
-    .catch(error => console.error('Fetch Error:', error));
+    .catch(error => console.error('Fetch Error:', error))
+    .finally(hideLoader);
 }
 
 function closeBreakdownModal(event) {
@@ -2295,11 +2526,17 @@ document.addEventListener('focusout', function(e) {
 function loadBreakdown(dm_id) {
     activeDmId = dm_id;
     const timestamp = new Date().getTime();
-    fetch('get_breakdown.php?dm_id=' + dm_id + '&t=' + timestamp)
+    bdShowLoading();
+    fetch('get_breakdown.php?dm_id=' + dm_id + '&period=' + activeBreakdownPeriod + '&t=' + timestamp)
     .then(response => response.text())
     .then(html => {
         document.getElementById('modalContentBody').innerHTML = html;
         document.getElementById('breakdownModal').classList.remove('hidden');
+        bdRefresh();
+    })
+    .catch(err => {
+        console.error("Fetch error:", err);
+        bdShowError();
     });
 }
 
@@ -2338,6 +2575,7 @@ document.getElementById('addEditForm').addEventListener('submit', function(e) {
 
     submitBtn.innerText = "SAVING...";
     submitBtn.disabled = true;
+    showLoader('Saving record...');
 
     const formElement = this;
 
@@ -2349,6 +2587,7 @@ document.getElementById('addEditForm').addEventListener('submit', function(e) {
     .then(data => {
         submitBtn.innerText = originalText;
         submitBtn.disabled = false;
+        hideLoader();
 
         if (data.status === 'success') {
             closeModal();
@@ -2361,6 +2600,7 @@ document.getElementById('addEditForm').addEventListener('submit', function(e) {
             if (typeof activeDmId !== 'undefined' && activeDmId > 0) {
                 loadBreakdown(activeDmId);
             } else {
+                showLoader('Refreshing list...');
                 window.location.reload();
             }
         } else {
@@ -2372,6 +2612,7 @@ document.getElementById('addEditForm').addEventListener('submit', function(e) {
         alert("An unexpected error occurred.");
         submitBtn.innerText = originalText;
         submitBtn.disabled = false;
+        hideLoader();
     });
 });
 
@@ -2386,12 +2627,14 @@ function openAddEditModal(dm_id = '') {
     document.getElementById('modalFormTitle').innerText = "Add Debit Memo Item";
     document.getElementById('form_dm_id').value = dm_id;
     document.getElementById('addEditModal').classList.remove('hidden');
+    calculateEditModalValues();
 }
 
 function editBreakdownItem(itemId) {
     hasChanges = true;
+    showLoader('Loading record...', 20000);
     fetch('get_item_data.php?id=' + itemId)
-    .then(res => res.text())
+    .then(res => { hideLoader(); return res.text(); }, err => { hideLoader(); alert('Could not load the record. Please try again.'); throw err; })
     .then(text => {
         let data;
         try {
@@ -2472,6 +2715,7 @@ function deleteSelected() {
     let formData = new FormData();
     formData.append('dm_ids', ids.join(','));
 
+    showLoader('Deleting accounts...');
     fetch('delete_bulk_accounts.php', {
         method: 'POST',
         body: formData
@@ -2484,7 +2728,9 @@ function deleteSelected() {
         } else {
             alert("Error: " + data.message);
         }
-    });
+    })
+    .catch(err => { console.error(err); alert("Request failed. Please try again."); })
+    .finally(hideLoader);
 }
 
 function checkDownloadCookie() {
@@ -2495,48 +2741,96 @@ function checkDownloadCookie() {
         if (selectAllChk) selectAllChk.checked = false;
 
         document.querySelectorAll('.item-checkbox').forEach(chk => { chk.checked = false; });
-        const modalSelectAllChk = document.getElementById('modalSelectAll');
-        if (modalSelectAllChk) modalSelectAllChk.checked = false;
+        document.querySelectorAll('.modal-select-all').forEach(chk => { chk.checked = false; });
 
         clearInterval(downloadTimer);
+        hideLoader();
     }
 }
 
 const originalExecuteUnifiedExport = window.executeUnifiedExport;
 if (typeof executeUnifiedExport === 'function') {
     window.executeUnifiedExport = function(format) {
+        showLoader('Preparing your export...', 300000);
         originalExecuteUnifiedExport(format);
         downloadTimer = setInterval(checkDownloadCookie, 500);
     };
+}
+
+// Coverage starting 2026-01-01 or later uses the new template (no Debit/Credit Adj, Total Amount Due,
+// Processed DM, System Generated DM or Difference). Must match DM_NEW_TEMPLATE_START in dm_period.php.
+const DM_NEW_TEMPLATE_START = '2026-01-01';
+const DM_LEGACY_ONLY_FIELDS = ['debit_adj', 'credit_adj', 'total_amount_due', 'debit_memo_details', 'system_generated_dm', 'difference'];
+const DM_NEW_ONLY_FIELDS = ['excess_charges'];
+
+function isNewTemplateForm(form) {
+    const startInput = form.querySelector('input[name="coverage_start"]');
+    const start = startInput ? startInput.value : '';
+    return (start === '' || start >= DM_NEW_TEMPLATE_START);   // blank date on a new record -> new template
+}
+
+function applyFormMode(form, isNew) {
+    DM_LEGACY_ONLY_FIELDS.forEach(n => {
+        const box = form.querySelector('[data-field="' + n + '"]');
+        if (box) box.classList.toggle('hidden', isNew);
+    });
+    DM_NEW_ONLY_FIELDS.forEach(n => {
+        const box = form.querySelector('[data-field="' + n + '"]');
+        if (box) box.classList.toggle('hidden', !isNew);
+    });
+    const finalLbl = form.querySelector('[data-lbl="final_dm"]');
+    if (finalLbl) finalLbl.textContent = isNew ? 'Final Excess Charges (Excess - Add Ons)' : 'Final DM (Proc - Add)';
+    const aoLbl = form.querySelector('[data-lbl="add_ons"]');
+    if (aoLbl) aoLbl.textContent = isNew ? 'Add Ons (Telco System Error)' : 'Add Ons';
 }
 
 function calculateEditModalValues() {
     const form = document.getElementById('addEditForm');
     if (!form) return;
 
+    const isNew = isNewTemplateForm(form);
+    applyFormMode(form, isNew);
+
     let approvedPlan = parseFloat(form.querySelector('input[name="approve_plan"]').value) || 0;
     let currentCharges = parseFloat(form.querySelector('input[name="current_charges"]').value) || 0;
-    let processedDm = parseFloat(form.querySelector('input[name="debit_memo_details"]').value) || 0;
     let addOns = parseFloat(form.querySelector('input[name="add_ons"]').value) || 0;
 
-    let systemGeneratedDm = Math.max(0, currentCharges - approvedPlan); 
-    let difference = Math.max(0, processedDm - systemGeneratedDm);      
-    let finalDm = processedDm - addOns;                                 
+    const setVal = (name, v) => {
+        const el = form.querySelector('input[name="' + name + '"]');
+        if (el) el.value = v.toFixed(2);
+    };
 
-    const sysGenInput = form.querySelector('input[name="system_generated_dm"]');
-    const diffInput = form.querySelector('input[name="difference"]');
-    const finalInput = form.querySelector('input[name="final_dm"]');
+    if (isNew) {
+        // 2026 & forward:  Excess = Current - Approved Plan ;  Final Excess = Excess - Add Ons  (both floored at 0)
+        const excess = Math.max(0, currentCharges - approvedPlan);
+        const finalExcess = Math.max(0, excess - addOns);
 
-    if (sysGenInput) sysGenInput.value = systemGeneratedDm.toFixed(2);
-    if (diffInput) diffInput.value = difference.toFixed(2);
-    if (finalInput) finalInput.value = finalDm.toFixed(2);
+        setVal('excess_charges', excess);
+        setVal('final_dm', finalExcess);
+        // Hidden compatibility fields: keep the list's DM total (sum of debit_memo_details) meaningful
+        setVal('debit_memo_details', excess);
+        setVal('system_generated_dm', excess);
+        setVal('difference', 0);
+    } else {
+        // 2025 & backward: unchanged
+        let processedDm = parseFloat(form.querySelector('input[name="debit_memo_details"]').value) || 0;
+        let systemGeneratedDm = Math.max(0, currentCharges - approvedPlan);
+        let difference = Math.max(0, processedDm - systemGeneratedDm);
+        let finalDm = processedDm - addOns;
+
+        setVal('system_generated_dm', systemGeneratedDm);
+        setVal('difference', difference);
+        setVal('final_dm', finalDm);
+    }
 }
 
-['approve_plan', 'current_charges', 'debit_memo_details', 'add_ons'].forEach(name => {
+['approve_plan', 'current_charges', 'debit_memo_details', 'add_ons', 'coverage_start'].forEach(name => {
     const el = document.querySelector(`input[name="${name}"]`);
     if (el) {
         el.removeEventListener('input', calculateEditModalValues);
         el.addEventListener('input', calculateEditModalValues);
+        el.removeEventListener('change', calculateEditModalValues);
+        el.addEventListener('change', calculateEditModalValues);
     }
 });
 
@@ -2579,7 +2873,7 @@ function sendEmailSelected() {
     let globalStart = document.querySelector('input[name="start_date"]')?.value || '';
     let globalEnd = document.querySelector('input[name="end_date"]')?.value || '';
 
-    document.getElementById('pageLoaderOverlay').style.display = 'flex';
+    showLoader('Preparing email preview...');
 
     (async () => {
         try {
@@ -2598,11 +2892,11 @@ function sendEmailSelected() {
             if (allAccounts.length > 0) {
                 openBulkEmailReviewModal(allAccounts);
             } else {
-                document.getElementById('pageLoaderOverlay').style.display = 'none';
+                hideLoader();
                 alert("No matching email records found.");
             }
         } catch (err) {
-            document.getElementById('pageLoaderOverlay').style.display = 'none';
+            hideLoader();
             alert("Error: " + err.message);
         }
     })();
@@ -2623,7 +2917,7 @@ async function dmFetchJson(url, options) {
 }
 
 function openBulkEmailReviewModal(accountsList) {
-    document.getElementById('pageLoaderOverlay').style.display = 'none';
+    hideLoader();
     bulkAccountsCache = accountsList;
     renderBulkReviewTable();
     document.getElementById('bulkSummaryCount').innerText = `${accountsList.length} accounts loaded for review`;
@@ -2939,7 +3233,7 @@ async function executeDispatchFetch(formData, countNum) {
     let subjects = JSON.parse(formData.get('bulk_subjects') || '[]');
     let bodies = JSON.parse(formData.get('bulk_bodies') || '[]');
 
-    const chunkSize = 10;
+    const chunkSize = 25;   // accounts per request: bigger = fewer SMTP reconnects (keep <= ~30 to stay under the server time limit)
     let totalProcessed = 0;
     let totalSuccess = 0;
     let totalFail = 0;
@@ -3181,7 +3475,7 @@ function processPasteEmailHub() {
     }
     
     closeEmailHubModal();
-    document.getElementById('pageLoaderOverlay').style.display = 'flex';
+    showLoader('Looking up accounts...');
 
     // BAGONG URL: list_dm.php
     fetch('list_dm.php?action=get_dm_ids_by_paste', {
@@ -3201,12 +3495,12 @@ function processPasteEmailHub() {
         if (data.status === 'success' && data.accounts && data.accounts.length > 0) {
             openBulkEmailReviewModal(data.accounts);
         } else {
-            document.getElementById('pageLoaderOverlay').style.display = 'none';
+            hideLoader();
             alert("No matching records found for the pasted list.");
         }
     })
     .catch(err => {
-        document.getElementById('pageLoaderOverlay').style.display = 'none';
+        hideLoader();
         alert("An error occurred: " + err.message);
     });
 }
@@ -3219,7 +3513,7 @@ function processCsvEmailHub() {
     }
     
     closeEmailHubModal();
-    document.getElementById('pageLoaderOverlay').style.display = 'flex';
+    showLoader('Reading your CSV file...');
     
     const formData = new FormData();
     formData.append('csv_file', fileInput.files[0]);
@@ -3237,12 +3531,12 @@ function processCsvEmailHub() {
         if (data.status === 'success' && data.accounts && data.accounts.length > 0) {
             openBulkEmailReviewModal(data.accounts);
         } else {
-            document.getElementById('pageLoaderOverlay').style.display = 'none';
+            hideLoader();
             alert("No valid records found in the uploaded CSV file.");
         }
     })
     .catch(err => {
-        document.getElementById('pageLoaderOverlay').style.display = 'none';
+        hideLoader();
         alert("An error occurred: " + err.message);
     });
 }
@@ -3269,7 +3563,7 @@ function sendEmailBreakdownSelected() {
     const accountText = document.getElementById('modalAccountNumber').innerText;
     const accountNumber = accountText.replace('Account Number:', '').trim();
 
-    document.getElementById('pageLoaderOverlay').style.display = 'flex';
+    showLoader('Loading email preview...');
 
     fetch(`list_dm.php?action=get_email_preview&dm_id=${activeDmId}&item_ids=${itemIds}&start_date=${startDate}&end_date=${endDate}`)
     .then(async res => {
@@ -3277,7 +3571,7 @@ function sendEmailBreakdownSelected() {
         try { return JSON.parse(text); } catch (e) { throw new Error("Server returned non-JSON response."); }
     })
     .then(data => {
-        document.getElementById('pageLoaderOverlay').style.display = 'none';
+        hideLoader();
 
         if (data.status === 'success') {
             // ISINAMA ANG item_ids SA CACHE
@@ -3299,7 +3593,7 @@ function sendEmailBreakdownSelected() {
         }
     })
     .catch(err => {
-        document.getElementById('pageLoaderOverlay').style.display = 'none';
+        hideLoader();
         alert("Error: " + err.message);
     });
 }

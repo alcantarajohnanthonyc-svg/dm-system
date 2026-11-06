@@ -26,6 +26,11 @@ if ($zip->open($zip_path, ZipArchive::CREATE | ZipArchive::OVERWRITE) !== TRUE) 
     die("Cannot create zip file.");
 }
 
+// Excel uses the shared workbook builder
+if ($export_type === 'excel') {
+    require_once 'excel_generator.php';
+}
+
 // Load PDF dependencies only if needed
 if ($export_type === 'pdf') {
     require('fpdf/fpdf.php');
@@ -78,109 +83,16 @@ foreach ($lines as $line) {
 
     foreach ($ids as $dm_id) {
         if ($export_type === 'excel') {
-            // --- EXCEL GENERATION LOGIC ---
-            $stmtInfo = $conn->prepare("SELECT account_number, company FROM debit_memos WHERE dm_id = :dm_id");
-            $stmtInfo->execute(array(':dm_id' => $dm_id));
-            $info = $stmtInfo->fetch(PDO::FETCH_ASSOC);
-            
-            $acc_num = isset($info['account_number']) ? $info['account_number'] : $identifier;
-            $company = isset($info['company']) ? $info['company'] : 'N/A';
-
-            // Base item query
-            $sqlItems = "SELECT * FROM `debit_memo_items` WHERE dm_id = :dm_id";
-            $params = array(':dm_id' => $dm_id);
-
-            // Date breakdown filter implementation for Excel
-            if (!empty($s_date) && !empty($e_date)) {
-                $sqlItems .= " AND (STR_TO_DATE(coverage_start, '%Y-%m-%d') <= :end_date 
-                                   AND STR_TO_DATE(coverage_end, '%Y-%m-%d') >= :start_date)";
-                $params[':start_date'] = $s_date;
-                $params[':end_date']   = $e_date;
-            } elseif (!empty($s_date)) {
-                $sqlItems .= " AND STR_TO_DATE(coverage_end, '%Y-%m-%d') >= :start_date";
-                $params[':start_date'] = $s_date;
-            } elseif (!empty($e_date)) {
-                $sqlItems .= " AND STR_TO_DATE(coverage_start, '%Y-%m-%d') <= :end_date";
-                $params[':end_date']   = $e_date;
-            }
-
-            $stmtItems = $conn->prepare($sqlItems);
-            $stmtItems->execute($params);
-            $items = $stmtItems->fetchAll(PDO::FETCH_ASSOC);
+            // Same workbook as the single export: one tab per year, old columns for 2025 & backward,
+            // new template columns for 2026 & forward. 'overlap' keeps this feature's original date matching.
+            $res = buildDebitMemoExcelXml($dm_id, $conn, null, $s_date, $e_date, null, 'overlap');
 
             // Skip file generation if no items match the specific date breakdown
-            if (empty($items)) {
+            if (empty($res['item_count'])) {
                 continue;
             }
 
-            $htmlContent = '<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns="http://www.w3.org/TR/REC-html40">';
-            $htmlContent .= '<head><meta charset="UTF-8"></head>';
-            $htmlContent .= '<body>';
-
-            $htmlContent .= '<table border="0">';
-            $htmlContent .= '<tr><td colspan="3" style="font-weight: bold; font-size: 14pt;">ACCOUNT NUMBER: ' . htmlspecialchars($acc_num) . '</td></tr>';
-            $htmlContent .= '<tr><td colspan="3" style="font-weight: bold; font-size: 12pt;">COMPANY: ' . htmlspecialchars($company) . '</td></tr>';
-            $htmlContent .= '<tr><td colspan="3"></td></tr>';
-            $htmlContent .= '</table>';
-
-            $htmlContent .= '<table border="1" style="border-collapse: collapse; font-size: 10pt; font-family: Arial, sans-serif;">';
-            
-            $headers = array(
-                "COVERAGE DATE", "MOBILE NUMBER", "APPROVED PLAN", "PHONE AMORTIZATION", 
-                "DEBIT ADJ", "CREDIT ADJ", "OTHER CHARGES (PRE-TERM)", "LOCAL (CALL/TEXT)", 
-                "NDD (NATIONAL)", "IDD (INTERNATIONAL)", "ROAM", "SMS", "GPRS", 
-                "WIZ USAGE", "LOADING CHARGES", "VAT", "OCT", "CURRENT CHARGES", 
-                "TOTAL AMOUNT DUE", "DEBIT MEMO"
-            );
-
-            $htmlContent .= '<tr style="font-weight: bold; text-align: center;">';
-            foreach($headers as $index => $col) {
-                $bgColor = '#93c5fd'; 
-                if ($index == 0) $bgColor = '#fde047'; 
-                elseif ($index == 1 || $index == 19) $bgColor = '#4ade80'; 
-
-                $htmlContent .= '<th style="background-color: ' . $bgColor . '; border: 1px solid #000000; padding: 6px; text-align: center;">' . htmlspecialchars($col) . '</th>';
-            }
-            $htmlContent .= '</tr>';
-
-            foreach ($items as $row) {
-                $start = isset($row['coverage_start']) ? date('M d, Y', strtotime($row['coverage_start'])) : '';
-                $end = isset($row['coverage_end']) ? date('M d, Y', strtotime($row['coverage_end'])) : '';
-                $dateText = $start . ' to ' . $end;
-
-                $htmlContent .= '<tr>';
-                $htmlContent .= '<td align="center" style="text-align: center; border: 1px solid #000000; mso-number-format:\@;">' . htmlspecialchars($dateText) . '</td>';
-                $htmlContent .= '<td align="center" style="text-align: center; border: 1px solid #000000; mso-number-format:\@;">' . htmlspecialchars($row['mobile_number']) . '</td>';
-                
-                $numericFields = array(
-                    'approved_plan', 'phone_amortization', 'debit_adj', 'credit_adj', 
-                    'other_charges', 'local_call_text', 'ndd_charges', 'idd_charges', 
-                    'roaming_charges', 'sms_charges', 'gprs_charges', 'wiz_usage', 
-                    'loading_charges', 'vat', 'oct', 'current_charges', 'total_amount_due', 
-                    'debit_memo_details'
-                );
-
-                foreach ($numericFields as $field) {
-                    $val = isset($row[$field]) ? (float)$row[$field] : 0.00;
-                    $style = 'text-align: right; border: 1px solid #000000; mso-number-format:"#,##0.00";';
-                    if ($field === 'debit_memo_details') {
-                        $style .= ' color: #dc2626; font-weight: bold;';
-                    }
-                    $htmlContent .= '<td align="right" style="' . $style . '">' . number_format($val, 2) . '</td>';
-                }
-                $htmlContent .= '</tr>';
-            }
-            
-            $htmlContent .= '</table>';
-            $htmlContent .= '</body></html>';
-
-            $tmp = tempnam(sys_get_temp_dir(), 'excel');
-            file_put_contents($tmp, $htmlContent);
-            
-            if (file_exists($tmp) && filesize($tmp) > 100) {
-                $zip->addFile($tmp, "Account_" . $acc_num . '.xls');
-                $temp_files[] = $tmp;
-            }
+            $zip->addFromString("Account_" . $res['acc_num'] . '.xls', $res['xml']);
 
         } else {
             // --- PDF GENERATION LOGIC ---

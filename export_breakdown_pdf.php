@@ -14,6 +14,9 @@ $dm_id        = isset($_GET['dm_id']) ? intval($_GET['dm_id']) : 0;
 $item_ids_str = isset($_GET['item_ids']) ? trim($_GET['item_ids']) : '';
 $start_date   = isset($_GET['start_date']) ? trim($_GET['start_date']) : '';
 $end_date     = isset($_GET['end_date']) ? trim($_GET['end_date']) : '';
+// Active breakdown tab: 'new' (2026 & forward), 'legacy' (2025 & backward) or '' (all years)
+$period       = isset($_GET['period']) ? trim($_GET['period']) : '';
+if ($period !== 'new' && $period !== 'legacy') $period = null;
 
 $item_ids = !empty($item_ids_str) ? explode(',', $item_ids_str) : array();
 
@@ -25,7 +28,7 @@ setcookie("fileDownloadToken", "success", time() + 60, "/");
 if ($type === 'excel') {
     // --- EXCEL GENERATION LOGIC ---
     require_once 'excel_generator.php';
-    createDebitMemoExcel($dm_id, $conn, !empty($item_ids) ? $item_ids : null, $start_date, $end_date);
+    createDebitMemoExcel($dm_id, $conn, !empty($item_ids) ? $item_ids : null, $start_date, $end_date, $period);
     exit;
 
 } else {
@@ -33,7 +36,7 @@ if ($type === 'excel') {
     require('fpdf/fpdf.php');
     require_once 'pdf_generator.php';
 
-    $result = createDebitMemoPDF($dm_id, $conn, !empty($item_ids) ? $item_ids : null, $start_date, $end_date); 
+    $result = createDebitMemoPDF($dm_id, $conn, !empty($item_ids) ? $item_ids : null, $start_date, $end_date, $period);
     
     if (is_array($result) && count($result) >= 2) {
         $pdf = $result[0]; 

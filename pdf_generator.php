@@ -1,107 +1,84 @@
 <?php
 require_once('fpdf/fpdf.php');
+require_once __DIR__ . '/dm_period.php';
+
+/** '#RRGGBB' -> array(r,g,b) */
+function dm_hex_rgb($hex) {
+    $hex = ltrim($hex, '#');
+    return array(hexdec(substr($hex, 0, 2)), hexdec(substr($hex, 2, 2)), hexdec(substr($hex, 4, 2)));
+}
 
 /**
- * Generates a Debit Memo PDF with dynamic column scaling to fit Legal Landscape.
- * @param int $dm_id The ID of the debit memo
- * @param PDO $conn The database connection
- * @param array|null $item_ids Optional array of specific item IDs
- * @param string|null $startDate 'YYYY-MM-DD' format
- * @param string|null $endDate 'YYYY-MM-DD' format
+ * Generates a Debit Memo PDF (Legal landscape). Coverage years <= 2025 use the
+ * legacy columns, 2026 and forward use the new template columns.
+ *
+ * @param int         $dm_id
+ * @param PDO         $conn
+ * @param array|null  $item_ids  Optional specific item IDs
+ * @param string|null $startDate 'YYYY-MM-DD'
+ * @param string|null $endDate   'YYYY-MM-DD'
+ * @param string|null $period    'new' (2026+), 'legacy' (<=2025) or null (everything)
+ * @return array [FPDF, account_number]
  */
-function createDebitMemoPDF($dm_id, $conn, $item_ids = null, $startDate = null, $endDate = null) {
-    // 1. Fetch info
+function createDebitMemoPDF($dm_id, $conn, $item_ids = null, $startDate = null, $endDate = null, $period = null) {
+    // 1. Info
     $stmt = $conn->prepare("SELECT account_number, company FROM debit_memos WHERE dm_id = :dm_id");
-    $stmt->execute([':dm_id' => $dm_id]);
+    $stmt->execute(array(':dm_id' => $dm_id));
     $info = $stmt->fetch(PDO::FETCH_ASSOC);
-    
+
     $acc_num = isset($info['account_number']) ? $info['account_number'] : 'N/A';
     $company = isset($info['company']) ? $info['company'] : 'N/A';
 
-    // 2. Setup PDF with tighter margins (5mm left/right) to maximize printable space
+    // 2. PDF setup
     $pdf = new FPDF('L', 'mm', 'Legal');
     $pdf->SetMargins(5, 10, 5);
     $pdf->SetAutoPageBreak(true, 15);
-    
-    // 3. Header array including the 2 new columns
-    $headers = [
-        "COVERAGE DATE" => "#FFE599",
-        "MOBILE NUMBER" => "#93C47D",
-        "APPROVED PLAN" => "#93C47D",
-        "MSF (GLOBE / MRC (SMART)" => "#4A86E8",
-        "DEBIT ADJ" => "#93C47D",
-        "CREDIT ADJ" => "#93C47D",
-        "OTHER CHARGES / PHONE AMORTIZATION" => "#4A86E8",
-        "LOCAL (CALL/TEXT)" => "#4A86E8",
-        "NDD (NATIONAL)" => "#4A86E8",
-        "IDD (INTERNATIONAL)" => "#4A86E8",
-        "ROAM" => "#4A86E8",
-        "SMS" => "#4A86E8",
-        "GPRS" => "#4A86E8",
-        "WIZ USAGE" => "#4A86E8",
-        "LOADING CHARGES" => "#4A86E8",
-        "VAT" => "#4A86E8",
-        "OCT" => "#4A86E8",
-        "CURRENT CHARGES" => "#4A86E8",
-        "TOTAL AMOUNT DUE" => "#4A86E8",
-        "PROCESSED DM" => "#93C47D",
-        "SYSTEM GENERATED DM" => "#93C47D",
-        "DIFFERENCE\n(PROCESSED DM - SYSTEM GENERATED DM)" => "#F7F700",
-        "ADD ONS" => "#93C47D",
-        "FINAL DM\n(PROCESSED DM - ADD ONS)" => "#F7F700"
-    ];
 
-    // Dynamic width calculation to fit all columns perfectly on Legal Landscape (355.6 mm width)
-    $pageWidth = 355.6; 
-    $printableWidth = $pageWidth - 10; // Accounting for 5mm left and 5mm right margins
-    $dateW = 26; // Fixed width for the date column
-    $remainingColumns = count($headers) - 1; // 21 numerical/data columns
-    $w = ($printableWidth - $dateW) / $remainingColumns; // Dynamically scales column width (~15.22 mm)
-    $h = 14;
+    $pageWidth      = 355.6;
+    $printableWidth = $pageWidth - 10;
+    $dateW          = 26;
+    $h              = 14;
+    $rowH           = 10.5;
 
-    // Helper closure to draw headers and title consistently across pages
-    $drawPageHeader = function() use ($pdf, $acc_num, $company, $headers, $dateW, $w, $h) {
+    $textRgb = array(
+        'plain'  => array(0, 0, 0),
+        'red'    => array(220, 38, 38),
+        'blue'   => array(37, 99, 235),
+        'purple' => array(124, 58, 237),
+        'orange' => array(234, 88, 12),
+        'green'  => array(22, 163, 74),
+    );
+
+    // Header drawer (per layout)
+    $drawPageHeader = function($columns) use ($pdf, $acc_num, $company, $dateW, $printableWidth, $h) {
         $pdf->AddPage();
-        
+
         $pdf->SetFont('Arial', 'B', 12);
         $pdf->Cell(0, 7, 'ACCOUNT NUMBER: ' . $acc_num, 0, 1);
         $pdf->Cell(0, 7, 'COMPANY: ' . $company, 0, 1);
         $pdf->Ln(5);
 
-        $pdf->SetFont('Arial', 'B', 5); // Slightly smaller font to fit longer header labels
+        $pdf->SetFont('Arial', 'B', 5);
         $startY = $pdf->GetY();
+        $w = ($printableWidth - $dateW) / (count($columns) - 1);
 
-        $index = 0;
-        foreach($headers as $col => $colorType) {
-            $currentW = ($index == 0) ? $dateW : $w;
-            
-            if ($colorType === '#FFE599') {
-                $pdf->SetFillColor(255, 229, 153); // Soft Yellow
-            } elseif ($colorType === '#93C47D') {
-                $pdf->SetFillColor(147, 196, 125); // Green
-            }
-              elseif ($colorType === '#F7F700') {
-                $pdf->SetFillColor(247, 247, 0); // yellow
-            }
-            else {
-                $pdf->SetFillColor(74, 135, 232); // Blue
-            }
+        foreach ($columns as $i => $c) {
+            $cw  = ($i == 0) ? $dateW : $w;
+            $rgb = dm_hex_rgb($c['color']);
+            $pdf->SetFillColor($rgb[0], $rgb[1], $rgb[2]);
 
-            
-            $currentX = $pdf->GetX();
-            $currentY = $pdf->GetY();
-            $pdf->Rect($currentX, $currentY, $currentW, $h, 'DF'); 
-            $pdf->MultiCell($currentW, 2.8, $col, 0, 'C'); 
-            $pdf->SetXY($currentX + $currentW, $startY);
-            
-            $index++;
+            $cx = $pdf->GetX();
+            $cy = $pdf->GetY();
+            $pdf->Rect($cx, $cy, $cw, $h, 'DF');
+            $pdf->MultiCell($cw, 2.8, $c['label'], 0, 'C');
+            $pdf->SetXY($cx + $cw, $startY);
         }
         $pdf->Ln($h);
     };
 
-    // 4. Build Query and Data Fetching
+    // 3. Items
     $sql = "SELECT * FROM `debit_memo_items` WHERE dm_id = :dm_id";
-    $params = [':dm_id' => $dm_id];
+    $params = array(':dm_id' => $dm_id);
 
     if (!empty($item_ids)) {
         $sql .= " AND id IN (" . implode(',', array_map('intval', $item_ids)) . ")";
@@ -111,106 +88,65 @@ function createDebitMemoPDF($dm_id, $conn, $item_ids = null, $startDate = null, 
         $effective_start = !empty($startDate) ? $startDate : '1900-01-01';
         $effective_end   = !empty($endDate) ? $endDate : '2999-12-31';
 
-        // Pinalitan mula sa overlapping range patungo sa eksaktong saklaw (strict matching)
-        $sql .= " AND (STR_TO_DATE(coverage_start, '%Y-%m-%d') >= :start_date 
+        $sql .= " AND (STR_TO_DATE(coverage_start, '%Y-%m-%d') >= :start_date
                        AND STR_TO_DATE(coverage_end, '%Y-%m-%d') <= :end_date)";
-        
+
         $params[':start_date'] = $effective_start;
         $params[':end_date']   = $effective_end;
     }
 
+    $sql .= dm_period_clause($period, 'coverage_start');
     $sql .= " ORDER BY coverage_start ASC";
 
     $stmtItems = $conn->prepare($sql);
     $stmtItems->execute($params);
     $all_items = $stmtItems->fetchAll(PDO::FETCH_ASSOC);
 
-    // 5. Group items by Year based on coverage_start
-    $groupedByYear = [];
+    // 4. Group by year
+    $groupedByYear = array();
     foreach ($all_items as $row) {
         $year = !empty($row['coverage_start']) ? date('Y', strtotime($row['coverage_start'])) : 'Unknown';
         $groupedByYear[$year][] = $row;
     }
 
     if (empty($groupedByYear)) {
-        $drawPageHeader();
+        $drawPageHeader(dm_columns('new'));
     }
 
-    $pdf->SetFont('Arial', '', 6);
-    $rowH = 10.5;
-
-    // 6. Loop through each Year
+    // 5. Render
     foreach ($groupedByYear as $year => $items) {
-        $drawPageHeader();
+        $columns = dm_columns(dm_layout_for_year($year));
+        $w = ($printableWidth - $dateW) / (count($columns) - 1);
+
+        $drawPageHeader($columns);
+        $pdf->SetFont('Arial', '', 6);
 
         foreach ($items as $row) {
             if ($pdf->GetY() + $rowH > ($pdf->GetPageHeight() - 15)) {
-                $drawPageHeader();
+                $drawPageHeader($columns);
+                $pdf->SetFont('Arial', '', 6);
             }
 
-            $start = isset($row['coverage_start']) ? date('M d, Y', strtotime($row['coverage_start'])) : '';
-            $end = isset($row['coverage_end']) ? date('M d, Y', strtotime($row['coverage_end'])) : '';
-            
-            $dateText = $start . "\nto\n" . $end;
-            $startX = $pdf->GetX();
-            $currentY = $pdf->GetY();
-
-            $pdf->MultiCell($dateW, 3.5, $dateText, 1, 'C');
-            $pdf->SetXY($startX + $dateW, $currentY);
-            
-            $pdf->Cell($w, $rowH, $row['mobile_number'], 1, 0, 'C');
-
-            $numericFields = [
-                'approved_plan', 'phone_amortization', 'debit_adj', 'credit_adj', 
-                'other_charges', 'local_call_text', 'ndd_charges', 'idd_charges', 
-                'roaming_charges', 'sms_charges', 'gprs_charges', 'wiz_usage', 
-                'loading_charges', 'vat', 'oct', 'current_charges', 'total_amount_due'
-            ];
-
-            foreach ($numericFields as $field) {
-                $val = isset($row[$field]) ? (float)$row[$field] : 0.00;
-                $pdf->Cell($w, $rowH, number_format($val, 2), 1, 0, 'C');
+            foreach ($columns as $i => $c) {
+                if ($c['type'] === 'date') {
+                    $startX = $pdf->GetX();
+                    $curY   = $pdf->GetY();
+                    $pdf->MultiCell($dateW, 3.5, dm_date_text($row, "\nto\n"), 1, 'C');
+                    $pdf->SetXY($startX + $dateW, $curY);
+                } elseif ($c['type'] === 'mobile') {
+                    $pdf->Cell($w, $rowH, isset($row['mobile_number']) ? $row['mobile_number'] : '', 1, 0, 'C');
+                } else {
+                    $rgb = $textRgb[$c['fmt']];
+                    $pdf->SetTextColor($rgb[0], $rgb[1], $rgb[2]);
+                    $pdf->Cell($w, $rowH, number_format(dm_cell_value($row, $c), 2), 1, 0, 'C');
+                    $pdf->SetTextColor(0, 0, 0);
+                }
             }
-            
-            // Debit Memo column (Red text)
-            $dm_val = isset($row['debit_memo_details']) ? (float)$row['debit_memo_details'] : 0.00;
-            $pdf->SetTextColor(220, 38, 38); 
-            $pdf->Cell($w, $rowH, number_format($dm_val, 2), 1, 0, 'C');
-            
-            // Calculations for the 2 new columns matching Excel structure
-            $approved_plan_val = isset($row['approved_plan']) ? (float)$row['approved_plan'] : 0.00;
-            $msf_mrc_val = isset($row['current_charges']) ? (float)$row['current_charges'] : 0.00;
 
-        $col1_val = max(0, $msf_mrc_val - $approved_plan_val);
-            $col2_val = max(0, $dm_val - $col1_val);
-
-            // Plan Variance Column (Blue text)
-            $pdf->SetTextColor(37, 99, 235);
-            $pdf->Cell($w, $rowH, number_format($col1_val, 2), 1, 0, 'C');
-
-            // DM Difference Column (Purple text)
-            $pdf->SetTextColor(124, 58, 237);
-            $pdf->Cell($w, $rowH, number_format($col2_val, 2), 1, 0, 'C');
-
-            // Add Ons Column (Orange text)
-            $add_ons_val = isset($row['add_ons']) ? (float)$row['add_ons'] : 0.00;
-            $pdf->SetTextColor(234, 88, 12); 
-            $pdf->Cell($w, $rowH, number_format($add_ons_val, 2), 1, 0, 'C');
-
-            // Final DM Column (Green text: Processed DM - Add Ons)
-            $final_dm_val = isset($row['final_dm']) ? (float)$row['final_dm'] : ($dm_val - $add_ons_val);
-            $pdf->SetTextColor(22, 163, 74); 
-            $pdf->Cell($w, $rowH, number_format($final_dm_val, 2), 1, 0, 'C');
-
-            // Reset text color back to black
-            $pdf->SetTextColor(0, 0, 0); 
-            
             $pdf->Ln($rowH);
         }
     }
-    
 
-
-    return [$pdf, $acc_num];
+    return array($pdf, $acc_num);
 }
 ?>

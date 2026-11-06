@@ -1,4 +1,4 @@
-﻿<?php
+<?php
 // Enable error reporting for debugging
 error_reporting(E_ALL);
 ini_set('display_errors', 1);
@@ -16,6 +16,30 @@ require_once 'config.php';
 require_once 'fpdf/fpdf.php';
 require_once 'pdf_generator.php'; 
 require_once 'email_template.php';
+require_once __DIR__ . '/dm_period.php';
+if (is_file(__DIR__ . '/mail_settings.php'))      require_once __DIR__ . '/mail_settings.php';        // Gmail login + monitoring settings
+if (is_file(__DIR__ . '/email_monitor_lib.php'))  require_once __DIR__ . '/email_monitor_lib.php';    // delivery monitoring (optional)
+
+// ----------------------------------------------------
+// SENDING SPEED & GOOGLE-FRIENDLY PACING  (edit here)
+// ----------------------------------------------------
+if (!defined('SEND_PAUSE_MS'))           define('SEND_PAUSE_MS', 350);        // normal gap between two emails (milliseconds)
+if (!defined('SEND_PAUSE_MAX_MS'))       define('SEND_PAUSE_MAX_MS', 4000);   // the gap never grows beyond this when Google pushes back
+if (!defined('SEND_BACKOFF_SECONDS'))    define('SEND_BACKOFF_SECONDS', 5);   // wait this long when Google says "try again later", then retry once
+if (!defined('SMTP_MAX_PER_CONNECTION')) define('SMTP_MAX_PER_CONNECTION', 40); // reconnect to Gmail after this many emails
+
+$sbe_pause_ms  = SEND_PAUSE_MS;   // current gap (adapts automatically)
+$sbe_ok_streak = 0;
+$sbe_smtp      = array('sock' => null, 'count' => 0);
+$sbe_last_accept = '';   // the server's "250 OK ..." line for the last accepted email
+$sbe_logged      = false; // becomes true once this batch was written to dispatch_logs
+// remember the gap between batches (if Google slowed us down in the last batch, the next batch starts slower too)
+$sbe_pause_file = sys_get_temp_dir() . '/sbe_send_pause.txt';
+if (is_file($sbe_pause_file) && (time() - (int)@filemtime($sbe_pause_file)) < 600) {
+    $saved_pause = (int)@file_get_contents($sbe_pause_file);
+    if ($saved_pause >= SEND_PAUSE_MS && $saved_pause <= SEND_PAUSE_MAX_MS) $sbe_pause_ms = $saved_pause;
+}
+register_shutdown_function('sbe_smtp_drop');
 
 if (isset($conn)) {
     $pdo = $conn;
@@ -23,6 +47,13 @@ if (isset($conn)) {
     echo json_encode(['status' => 'error', 'message' => 'Database connection not found in config.php']);
     exit;
 }
+
+if (session_status() === PHP_SESSION_NONE) { session_start(); }
+if (!isset($_SESSION['user_id'])) {
+    echo json_encode(['status' => 'error', 'message' => 'Unauthorized. Please log in again.']);
+    exit;
+}
+session_write_close();
 
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     echo json_encode(['status' => 'error', 'message' => 'Invalid request method.']);
@@ -83,6 +114,7 @@ $fail_count = 0;
 $failed_items = [];
 $success_items = [];
 $admin_report_items = []; 
+register_shutdown_function(function () { global $sbe_logged, $admin_report_items, $pdo; if (!$sbe_logged && !empty($admin_report_items) && isset($pdo)) sbe_log_items($pdo, $admin_report_items); });
 
 foreach ($dm_ids as $index => $dm_id) {
     $dm_id = trim($dm_id);
@@ -209,9 +241,8 @@ foreach ($dm_ids as $index => $dm_id) {
             $curr_charge_v = isset($it['current_charges']) ? (float)$it['current_charges'] : 0.00;
             $total_current_charges += $curr_charge_v;
 
-            $dm_v = isset($it['debit_memo_details']) ? (float)$it['debit_memo_details'] : 0.00;
-            $ao_v = isset($it['add_ons']) ? (float)$it['add_ons'] : 0.00;
-            $total_final_dm += isset($it['final_dm']) ? (float)$it['final_dm'] : ($dm_v - $ao_v);
+            // <=2025: Final DM | 2026+: Final Excess Charges (dm_period.php)
+            $total_final_dm += dm_final_amount($it);
             
             if (isset($it['approved_plan'])) {
                 $total_approved_plan += (float)$it['approved_plan'];
@@ -391,7 +422,9 @@ foreach ($dm_ids as $index => $dm_id) {
     }
 
     // 6. Send Email via SMTP
-    $mail_sent = send_smtp_mail_with_multi_attachments($recipient_email, $subject, $attachments, $html_content, $cc_emails);
+    $message_id = sbe_new_message_id();
+    $sbe_last_accept = '';
+    $mail_sent = sbe_send_paced($recipient_email, $subject, $attachments, $html_content, $cc_emails, $message_id);
 
     if ($mail_sent === true) {
         $success_count++;
@@ -409,21 +442,27 @@ foreach ($dm_ids as $index => $dm_id) {
             'filename' => $filename,
             'file_link' => $primary_file_link,
             'sent_by' => 'System Administrator',
-            'details' => 'Email sent successfully with attachments.'
+            'details' => 'Email sent successfully with attachments.',
+            'message_id' => $message_id,
+            'delivery_status' => 'ACCEPTED',          // Google accepted it; the monitor confirms later whether it bounced
+            'smtp_response' => $sbe_last_accept
         ];
     } else {
         $fail_count++;
         $error_msg = "Account {$account_number} ({$recipient_email}) - SMTP failed: " . $mail_sent;
         $failed_items[] = $error_msg;
-        $admin_report_items[] = get_failed_report_item($account_number, $telco_val, $mobile_number_val, $recipient_email, $error_msg, $data_coverage, number_format($total_final_dm, 2, '.', ','), $filename, $primary_file_link);
+        $admin_report_items[] = get_failed_report_item($account_number, $telco_val, $mobile_number_val, $recipient_email, $error_msg, $data_coverage, number_format($total_final_dm, 2, '.', ','), $filename, $primary_file_link, $message_id, (string)$mail_sent);
     }
 
     if (!empty($pdf_temp_path) && file_exists($pdf_temp_path)) @unlink($pdf_temp_path);
     foreach ($downloaded_pdf_paths as $temp_pdf) {
         if (file_exists($temp_pdf)) @unlink($temp_pdf);
     }
-    sleep(2);
+    usleep($sbe_pause_ms * 1000);   // short gap so Google is not flooded (was a fixed 2 seconds)
 }
+
+sbe_log_items($pdo, $admin_report_items);   // log this batch now, so nothing is lost if a later batch fails or the page is closed
+@file_put_contents($sbe_pause_file, (string)$sbe_pause_ms);   // carry the current pace to the next batch
 
 // Pagsamahin ang mga naunang batch reports at ang kasalukuyang batch reports
 $all_accumulated_reports = array_merge($input_accumulated_reports, $admin_report_items);
@@ -460,7 +499,48 @@ echo json_encode([
 ]);
 exit;
 
-function get_failed_report_item($account, $telco, $mobile, $email, $details, $period = 'N/A', $charge = '0.00', $filename = 'N/A', $link = '') {
+// Save the report items of one batch into dispatch_logs (with the monitoring columns when they exist).
+function sbe_log_items($pdo, $items) {
+    global $sbe_logged;
+    $sbe_logged = true;
+    if (empty($items)) return;
+    try {
+        $mon = function_exists('emon_ensure_schema') && emon_ensure_schema($pdo);
+        $sql = "INSERT INTO dispatch_logs
+            (status, dispatch_date, account_number, telco, mobile_number, recipient_email, billing_period, total_charge, filename, file_link, sent_by, details"
+            . ($mon ? ", message_id, delivery_status, smtp_response" : "") . ")
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?" . ($mon ? ", ?, ?, ?" : "") . ")";
+        $st = $pdo->prepare($sql);
+        foreach ($items as $item) {
+            $clean_charge = (float)str_replace(array('PHP ', '₱', ',', ' '), '', isset($item['total_charge']) ? $item['total_charge'] : '0');
+            $row = array(
+                isset($item['status']) ? $item['status'] : 'UNKNOWN',
+                isset($item['date']) ? $item['date'] : date('Y-m-d H:i:s'),
+                isset($item['account']) ? $item['account'] : 'N/A',
+                isset($item['telco']) ? $item['telco'] : 'N/A',
+                isset($item['mobile_number']) ? $item['mobile_number'] : 'N/A',
+                isset($item['email']) ? $item['email'] : 'N/A',
+                isset($item['billing_period']) ? $item['billing_period'] : 'N/A',
+                $clean_charge,
+                isset($item['filename']) ? $item['filename'] : 'N/A',
+                isset($item['file_link']) ? $item['file_link'] : '',
+                isset($item['sent_by']) ? $item['sent_by'] : 'System Administrator',
+                isset($item['details']) ? $item['details'] : ''
+            );
+            if ($mon) {
+                $dstat = isset($item['delivery_status']) ? $item['delivery_status'] : ((isset($item['status']) && $item['status'] === 'SUCCESS') ? 'ACCEPTED' : 'REJECTED');
+                $row[] = !empty($item['message_id']) ? $item['message_id'] : null;
+                $row[] = $dstat;
+                $row[] = isset($item['smtp_response']) ? substr((string)$item['smtp_response'], 0, 250) : null;
+            }
+            $st->execute($row);
+        }
+    } catch (Exception $e) {
+        error_log("Failed to insert dispatch logs into database: " . $e->getMessage());
+    }
+}
+
+function get_failed_report_item($account, $telco, $mobile, $email, $details, $period = 'N/A', $charge = '0.00', $filename = 'N/A', $link = '', $message_id = '', $smtp_response = '') {
     return [
         'status' => 'FAILED',
         'date' => date('Y-m-d H:i:s'),
@@ -473,38 +553,17 @@ function get_failed_report_item($account, $telco, $mobile, $email, $details, $pe
         'filename' => $filename,
         'file_link' => $link,
         'sent_by' => 'System Administrator',
-        'details' => $details
+        'details' => $details,
+        'message_id' => $message_id,
+        'delivery_status' => 'REJECTED',          // never accepted by the mail server
+        'smtp_response' => $smtp_response
     ];
 }
 
 function send_dispatch_report_to_admins($pdo,$report_items, $success_count,$fail_count) {
     // -------------------------------------------------------------------------
-    // 1. ISAVE MUNA SA DATABASE TABLE (`dispatch_logs`) ANG LAHAT NG REPORT ITEMS
+    // 1. (the log rows are now saved batch by batch with sbe_log_items(), see above)
     // -------------------------------------------------------------------------
-    try {
-        $insert_sql = "INSERT INTO dispatch_logs 
-            (status, dispatch_date, account_number, telco, mobile_number, recipient_email, billing_period, total_charge, filename, file_link, sent_by, details) 
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
-        
-        $insert_stmt = $pdo->prepare($insert_sql);
-
-        foreach ($report_items as$item) {
-            // Linisin ang charge amount para maging malinis na numeric decimal value
-            $clean_charge = (float)str_replace(['PHP ', '₱', ',', ' '], '',$item['total_charge'] ?? '0');
-
-            $insert_stmt->execute([
-                $item['status'] ?? 'UNKNOWN',$item['date'] ?? date('Y-m-d H:i:s'),
-                $item['account'] ?? 'N/A',$item['telco'] ?? 'N/A',
-                $item['mobile_number'] ?? 'N/A',$item['email'] ?? 'N/A',
-                $item['billing_period'] ?? 'N/A',$clean_charge,
-                $item['filename'] ?? 'N/A',$item['file_link'] ?? '',
-                $item['sent_by'] ?? 'System Administrator',$item['details'] ?? ''
-            ]);
-        }
-    } catch (Exception $e) {
-        // I-log ang error kung sakaling may usapin sa database para tuloy pa rin ang email report
-        error_log("Failed to insert dispatch logs into database: " . $e->getMessage());
-    }
 
     // -------------------------------------------------------------------------
     // 2. KUNIN MGA RECIPIENTS (ADMINS AT CURRENT USER)
@@ -660,8 +719,6 @@ function get_or_download_pdf_path($filename, $pdo = null) {
         } catch (Exception $e) {}
     }
 
-    usleep(500000); 
-      
     if ($pdo) {
         try {
             $stmtFile = $pdo->prepare("SELECT file_link FROM pdf_extracted_details WHERE filename = ? LIMIT 1");
@@ -679,6 +736,7 @@ function get_or_download_pdf_path($filename, $pdo = null) {
                         $options = [
                             "http" => [
                                 "method" => "GET",
+                                "timeout" => 30,
                                 "header" => "User-Agent: Mozilla/5.0\r\n",
                                 "follow_location" => 1,
                                 "max_redirects" => 5
@@ -711,27 +769,101 @@ function get_or_download_pdf_path($filename, $pdo = null) {
     return '';
 }
 
-function send_smtp_mail_with_multi_attachments($to, $subject, $attachments, $html_content, $cc = '') {
-    $smtp_host = 'tcp://smtp.gmail.com'; 
-    $smtp_port = 587;                    
-    $auth_user = 'itnotifications@bounty.com.ph';
-    $auth_pass = str_replace(' ', '', 'qvnk odfr gubq idac'); 
+// ---------------------------------------------------------------------------
+// SMTP (Gmail)
+// ONE connection is opened per request and reused for all emails in it.
+// Before: connect + STARTTLS + EHLO + AUTH + QUIT for EVERY single email.
+// Recommended: define SMTP_USER and SMTP_PASS in config.php. The values below are only a fallback.
+// ---------------------------------------------------------------------------
+function sbe_smtp_read($sock) {
+    $res = '';
+    while (($line = fgets($sock, 1024)) !== false) {
+        $res .= $line;
+        if (strlen($line) < 4 || $line[3] === ' ') break;
+    }
+    return $res;
+}
+
+function sbe_smtp_cmd($sock, $cmd, $code) {
+    global $sbe_last_resp;
+    if (!is_resource($sock)) { $sbe_last_resp = ''; return false; }
+    @fwrite($sock, $cmd . "\r\n");
+    $sbe_last_resp = trim(sbe_smtp_read($sock));
+    return (substr($sbe_last_resp, 0, 3) == $code);
+}
+
+function sbe_smtp_drop() {
+    global $sbe_smtp;
+    if (isset($sbe_smtp['sock']) && is_resource($sbe_smtp['sock'])) {
+        @fwrite($sbe_smtp['sock'], "QUIT\r\n");
+        @fclose($sbe_smtp['sock']);
+    }
+    $sbe_smtp = array('sock' => null, 'count' => 0);
+}
+
+function sbe_smtp_open(&$err) {
+    $smtp_host = 'tcp://smtp.gmail.com';
+    $smtp_port = 587;
+    $auth_user = defined('SMTP_USER') ? SMTP_USER : '';
+    $auth_pass = defined('SMTP_PASS') ? str_replace(' ', '', SMTP_PASS) : '';
+    if ($auth_user === '' || $auth_pass === '') { $err = "SMTP login is not set - open mail_settings.php"; return null; }
+    $ehlo      = isset($_SERVER['SERVER_NAME']) ? $_SERVER['SERVER_NAME'] : 'localhost';
+
+    $sock = @fsockopen($smtp_host, $smtp_port, $errno, $errstr, 15);
+    if (!is_resource($sock)) { $err = "Connection failed: $errstr"; return null; }
+    stream_set_timeout($sock, 60);
+    sbe_smtp_read($sock);
+
+    if (!sbe_smtp_cmd($sock, "EHLO " . $ehlo, 250) || !sbe_smtp_cmd($sock, "STARTTLS", 220)) {
+        @fclose($sock); $err = "TLS handshake error"; return null;
+    }
+    if (!@stream_socket_enable_crypto($sock, true, STREAM_CRYPTO_METHOD_TLS_CLIENT)) {
+        @fclose($sock); $err = "TLS handshake error"; return null;
+    }
+    if (!sbe_smtp_cmd($sock, "EHLO " . $ehlo, 250) ||
+        !sbe_smtp_cmd($sock, "AUTH LOGIN", 334) ||
+        !sbe_smtp_cmd($sock, base64_encode($auth_user), 334) ||
+        !sbe_smtp_cmd($sock, base64_encode($auth_pass), 235)) {
+        @fclose($sock); $err = "SMTP Auth/Command error"; return null;
+    }
+    return $sock;
+}
+
+function sbe_smtp_get(&$err, $fresh = false) {
+    global $sbe_smtp;
+    if (!isset($sbe_smtp) || !is_array($sbe_smtp)) $sbe_smtp = array('sock' => null, 'count' => 0);
+    $alive = is_resource($sbe_smtp['sock']) && !feof($sbe_smtp['sock']);
+    if ($fresh || !$alive || $sbe_smtp['count'] >= SMTP_MAX_PER_CONNECTION) {
+        sbe_smtp_drop();
+        $sock = sbe_smtp_open($err);
+        if (!$sock) return null;
+        $sbe_smtp = array('sock' => $sock, 'count' => 0);
+    }
+    return $sbe_smtp['sock'];
+}
+
+function send_smtp_mail_with_multi_attachments($to, $subject, $attachments, $html_content, $cc = '', $message_id = '') {
+    global $sbe_smtp, $sbe_last_resp, $sbe_last_accept;
     $from_email = 'telcoreports@bounty.com.ph';
     $from_name  = 'Admin Telco';
-    $boundary = md5(time());
+    $boundary = md5(uniqid('', true));
 
     $headers  = "MIME-Version: 1.0\r\n";
     $headers .= "From: {$from_name} <{$from_email}>\r\n";
     $headers .= "Reply-To: {$from_name} <{$from_email}>\r\n";
     $headers .= "To: {$to}\r\n";
+    if ($message_id !== '') {
+        $headers .= "Message-ID: <{$message_id}>\r\n";          // lets the monitor match a bounce to this exact email
+        if (preg_match('/^dm\.\d{14}\.([a-f0-9]{8})@/', $message_id, $mr)) $headers .= "X-DM-Ref: {$mr[1]}\r\n";
+    }
     if (!empty($cc)) $headers .= "Cc: {$cc}\r\n";
     $headers .= "Subject: {$subject}\r\n";
     $headers .= "Content-Type: multipart/mixed; boundary=\"{$boundary}\"\r\n\r\n";
-    
+
     $body  = "--{$boundary}\r\n";
     $body .= "Content-Type: text/html; charset=UTF-8\r\n\r\n";
     $body .= "{$html_content}\r\n\r\n";
-    
+
     foreach ($attachments as $att) {
         if (!empty($att['path']) && file_exists($att['path']) && filesize($att['path']) > 50) {
             $fileData = chunk_split(base64_encode(file_get_contents($att['path'])));
@@ -744,50 +876,84 @@ function send_smtp_mail_with_multi_attachments($to, $subject, $attachments, $htm
     }
     $body .= "--{$boundary}--";
 
-    $socket = @fsockopen($smtp_host, $smtp_port, $errno, $errstr, 15);
-    if (!is_resource($socket)) return "Connection failed: $errstr";
-    
-    fgets($socket, 512);
-    $run_cmd = function($cmd, $code) use ($socket) {
-        fwrite($socket, $cmd . "\r\n");
-        $res = ''; 
-        while ($s = fgets($socket, 512)) { 
-            $res .= $s; 
-            if (substr($s, 3, 1) == ' ') break; 
-        }
-        return (substr($res, 0, 3) == $code);
-    };
-
-    if (!$run_cmd("EHLO " . $_SERVER['SERVER_NAME'], 250) || !$run_cmd("STARTTLS", 220)) return "TLS handshake error";
-    stream_socket_enable_crypto($socket, true, STREAM_CRYPTO_METHOD_TLS_CLIENT);
-    
-    if ((!$run_cmd("EHLO " . $_SERVER['SERVER_NAME'], 250)) || 
-        !$run_cmd("AUTH LOGIN", 334) || 
-        !$run_cmd(base64_encode($auth_user), 334) || 
-        !$run_cmd(base64_encode($auth_pass), 235) || 
-        !$run_cmd("MAIL FROM: <{$from_email}>", 250)) {
-        return "SMTP Auth/Command error";
-    }
-    
     $all_recipients = explode(',', $to);
     if (!empty($cc)) {
-        $cc_emails_array = explode(',', $cc);
-        $all_recipients = array_merge($all_recipients, $cc_emails_array);
+        $all_recipients = array_merge($all_recipients, explode(',', $cc));
     }
 
-    foreach ($all_recipients as $recipient) {
-        $recipient = trim($recipient);
-        if (!empty($recipient)) {
-            @$run_cmd("RCPT TO: <{$recipient}>", 250);
+    $last_err = 'SMTP error';
+    // Attempt 2 = brand-new connection. We only ever retry BEFORE the message body is sent, so an email is never sent twice.
+    for ($attempt = 1; $attempt <= 2; $attempt++) {
+        $err = '';
+        $sock = sbe_smtp_get($err, $attempt > 1);
+        if (!$sock) { $last_err = $err ? $err : $last_err; continue; }
+
+        if (!sbe_smtp_cmd($sock, "MAIL FROM: <{$from_email}>", 250)) { sbe_smtp_drop(); $last_err = "SMTP Auth/Command error"; continue; }
+
+        $accepted = 0;
+        $rcpt_resp = '';
+        foreach ($all_recipients as $recipient) {
+            $recipient = trim($recipient);
+            if ($recipient === '') continue;
+            if (sbe_smtp_cmd($sock, "RCPT TO: <{$recipient}>", 250)) { $accepted++; } else { $rcpt_resp = $sbe_last_resp; }
+        }
+        if ($accepted === 0) {
+            sbe_smtp_cmd($sock, "RSET", 250);
+            return "No recipient was accepted by the mail server (" . $rcpt_resp . ")";
+        }
+
+        if (!sbe_smtp_cmd($sock, "DATA", 354)) { sbe_smtp_drop(); $last_err = "DATA command error"; continue; }
+
+        // SMTP dot-stuffing (plain string replace: no regex limits on big attachments)
+        $msg = str_replace("\r\n.", "\r\n..", $headers . "\r\n" . $body);
+        @fwrite($sock, $msg . "\r\n.\r\n");
+        $result = trim(sbe_smtp_read($sock));
+
+        if (substr($result, 0, 3) == '250') {
+            $sbe_smtp['count']++;
+            $sbe_last_accept = $result;
+            return true;
+        }
+        sbe_smtp_cmd($sock, "RSET", 250);    // keep the connection usable for the next email
+        return "Failed: " . $result;
+    }
+    return $last_err;
+}
+
+// Unique id for each email, e.g. dm.20261105100000.ab12cd34@bounty.com.ph
+function sbe_new_message_id() {
+    return 'dm.' . date('YmdHis') . '.' . substr(md5(uniqid('', true)), 0, 8) . '@' . (defined('MAIL_MESSAGE_ID_DOMAIN') ? MAIL_MESSAGE_ID_DOMAIN : 'bounty.com.ph');
+}
+
+// "Try again later" type problems (SMTP 4xx, or the connection could not be made) - nothing was delivered, so a retry is safe.
+function sbe_is_temporary_failure($r) {
+    if ($r === true) return false;
+    $r = (string)$r;
+    if (preg_match('/(?:Failed:|server \()\s*4\d\d\b/', $r)) return true;
+    return (strpos($r, 'Connection failed') === 0 || strpos($r, 'TLS handshake') === 0);
+}
+
+// Send one email. If Google pushes back, slow down, wait, and try this email once more.
+// When everything is fine the gap slowly returns to the normal (fast) value.
+function sbe_send_paced($to, $subject, $attachments, $html_content, $cc = '', $message_id = '') {
+    global $sbe_pause_ms, $sbe_ok_streak;
+    $res = send_smtp_mail_with_multi_attachments($to, $subject, $attachments, $html_content, $cc, $message_id);
+
+    if ($res !== true && sbe_is_temporary_failure($res)) {
+        $sbe_pause_ms  = min(SEND_PAUSE_MAX_MS, max($sbe_pause_ms * 2, 1000));
+        $sbe_ok_streak = 0;
+        sbe_smtp_drop();
+        sleep(SEND_BACKOFF_SECONDS);
+        $res = send_smtp_mail_with_multi_attachments($to, $subject, $attachments, $html_content, $cc, $message_id);
+    }
+
+    if ($res === true) {
+        $sbe_ok_streak++;
+        if ($sbe_ok_streak >= 10 && $sbe_pause_ms > SEND_PAUSE_MS) {
+            $sbe_pause_ms  = max(SEND_PAUSE_MS, (int)($sbe_pause_ms * 0.7));
+            $sbe_ok_streak = 0;
         }
     }
-
-    if (!$run_cmd("DATA", 354)) return "DATA command error";
-    fwrite($socket, $headers . "\r\n" . $body . "\r\n.\r\n");
-    $result = fgets($socket, 512); 
-    $run_cmd("QUIT", 221);
-    fclose($socket);
-
-    return (substr($result, 0, 3) == '250') ? true : "Failed: " . trim($result);
+    return $res;
 }
 ?>

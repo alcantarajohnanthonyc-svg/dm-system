@@ -1,6 +1,7 @@
 <?php
 session_start();
 require_once 'config.php';
+require_once __DIR__ . '/dm_period.php';
 header('Content-Type: application/json');
 
 $user_id = isset($_SESSION['user_id']) ? $_SESSION['user_id'] : 0;
@@ -28,6 +29,12 @@ $numeric_fields = [
 $data = [];
 foreach ($numeric_fields as $f) {
     $data[$f] = isset($_POST[$f]) && $_POST[$f] !== '' ? (float)$_POST[$f] : 0.00;
+}
+
+// 2026 & forward (new template): there is no Processed DM anymore. debit_memo_details now holds
+// EXCESS CHARGES = Current Charges - Approved Plan (never below 0). Computed here so it never depends on the browser.
+if (dm_is_new_template($start_date)) {
+    $memo_details = max(0, $data['current_charges'] - $data['approve_plan']);
 }
 
 try {

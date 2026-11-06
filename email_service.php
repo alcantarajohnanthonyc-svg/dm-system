@@ -5,6 +5,7 @@ if (session_status() === PHP_SESSION_NONE) {
 }
 
 require_once 'config.php';
+require_once __DIR__ . '/dm_period.php';
 
 if (file_exists('email_template.php')) {
     require_once 'email_template.php';
@@ -93,10 +94,8 @@ function calculateAccountSummaryMetrics($conn, $dm_id, $start_date = '', $end_da
         $curr_charge_v = isset($it['current_charges']) ? (float)$it['current_charges'] : 0.00;
         $total_current_charges += $curr_charge_v;
 
-        $dm_v = isset($it['debit_memo_details']) ? (float)$it['debit_memo_details'] : 0.00;
-        $ao_v = isset($it['add_ons']) ? (float)$it['add_ons'] : 0.00;
-        $final_dm_val = isset($it['final_dm']) ? (float)$it['final_dm'] : ($dm_v - $ao_v);
-        $total_final_dm += $final_dm_val;
+            // <=2025: Final DM | 2026+: Final Excess Charges (dm_period.php)
+            $total_final_dm += dm_final_amount($it);
 
         if (isset($it['approved_plan'])) {
             $total_approved_plan += (float)$it['approved_plan'];

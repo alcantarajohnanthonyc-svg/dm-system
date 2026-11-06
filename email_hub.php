@@ -11,6 +11,7 @@ require_once 'config.php';
 require_once 'main.php';
 include_once 'emailhub.php';
 require_once 'email_template.php';
+require_once __DIR__ . '/dm_period.php';
 
 if (!isset($_SESSION['user_id'])) {
     header("Location: login.php");
@@ -124,10 +125,8 @@ if (isset($_GET['action'])) {
             $curr_charge_v = isset($it['current_charges']) ? (float)$it['current_charges'] : 0.00;
             $total_current_charges += $curr_charge_v;
 
-            $dm_v = isset($it['debit_memo_details']) ? (float)$it['debit_memo_details'] : 0.00;
-            $ao_v = isset($it['add_ons']) ? (float)$it['add_ons'] : 0.00;
-            $final_dm_val = isset($it['final_dm']) ? (float)$it['final_dm'] : ($dm_v - $ao_v);
-            $total_final_dm += $final_dm_val;
+            // <=2025: Final DM | 2026+: Final Excess Charges (dm_period.php)
+            $total_final_dm += dm_final_amount($it);
 
 
             if (isset($it['approved_plan'])) {
@@ -1133,7 +1132,7 @@ async function executeDispatchFetch(formData, countNum) {
     let subjects = JSON.parse(formData.get('bulk_subjects') || '[]');
     let bodies = JSON.parse(formData.get('bulk_bodies') || '[]');
 
-    const chunkSize = 10;
+    const chunkSize = 25;   // accounts per request: bigger = fewer SMTP reconnects (keep <= ~30 to stay under the server time limit)
     let totalProcessed = 0;
     let totalSuccess = 0;
     let totalFail = 0;

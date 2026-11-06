@@ -16,6 +16,7 @@ error_reporting(E_ALL);
 
 require_once 'config.php';
 require_once 'main.php';
+require_once __DIR__ . '/dm_period.php';
 require_once __DIR__ . '/reports_recipients.php';
 
 // Check if user is logged in
@@ -376,9 +377,8 @@ function rp_mf_group_rows(array $rows, array $soa_map) {
         $groups[$key]['difference'] += $processed - $system_generated;
         $groups[$key]['bd_col1'] += $breakdown_one;
         $groups[$key]['bd_col2'] += max(0, $processed - $breakdown_one);
-        $groups[$key]['final_dm'] += (isset($row['final_dm']) && $row['final_dm'] !== null && $row['final_dm'] !== '')
-            ? rp_amount($row['final_dm'])
-            : $processed - $add_ons;
+        // <=2025: Final DM | 2026+: Final Excess Charges (dm_period.php)
+        $groups[$key]['final_dm'] += dm_final_amount($row);
     }
 
     foreach ($groups as &$group) {
